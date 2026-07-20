@@ -1685,7 +1685,7 @@ Standard `CheckoutShoppingCart` accepts raw card fields. It must not be wired to
 
 Before implementing production payment:
 
-* Obtain written confirmation of the pilot’s no-raw-card payment method, processor/region eligibility, authentication, SCA/redirect lifetime, and safe recovery flow.
+* Validate the Mindbody-managed payment method for the US pilot, the selected authentication strategy, SCA/redirect behavior where applicable, and safe recovery flow in the sandbox.
 * Complete security/PCI review.
 * Prove Test-cart totals, live recalculation, redirect completion, purchase-plus-Class IDs, declines, and ambiguous timeout behavior in controlled fixtures.
 * Persist only provider-created payment/sale/transaction references and masked facts permitted by Mindbody’s retention response.
@@ -1703,7 +1703,7 @@ Enable exactly one mode per pilot integration:
 ```txt
 existing_pass      Explicit tested ClientServiceId; no automatic pass selection
 free_unpaid        Only with written studio approval and tested provider settings
-mindbody_redirect  Only after written Mindbody approval and sandbox proof
+mindbody_redirect  Only after sandbox proof and confirmation that payment remains Mindbody-managed
 ```
 
 All other modes fail closed. Paid production remains disabled until every gate above is satisfied.
@@ -2134,12 +2134,12 @@ The MVP is ready for pilot when all of the following are true.
 
 No production provider write may be enabled until Revvi has recorded:
 
-1. Mindbody’s written approval of the curated multi-studio use case and exact API product;
+1. Mindbody’s confirmation of the Public API / Consumer Booking route and exact API product;
 2. the effective commercial schedule and chargeable location count;
 3. the endpoint authentication/permission matrix;
 4. written retention classification or exception for durable provider references;
 5. pilot Site activation and controlled sandbox evidence;
-6. an approved no-raw-card booking mode and security/PCI sign-off where payment applies; and
+6. a sandbox-proven Mindbody-managed payment mode where payment applies, with confirmation that raw card data does not enter Revvi infrastructure; and
 7. operational readiness for unknown outcomes, webhooks, polling, and manual compensation.
 
 ## Backend
@@ -2400,7 +2400,7 @@ Recommended implementation sequence:
 8. Implement member identity, eligibility, and Site-scoped client resolution.
 9. Implement availability state normalization and endpoint.
 10. Build Webflow availability UI.
-11. Obtain written product, commercial, retention, and booking-mode approvals.
+11. Validate the selected authentication, booking mode, and Mindbody-managed payment path in the sandbox; record commercial and retention assumptions.
 12. Implement client-aware quote and quote revalidation.
 13. Implement the one approved booking mode behind feature flags.
 14. Implement provider attempts, write locks, unknown states, and reconciliation before enabling writes.
@@ -2456,6 +2456,6 @@ The project is complete when:
 * Basic cancellation works where sandbox-proven, and refund/pass restoration remain separate.
 * Webhook intake, reconciliation, support locks, and 48-hour diagnostic deletion are operating.
 * Known limitations are documented.
-* Product approval, commercial terms, authentication permissions, and retention treatment are recorded in writing.
-* Payment handling, if enabled, has been officially confirmed and no raw card data enters Revvi infrastructure.
+* Public API / Consumer Booking product confirmation, commercial assumptions, authentication permissions, and retention treatment are recorded.
+* Payment handling, if enabled, is Mindbody-managed, sandbox-proven, and no raw card data enters Revvi infrastructure.
 * Revvi has received deployment, configuration, and support notes.

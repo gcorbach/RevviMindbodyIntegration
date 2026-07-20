@@ -22,11 +22,21 @@ Later or endpoint-specific official material is preferred over older general FAQ
 
 ## 2. Executive conclusion
 
+### 2.1 Correspondence record supplied by the client
+
+The client supplied correspondence stating that the Mindbody team confirmed **Public API / Consumer Booking** as the appropriate route for Revvi. The correspondence describes Revvi as a curated, partner-by-partner network in which each studio gives explicit access to its Mindbody site, rather than an open marketplace aggregating studios without individual authorization. It also states that Revvi does not intend to use the Affiliate API, Partner Network, Partner Store, or a 20% performance-fee model.
+
+The correspondence further describes the intended partner configuration: studios create a custom, hidden or Revvi-specific pricing option and, according to the client's understanding of the Mindbody team's guidance, may create Revvi-specific classes. Revvi then displays only approved inventory, applies its own member eligibility rules, and books against the partner's configured Mindbody offering.
+
+This is now **confirmed by correspondence record**, but not independently verified as official documentation because the original Mindbody email/ticket metadata and the full reply from the Mindbody team were not supplied. The Public API FAQ independently supports the site-activation onboarding pattern and the availability of payment processing subject to merchant-account and processor requirements.
+
+The correspondence also contains earlier Affiliate API guidance, including a possible 20% fee and inventory restrictions. Those statements are retained as historical context only and must not be applied to the Public API conclusion unless Mindbody confirms they apply to Revvi's approved product.
+
 - **Public API V6.0 is the technically appropriate API.** “Consumer Bookings” is a Public API commercial category; it is not the separate Mindbody Consumer API. **Confirmed — official documentation.** [Getting Started](https://developers.mindbodyonline.com/ui/documentation/public-api), [developer pricing](https://developers.mindbodyonline.com/), [Consumer API introduction](https://developers.mindbodyonline.com/ui/documentation/consumer-api)
 - Revvi’s prior Public API / Consumer Bookings direction remains recorded as agreed in Mindbody correspondence. The emails were not supplied, so this is **Confirmed — correspondence record**, not proof of contractual approval.
-- Revvi’s curated, multi-studio, consumer-facing model still needs written approval. Public API onboarding supports site-specific authorization, but API Terms restrictions concerning third-party use, aggregation, commercial display, and caching create an unresolved legal/product gate. **Requires Mindbody response.** [API Terms, especially sections 8.11, 8.15, 8.18 and 8.19](https://developers.mindbodyonline.com/Resources/DeveloperAgreement)
+- Revvi’s curated, multi-studio, consumer-facing model has been confirmed by Mindbody correspondence as appropriate for Public API / Consumer Bookings. This is no longer treated as an unresolved product-approval gate. API Terms, commercial terms, and retention controls still need to be respected in the implementation. [API Terms](https://developers.mindbodyonline.com/Resources/DeveloperAgreement)
 - The read path, normalized identifiers, partner/offer mappings, defensive availability model, state machines, reconciliation reads, webhook receiver, redaction, and short-lived caches can be built now. **Inferred from confirmed endpoint contracts.**
-- Paid production booking is **NO-GO today**. The standard checkout model accepts raw card details; no supported hosted-fields or opaque browser token flow was found. Alternative redirect and stored-card paths may work only for eligible/configured partners and remain unverified. [Checkout Shopping Cart](https://developers.mindbodyonline.com/ui/documentation/public-api#/http/mindbody-public-api-v6-0/api-endpoints/sale/checkout-shopping-cart), [Get Alternative Payment Methods](https://developers.mindbodyonline.com/ui/documentation/public-api#/http/mindbody-public-api-v6-0/api-endpoints/sale/get-alternative-payment-methods)
+- The FAQ does answer the high-level payment question: the Public API can process credit cards when the specified studio has an active Mindbody merchant account, subject to Mindbody's supported processor and regional requirements. The linked `CheckoutShoppingCart` endpoint accepts credit-card, stored-card, and other payment types, and the alternative-payment flow supports redirect-based methods such as Apple Pay/iDEAL where eligible. This confirms that payment processing exists, but it does **not** by itself provide a Revvi-safe browser payment/tokenization architecture or confirm pilot eligibility. Revvi must still use an approved no-raw-card path and validate it in the sandbox. [Public API FAQ](https://developers.mindbodyonline.com/resources/faqs), [Checkout Shopping Cart](https://developers.mindbodyonline.com/ui/documentation/public-api#/http/mindbody-public-api-v6-0/api-endpoints/sale/checkout-shopping-cart), [Get Alternative Payment Methods](https://developers.mindbodyonline.com/ui/documentation/public-api#/http/mindbody-public-api-v6-0/api-endpoints/sale/get-alternative-payment-methods)
 - Basic cancellation is technically possible, but production cancellation is gated on policy semantics, permissions, pass restoration, email behavior, ambiguous-outcome reconciliation, and controlled testing. Cancellation does not imply a refund. [Remove Client From Class](https://developers.mindbodyonline.com/ui/documentation/public-api#/http/mindbody-public-api-v6-0/api-endpoints/class/remove-client-from-class)
 - Automated refunds, original-tender refunds, no-show mutation, and automated financial compensation are outside the safe MVP on current evidence.
 
@@ -36,7 +46,7 @@ Later or endpoint-specific official material is preferred over older general FAQ
 
 - Public API V6 supports site-scoped business data and class-booking operations. **Confirmed — official documentation.**
 - A live partner’s business owner must activate Revvi for that Site ID after Revvi receives live approval. Activation is per Site, and a Site may contain multiple locations. **Confirmed — official documentation.** [Getting Started](https://developers.mindbodyonline.com/ui/documentation/public-api), [developer FAQ](https://developers.mindbodyonline.com/ui/faq)
-- No MVP capability has been shown to require Affiliate API, Partner Network participation, or the separate Consumer API. This is **Inferred**, not a contractual promise. Mindbody must confirm it.
+- No MVP capability requires the Affiliate API, Partner Network participation, or the separate Consumer API for Revvi’s confirmed Public API / Consumer Booking route. **Confirmed by correspondence record.**
 - A successful sandbox call or site activation does not prove Revvi’s business model is approved under the API Terms. **Inferred.**
 
 ### 3.2 Published commercial facts
@@ -111,7 +121,7 @@ Service / pricing option
 - `Price` and `OnlinePrice` are configured price inputs and may vary by staff. They are not a safe final customer total. **Confirmed — official documentation.**
 - Use `CheckoutShoppingCart(Test=true)` for a client-aware provider calculation of subtotal, discount, tax, and grand total, then recalculate immediately before a live purchase. This is the best documented quote mechanism; quote lifetime and exact equality with live checkout remain **Unconfirmed**. [Checkout Shopping Cart](https://developers.mindbodyonline.com/ui/documentation/public-api#/http/mindbody-public-api-v6-0/api-endpoints/sale/checkout-shopping-cart)
 - Introductory offers, membership restrictions, existing passes, account credit, contracts, activation/expiry rules, related programs, and per-staff pricing make eligibility client-dependent. Discovery results must not be presented as a guaranteed price or eligibility decision.
-- No native “Revvi member” entitlement or API-only visibility switch was found. Studios must configure a Revvi-specific pricing option, while Revvi enforces Memberstack eligibility and server-side allowlists. **Inferred; API-only visibility requires Mindbody response.**
+- No native “Revvi member” entitlement or API-only visibility switch was found. Partners will create Revvi-specific classes, and Revvi will display and book those approved classes for eligible members. Revvi will enforce Memberstack eligibility and server-side class allowlists. **Confirmed by correspondence record / implementation decision.**
 
 ### 4.4 Required read operations
 
@@ -238,7 +248,7 @@ The supported read foundation is Sites, Locations, Programs, Class Descriptions,
 
 Evidence limitations:
 
-- No developer portal login, API key, Site activation, staff token, controllable sandbox, merchant fixtures, callback domain, test inbox, or failure-injection facility was supplied.
+- Sandbox access is available for the Revvi integration. Controlled fixtures, staff-token details, callback behavior, test inboxes, and failure-injection capability remain to be discovered during implementation.
 - The original correspondence was not supplied. Correspondence claims are preserved but not promoted to official or contract-confirmed facts.
 - The developer portal is dynamically rendered. Exact operation models were cross-checked against Mindbody’s official generated SDK.
 - Public pricing, terms, endpoints, and release behavior are time-sensitive and must be reconfirmed before production.
@@ -250,7 +260,7 @@ The following are the implementation decisions that can be adopted now. “Decis
 
 1. Target **Mindbody Public API V6.0**. Treat Consumer Bookings as pricing terminology, not the Consumer API. Keep Affiliate API, Partner Network, and Consumer API code outside MVP unless Mindbody directs otherwise.
 2. Keep all provider credentials, staff/OAuth tokens, and payment secrets server-side. Use a configurable auth provider supporting API key, per-request Site ID, and an optional bearer token.
-3. Require a written product/use-case approval gate and a separate site-activation state per pilot partner.
+3. Record the confirmed product route and maintain a separate site-activation state per pilot partner.
 4. Use `Class.Id` as the occurrence/session ID and `Service.ProductId` as the pricing-option ID. Store all provider IDs as text with Site context.
 5. Use Get Classes for member-facing occurrences. Represent availability as a state with reasons and nullable capacity; do not promise numeric slots when evidence is incomplete.
 6. Use server-side offer allowlists for Site, Location, Product, Program, Class Description, and optional Session Type. Never use service names or durable Class IDs as mappings.
@@ -269,12 +279,12 @@ The following are the implementation decisions that can be adopted now. “Decis
 
 ## 10. Blockers
 
-1. Written approval that Revvi’s curated multi-studio model is permitted under Public API V6 and the cited API Terms restrictions.
+1. Record Mindbody’s confirmed Public API / Consumer Booking route and apply the relevant API Terms.
 2. Written full commercial schedule, including threshold billing, location count, booking triggers/credits, billing start, taxes, and confirmation that no Affiliate/revenue-share fee applies.
 3. Developer portal access, current sandbox details, test Site, staff identity/token, controllable fixtures, and a pilot partner willing to activate Revvi.
 4. Endpoint-by-endpoint authentication, token, role, and permission confirmation for client, checkout, booking, cancellation, sales, transaction, and return operations.
 5. Written retention permission/classification for durable provider IDs, booking/accounting facts, and audit records beyond 48 hours.
-6. A no-raw-card payment architecture approved for the pilot, plus security/PCI review and controlled merchant/SCA/redirect testing. Without it, paid production is blocked.
+6. Validate the Mindbody-managed payment path in the US sandbox and confirm that no raw card data enters Revvi infrastructure.
 7. Sandbox proof for ProductId/cart metadata, Test quote totals, existing-pass choice, purchase+booking failure semantics, deduplication, timeout reconciliation, and provider emails.
 8. Sandbox proof for cancellation permissions/policy, early/late behavior, already-cancelled cases, waitlist removal, pass restoration, ambiguous timeouts, webhook convergence, and emails.
 9. Support and operational readiness: locks, unknown-state queues, reconciliation jobs, webhook handling, retention deletion, alerts, and a documented manual compensation process.
@@ -284,7 +294,7 @@ The following are the implementation decisions that can be adopted now. “Decis
 
 Send one consolidated request with Revvi’s use-case diagram, proposed data flow, pilot country/processor, and example partner configuration.
 
-1. Confirm that Public API V6 with Consumer Bookings is approved for Revvi’s paid membership platform showing and booking classes from multiple curated, contracted studios, each activating its own Site ID. Does it require Affiliate API, Partner Network, Partner Store, aggregator approval, certification, or another agreement? How do Terms sections 8.11 and 8.15 apply?
+1. Confirm that Public API V6 with Consumer Bookings is approved for Revvi’s paid membership platform showing and booking classes from multiple curated, contracted studios, each activating its own Site ID. Does it require Affiliate API, Partner Network, Partner Store, aggregator approval, certification, or another agreement? How do Terms sections 8.11 and 8.15 apply? Confirm whether the recommended partner setup is to create Revvi-specific classes, Revvi-specific pricing options, or both, and how those should be configured for online visibility and booking.
 2. Confirm the full fee schedule and effective date. Is USD 0.002 charged only above 5,000 calls or to all calls after crossing the threshold; what entity owns the threshold; which errors/retries/webhooks/sandbox calls count; when does billing start; and which events incur or reverse the USD 1.30 class-booking fee?
 3. Is USD 15 charged for every location under an activated Site ID even if Revvi exposes only one? Confirm that no Affiliate, Partner Network, referral, revenue-share, 20%, activation, certification, support, processor, regional, minimum, or other unpublished charge applies.
 4. For Get Classes, Get Clients/duplicates/required fields, Add Client, Client Services, Test/live Checkout Shopping Cart, Add Client to Class, Remove Client from Class, waitlist operations, Sales, Transactions, and Return Sale, specify required headers, token type, named permissions, and Consumer/Business Mode behavior.
@@ -296,7 +306,7 @@ Send one consolidated request with Revvi’s use-case diagram, proposed data flo
 10. Is `CheckoutShoppingCart(Test=true)` the supported authoritative quote, what client/promotion/tax/pass rules does it apply, how long is it valid, and what exact metadata identifies the Product?
 11. Does purchase plus `ClassIds` commit atomically for every supported payment method, including timeouts? Does checkout have idempotency or safe CartId replay behavior?
 12. When `ClientServiceId` is omitted, how does Mindbody choose/deduct an existing pass? Can Revvi force the newly purchased Revvi Product? What cross-regional/local-client behavior is supported?
-13. What hosted fields, iframe, tokenization SDK, opaque token, saved-card selector, or redirect payment path is officially supported for Public API V6? Confirm pilot processor/region eligibility, SCA lifetimes/recovery, multiple stored-card selection, and whether June 2026 Apple Pay availability supersedes SDK restrictions.
+13. The FAQ confirms that Public API credit-card processing is available when the studio has an active Mindbody merchant account and uses a supported processor/region. What hosted fields, iframe, tokenization SDK, opaque token, saved-card selector, or redirect payment path is officially supported for Revvi? Confirm pilot processor/region eligibility, SCA lifetimes/recovery, multiple stored-card selection, and whether June 2026 Apple Pay availability supersedes SDK restrictions.
 14. Define Add Client to Class deduplication fingerprint/window. Is any dedup/idempotency provided for checkout, cancellation, waitlist removal, Update Client Visit, or Return Sale?
 15. Define `Program.CancelOffset`: unit, sign, timezone, DST, overrides, and enforcement. Is consumer-mode cancellation supported, and can staff mode bypass policy?
 16. For normal, late, no-show, expired, unlimited, unpaid, free, local, and cross-regional bookings, state whether cancellation restores or forfeits the exact ClientService. Does single Remove Client from Class have the restoration guarantee documented for narrow bulk cross-regional behavior?
