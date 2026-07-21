@@ -1,0 +1,12 @@
+{
+  "name": "revvi-booking",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.7.0",
+  "scripts": {
+    "supabase": "supabase"
+  },
+  "devDependencies": {
+    "supabase": "^2.109.1"
+  }
+}
