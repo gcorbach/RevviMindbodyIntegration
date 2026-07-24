@@ -23,6 +23,9 @@ The boundary through which Revvi and Mindbody coordinate booking-related journey
 A confirmed reservation for a customer to attend a selected service at a selected time.
 _Avoid_: Appointment, reservation
 
+**Booking attempt**:
+The in-progress Revvi journey to create a Booking. A Mindbody appointment created before an authoritative successful payment or confirmation outcome remains a Booking attempt, not a Booking.
+
 **Revvi Customer**:
 An authenticated person using Revvi to make a Booking.
 _Avoid_: Member, user
