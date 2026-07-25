@@ -26,6 +26,9 @@ _Avoid_: Appointment, reservation
 **Booking attempt**:
 The in-progress Revvi journey to create a Booking. A Mindbody appointment created before an authoritative successful payment or confirmation outcome remains a Booking attempt, not a Booking.
 
+**Revvi operational ledger**:
+The tenant-scoped Supabase record of Business configuration, Mindbody Client mappings, Booking attempts, and their redacted operational history. It supports orchestration and reconciliation; it is not authoritative for Mindbody availability or completed Bookings.
+
 **Revvi Customer**:
 An authenticated person using Revvi to make a Booking.
 _Avoid_: Member, user
