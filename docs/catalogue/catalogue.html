@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Choose a service | Revvi</title>
+  <style>
+    :root { color-scheme: light; --ink:#17201d; --muted:#63716b; --paper:#f8f8f4; --line:#dce2dc; --brand:#126a47; --mint:#dff4e9; --warn:#fff5d6; }
+    * { box-sizing: border-box; } body { margin: 0; padding: 24px 16px 48px; background: var(--paper); color: var(--ink); font: 16px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; }
+    main { max-width: 860px; margin: auto; } .eyebrow { color: var(--brand); font-size: 12px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    h1 { margin: 8px 0; font-size: clamp(30px, 5vw, 52px); line-height: 1; letter-spacing: -.05em; } h2 { margin: 0; font-size: 22px; } p { color: var(--muted); }
+    .context, .service, .state { border: 1px solid var(--line); border-radius: 16px; background: white; padding: 20px; } .context { margin: 24px 0 16px; }
+    .context-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; } .context-row strong { display: block; font-size: 18px; }
+    .change { color: var(--brand); font-weight: 700; } .services { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+    .service { display: flex; flex-direction: column; gap: 8px; } .service p { margin: 0; } .service-meta { color: var(--muted); font-size: 14px; margin-top: auto; }
+    .state { margin-top: 16px; } .state[data-kind="error"] { background: var(--warn); border-color: #ead79b; } [hidden] { display: none !important; }
+    @media (max-width: 640px) { body { padding: 16px 12px 36px; } .context-row { align-items: flex-start; flex-direction: column; } .services { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main id="catalogue" data-testid="service-catalogue" aria-live="polite">
+    <div class="eyebrow">Revvi booking</div>
+    <h1>Choose a service</h1>
+    <p>Live services for your selected Business and Location.</p>
+    <section class="context" data-testid="booking-context" hidden>
+      <div class="context-row"><div><span class="eyebrow">Selected location</span><strong id="location-name"></strong><span id="business-name"></span></div><a class="change" id="change-location" href="/locations">Change location</a></div>
+    </section>
+    <section class="state" data-testid="loading" id="loading">Loading live services…</section>
+    <section class="state" data-testid="empty" id="empty" hidden>No enabled services are available at this Location.</section>
+    <section class="state" data-testid="error" id="error" hidden></section>
+    <section class="services" data-testid="services" id="services" hidden></section>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const apiBase = window.REVVI_CATALOGUE_API_URL || "/functions/v1/business-catalogue";
+    const token = window.REVVI_CUSTOMER_TOKEN;
+    const elements = { context: document.querySelector("[data-testid='booking-context']"), loading: document.querySelector("[data-testid='loading']"), empty: document.querySelector("[data-testid='empty']"), error: document.querySelector("[data-testid='error']"), services: document.querySelector("[data-testid='services']"), business: document.querySelector("#business-name"), location: document.querySelector("#location-name"), change: document.querySelector("#change-location") };
+    function show(name) { Object.keys({ loading: true, empty: true, error: true, services: true }).forEach((key) => { elements[key].hidden = key !== name; }); }
+    function render(data) {
+      elements.business.textContent = data.business.displayName;
+      elements.location.textContent = data.location.displayName;
+      elements.change.href = data.business.locationBrowserPath || "/locations";
+      elements.context.hidden = false;
+      elements.services.innerHTML = data.services.map((service) => `<article class="service"><h2>${escapeHtml(service.name)}</h2><p>${escapeHtml(service.description || "Available service")}</p><div class="service-meta">${service.durationMinutes ? `${service.durationMinutes} minutes` : "Duration confirmed at booking"}${service.price === null || service.price === undefined ? "" : ` · ${service.price}`}</div></article>`).join("");
+      show(data.services.length ? "services" : "empty");
+      if (window.REVVI_TEST_RESPONSIVE) {
+        requestAnimationFrame(() => { document.body.dataset.responsive = document.documentElement.scrollWidth <= window.innerWidth ? "true" : "false"; });
+      }
+    }
+    function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character])); }
+    async function load() {
+      if (!token) { elements.error.textContent = "Sign in through Revvi to view services."; show("error"); return; }
+      if (!params.get("business") || !params.get("location")) { elements.error.textContent = "Choose a Business and Location before booking."; show("error"); return; }
+      const query = new URLSearchParams({ business: params.get("business"), location: params.get("location") });
+      try {
+        const response = await fetch(`${apiBase}?${query}`, { headers: { Authorization: `Bearer ${token}` } });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Live services could not be loaded.");
+        render(data);
+      } catch (error) { elements.error.textContent = error.message; show("error"); }
+    }
+    load();
+  </script>
+</body>
+</html>
