@@ -71,7 +71,7 @@ function validDate(value: string | null) {
 }
 
 function dateRange(selectedDate: string) {
-  const lookaheadDays = Number(Deno.env.get("MINDBODY_AVAILABILITY_LOOKAHEAD_DAYS") ?? 30);
+  const lookaheadDays = Number(Deno.env.get("MINDBODY_AVAILABILITY_LOOKAHEAD_DAYS") ?? 365);
   const start = new Date(`${selectedDate}T00:00:00.000Z`);
   const end = new Date(start);
   end.setUTCDate(end.getUTCDate() + (Number.isInteger(lookaheadDays) && lookaheadDays > 0 ? lookaheadDays : 30));
@@ -129,9 +129,9 @@ Deno.serve(async (request) => {
   const url = new URL(request.url);
   const businessSlug = url.searchParams.get("business");
   const locationSlug = url.searchParams.get("location");
-  const serviceId = url.searchParams.get("service") ?? url.searchParams.get("serviceId");
+  const serviceId = url.searchParams.get("service");
   const selectedDate = url.searchParams.get("date");
-  const selectedStart = url.searchParams.get("start") ?? url.searchParams.get("time");
+  const selectedStart = url.searchParams.get("start");
   if (!businessSlug || !locationSlug || !serviceId || !validDate(selectedDate)) {
     return json({ code: "INVALID_CONTEXT", error: "Business, Location, service, and a valid date are required." }, 400, origin, requestId);
   }
@@ -252,9 +252,6 @@ Deno.serve(async (request) => {
       business: {
         slug: business.slug,
         displayName: business.display_name,
-        logoUrl: business.logo_url,
-        brand: { primary: business.brand_primary, accent: business.brand_accent },
-        supportEmail: business.support_email,
         locationBrowserPath: business.location_browser_path,
       },
       location: {
@@ -280,6 +277,7 @@ Deno.serve(async (request) => {
         startTime: selectedSlot.startTime,
         endTime: selectedSlot.endTime,
       };
+      delete response.availability;
     }
 
     return json(response, 200, origin, requestId);

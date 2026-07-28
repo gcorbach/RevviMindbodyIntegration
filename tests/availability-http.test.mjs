@@ -51,6 +51,12 @@ test("HTTP availability and review use tenant policy and a controllable Mindbody
     const available = await fetch(`${functionUrl}?business=sandbox-wellness&location=sandbox-location&service=00000000-0000-0000-0000-000000000031&date=2026-07-28`, { headers });
     const availableBody = await available.json();
     assert.equal(available.status, 200, JSON.stringify(availableBody)); assert.equal(availableBody.availability.state, "available"); assert.equal(availableBody.availability.slots.length, 1); assert.equal(availableBody.availability.slots[0].durationMinutes, 45); assert.equal(availableBody.availability.slots[0].price, 120); assert.doesNotMatch(JSON.stringify(availableBody), /mindbody_site_id|mindbody_session_type_id|Availabilities|Api-Key/);
+    const unavailableLocation = await fetch(`${functionUrl}?business=sandbox-wellness&location=secondary-location&service=00000000-0000-0000-0000-000000000031&date=2026-07-28`, { headers });
+    assert.equal(unavailableLocation.status, 404); assert.equal((await unavailableLocation.json()).code, "LOCATION_UNAVAILABLE");
+    const unavailableService = await fetch(`${functionUrl}?business=sandbox-wellness&location=sandbox-location&service=00000000-0000-0000-0000-000000000099&date=2026-07-28`, { headers });
+    assert.equal(unavailableService.status, 404); assert.equal((await unavailableService.json()).code, "SERVICE_UNAVAILABLE");
+    const staleProviderContext = await fetch(`${functionUrl}?business=sandbox-wellness&location=secondary-location&service=00000000-0000-0000-0000-000000000031&date=2026-07-28`, { headers });
+    assert.equal(staleProviderContext.status, 404); assert.equal((await staleProviderContext.json()).code, "LOCATION_UNAVAILABLE");
     const start = encodeURIComponent(availableBody.availability.slots[0].startTime);
     const review = await fetch(`${functionUrl}?business=sandbox-wellness&location=sandbox-location&service=00000000-0000-0000-0000-000000000031&date=2026-07-28&start=${start}`, { headers });
     const reviewBody = await review.json();

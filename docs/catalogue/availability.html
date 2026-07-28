@@ -42,7 +42,6 @@
     </section>
   </main>
   <script>
-    const params = new URLSearchParams(location.search);
     const apiBase = window.REVVI_CATALOGUE_API_URL || "/functions/v1/booking-availability";
     const token = window.REVVI_CUSTOMER_TOKEN;
     const elements = {
@@ -51,8 +50,9 @@
       reviewBusiness: document.querySelector("#review-business"), reviewLocation: document.querySelector("#review-location"), reviewService: document.querySelector("#review-service"), reviewStart: document.querySelector("#review-start"), reviewDuration: document.querySelector("#review-duration"), reviewPrice: document.querySelector("#review-price"), backToTimes: document.querySelector("#back-to-times"), reviewBack: document.querySelector("#review-back"),
     };
     function today() { return new Date().toISOString().slice(0, 10); }
-    function selectedDate() { return params.get("date") || today(); }
-    function updateUrl({ date, start = null }) { params.set("date", date); if (start) params.set("start", start); else params.delete("start"); history.pushState(null, "", `${location.pathname}?${params}`); }
+    function currentParams() { return new URLSearchParams(location.search); }
+    function selectedDate(params = currentParams()) { return params.get("date") || today(); }
+    function updateUrl({ date, start = null }) { const next = currentParams(); next.set("date", date); if (start) next.set("start", start); else next.delete("start"); history.pushState(null, "", `${location.pathname}?${next}`); }
     function showState(name) { [elements.loading, elements.empty, elements.error, elements.slots].forEach((element) => { element.hidden = element !== elements[name]; }); }
     function formatTime(value, timezone) { return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short", timeZone: timezone || "UTC" }).format(new Date(value)); }
     function formatPrice(value) { return value === null || value === undefined ? "Price confirmed at Booking" : String(value); }
@@ -70,6 +70,7 @@
       if (window.REVVI_TEST_RESPONSIVE) requestAnimationFrame(() => { document.body.dataset.responsive = document.documentElement.scrollWidth <= window.innerWidth ? "true" : "false"; });
     }
     async function load() {
+      const params = currentParams();
       elements.error.hidden = true; elements.loading.hidden = false;
       if (!token) { elements.error.textContent = "Sign in through Revvi to choose a time."; showState("error"); return; }
       if (!params.get("business") || !params.get("location") || !params.get("service")) { elements.error.textContent = "Choose a Business, Location, and service before selecting a time."; showState("error"); return; }
