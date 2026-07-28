@@ -7,7 +7,7 @@
   "scripts": {
     "supabase": "supabase",
     "prototype:booking": "node docs/prototypes/serve-booking-prototype.mjs",
-    "test": "node --test tests/**/*.test.mjs",
+    "test": "node --test --test-concurrency=1 tests/**/*.test.mjs",
     "test:acceptance": "node tests/run-acceptance.mjs"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 
-const result = spawnSync(process.execPath, ["--test", "tests/catalogue-http.test.mjs", "tests/catalogue-browser.test.mjs"], {
+const result = spawnSync(process.execPath, ["--test", "--test-concurrency=1", "tests/catalogue-http.test.mjs", "tests/catalogue-browser.test.mjs", "tests/availability-http.test.mjs", "tests/availability-browser.test.mjs"], {
   env: {
     ...process.env,
     RUN_HTTP_TESTS: "1",
