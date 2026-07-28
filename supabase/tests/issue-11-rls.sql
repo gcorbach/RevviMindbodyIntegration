@@ -1,4 +1,4 @@
-select plan(8);
+select plan(11);
 
 select set_config(
   'request.jwt.claims',
@@ -33,6 +33,10 @@ select set_config(
 select is((select count(*)::int from public.businesses), 1, 'staff access is scoped to one Business');
 
 set role postgres;
+
+select is(has_table_privilege('authenticated', 'public.business_provider_config', 'select'), false, 'customers cannot read provider Site IDs');
+select is(has_table_privilege('authenticated', 'public.business_location_provider_config', 'select'), false, 'customers cannot read provider Location IDs');
+select is(has_table_privilege('authenticated', 'public.business_service_provider_config', 'select'), false, 'customers cannot read provider Session Type IDs');
 
 select throws_ok(
   $$update public.business_services

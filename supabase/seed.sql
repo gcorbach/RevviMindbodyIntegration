@@ -5,8 +5,7 @@ insert into public.businesses (
   support_email,
   status,
   booking_enabled,
-  provider_environment,
-  mindbody_site_id
+  provider_environment
 )
 values
   (
@@ -16,8 +15,7 @@ values
     'support@example.test',
     'active',
     true,
-    'sandbox',
-    '__MINDBODY_SANDBOX_SITE_ID__'
+    'sandbox'
   ),
   (
     '00000000-0000-0000-0000-000000000012',
@@ -26,8 +24,7 @@ values
     'support@example.test',
     'disabled',
     false,
-    'sandbox',
-    '__MINDBODY_SANDBOX_SITE_ID__'
+    'sandbox'
   )
 on conflict (id) do update set
   slug = excluded.slug,
@@ -35,8 +32,7 @@ on conflict (id) do update set
   support_email = excluded.support_email,
   status = excluded.status,
   booking_enabled = excluded.booking_enabled,
-  provider_environment = excluded.provider_environment,
-  mindbody_site_id = excluded.mindbody_site_id;
+  provider_environment = excluded.provider_environment;
 
 insert into public.business_locations (
   id,
@@ -44,7 +40,6 @@ insert into public.business_locations (
   slug,
   display_name,
   timezone,
-  mindbody_location_id,
   enabled
 )
 values
@@ -54,7 +49,6 @@ values
     'sandbox-location',
     'Sandbox Location',
     'America/Los_Angeles',
-    '1',
     true
   ),
   (
@@ -63,7 +57,6 @@ values
     'secondary-location',
     'Secondary Location',
     'UTC',
-    '2',
     true
   )
 on conflict (id) do update set
@@ -71,14 +64,12 @@ on conflict (id) do update set
   slug = excluded.slug,
   display_name = excluded.display_name,
   timezone = excluded.timezone,
-  mindbody_location_id = excluded.mindbody_location_id,
   enabled = excluded.enabled;
 
 insert into public.business_services (
   id,
   business_id,
   location_id,
-  mindbody_session_type_id,
   display_name_override,
   enabled
 )
@@ -86,16 +77,39 @@ values (
   '00000000-0000-0000-0000-000000000031',
   '00000000-0000-0000-0000-000000000011',
   '00000000-0000-0000-0000-000000000021',
-  '23',
   null,
   true
 )
 on conflict (id) do update set
   business_id = excluded.business_id,
   location_id = excluded.location_id,
-  mindbody_session_type_id = excluded.mindbody_session_type_id,
   display_name_override = excluded.display_name_override,
   enabled = excluded.enabled;
+
+insert into public.business_provider_config (business_id, mindbody_site_id)
+values
+  ('00000000-0000-0000-0000-000000000011', '__MINDBODY_SANDBOX_SITE_ID__'),
+  ('00000000-0000-0000-0000-000000000012', '__MINDBODY_SANDBOX_SITE_ID__')
+on conflict (business_id) do update set
+  mindbody_site_id = excluded.mindbody_site_id;
+
+insert into public.business_location_provider_config (business_id, location_id, mindbody_location_id)
+values
+  ('00000000-0000-0000-0000-000000000011', '00000000-0000-0000-0000-000000000021', '1'),
+  ('00000000-0000-0000-0000-000000000012', '00000000-0000-0000-0000-000000000022', '2')
+on conflict (business_id, location_id) do update set
+  mindbody_location_id = excluded.mindbody_location_id;
+
+insert into public.business_service_provider_config (business_id, service_id, mindbody_session_type_id)
+values ('00000000-0000-0000-0000-000000000011', '00000000-0000-0000-0000-000000000031', '23')
+on conflict (business_id, service_id) do update set
+  mindbody_session_type_id = excluded.mindbody_session_type_id;
+
+insert into public.memberstack_identity_allowlist (memberstack_id, source)
+values ('local-sandbox-member', 'sandbox_allowlist')
+on conflict (memberstack_id) do update set
+  source = excluded.source,
+  verified_at = now();
 
 insert into public.business_customer_access (business_id, memberstack_id)
 values ('00000000-0000-0000-0000-000000000011', 'local-sandbox-member')

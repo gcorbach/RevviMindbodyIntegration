@@ -43,6 +43,9 @@
       elements.context.hidden = false;
       elements.services.innerHTML = data.services.map((service) => `<article class="service"><h2>${escapeHtml(service.name)}</h2><p>${escapeHtml(service.description || "Available service")}</p><div class="service-meta">${service.durationMinutes ? `${service.durationMinutes} minutes` : "Duration confirmed at booking"}${service.price === null || service.price === undefined ? "" : ` · ${service.price}`}</div></article>`).join("");
       show(data.services.length ? "services" : "empty");
+      if (window.REVVI_TEST_RESPONSIVE) {
+        requestAnimationFrame(() => { document.body.dataset.responsive = document.documentElement.scrollWidth <= window.innerWidth ? "true" : "false"; });
+      }
     }
     function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character])); }
     async function load() {

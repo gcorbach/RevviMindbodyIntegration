@@ -102,3 +102,33 @@ export function createMindbodyClient({ apiKey, baseUrl, siteId, fetchImpl = fetc
     },
   };
 }
+
+export function createMindbodyTestDouble({ apiKey, siteId }) {
+  return async (input, init = {}) => {
+    const headers = new Headers(init.headers);
+    if (headers.get("Api-Key") !== apiKey || headers.get("SiteId") !== siteId) {
+      return new Response(JSON.stringify({ Error: "Invalid test-double credentials." }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith("/site/locations")) {
+      return new Response(JSON.stringify({ Locations: [{ Id: 1, Name: "Clubville" }] }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (path.endsWith("/site/sessiontypes")) {
+      return new Response(JSON.stringify({
+        SessionTypes: [{ Id: 23, Name: "Nutrition Consultation", Description: "Stub live service", Duration: 45, OnlinePrice: 120 }],
+      }), { headers: { "Content-Type": "application/json" } });
+    }
+
+    return new Response(JSON.stringify({ Error: "Unknown test-double endpoint." }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+}

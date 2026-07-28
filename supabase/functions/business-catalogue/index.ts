@@ -1,25 +1,39 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   createMindbodyClient,
+  createMindbodyTestDouble,
   MindbodyApiError,
   selectEnabledServices,
 } from "../_shared/mindbody.js";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, content-type",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-};
+function allowedOrigins() {
+  return new Set(
+    (Deno.env.get("ALLOWED_ORIGINS") ?? "")
+      .split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+  );
+}
 
-function json(body: Record<string, unknown>, status = 200) {
+function corsHeaders(origin: string | null, requestId: string) {
+  return {
+    ...(origin ? { "Access-Control-Allow-Origin": origin } : {}),
+    "Access-Control-Allow-Headers": "authorization, content-type, x-request-id",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Vary": "Origin",
+    "X-Request-Id": requestId,
+  };
+}
+
+function json(body: Record<string, unknown>, status = 200, origin: string | null = null, requestId = crypto.randomUUID()) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...corsHeaders(origin, requestId), "Content-Type": "application/json" },
   });
 }
 
 function requiredEnvironment() {
-  return ["SUPABASE_URL", "SUPABASE_ANON_KEY", "MINDBODY_API_KEY", "MINDBODY_BASE_URL"]
+  return ["SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY", "MINDBODY_API_KEY", "MINDBODY_BASE_URL"]
     .filter((name) => !Deno.env.get(name));
 }
 
@@ -57,33 +71,38 @@ function sandboxSiteId(business: { provider_environment: string; mindbody_site_i
 }
 
 Deno.serve(async (request) => {
-  if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (request.method !== "GET") return json({ code: "METHOD_NOT_ALLOWED", error: "Use GET." }, 405);
+  const requestId = crypto.randomUUID();
+  const origin = request.headers.get("Origin");
+  if (origin && !allowedOrigins().has(origin)) {
+    return json({ code: "ORIGIN_NOT_ALLOWED", error: "This origin is not authorised." }, 403, null, requestId);
+  }
+  if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(origin, requestId) });
+  if (request.method !== "GET") return json({ code: "METHOD_NOT_ALLOWED", error: "Use GET." }, 405, origin, requestId);
 
   const missing = requiredEnvironment();
   if (missing.length > 0) {
-    return json({ code: "CONFIGURATION_ERROR", error: "Catalogue configuration is incomplete.", missing }, 500);
+    return json({ code: "CONFIGURATION_ERROR", error: "Catalogue configuration is incomplete.", missing }, 500, origin, requestId);
   }
   if (providerEnvironment() !== "sandbox" || !isAllowedSandboxBaseUrl()) {
-    return json({ code: "SANDBOX_REQUIRED", error: "Issue #11 only permits the configured Mindbody sandbox." }, 409);
+    return json({ code: "SANDBOX_REQUIRED", error: "Issue #11 only permits the configured Mindbody sandbox." }, 409, origin, requestId);
   }
 
   const url = new URL(request.url);
   const untrustedProviderFields = ["siteId", "site_id", "clientId", "client_id", "readiness"];
   if (untrustedProviderFields.some((field) => url.searchParams.has(field))) {
-    return json({ code: "UNTRUSTED_PROVIDER_CONTEXT", error: "Provider context must come from tenant configuration." }, 400);
+    return json({ code: "UNTRUSTED_PROVIDER_CONTEXT", error: "Provider context must come from tenant configuration." }, 400, origin, requestId);
   }
 
   const businessSlug = url.searchParams.get("business");
   const locationSlug = url.searchParams.get("location");
   if (!businessSlug || !locationSlug) {
-    return json({ code: "INVALID_CONTEXT", error: "Business and Location context are required." }, 400);
+    return json({ code: "INVALID_CONTEXT", error: "Business and Location context are required." }, 400, origin, requestId);
   }
 
   const token = bearerToken(request);
-  if (!token) return json({ code: "AUTHENTICATION_REQUIRED", error: "Sign in through Revvi to continue." }, 401);
+  if (!token) return json({ code: "AUTHENTICATION_REQUIRED", error: "Sign in through Revvi to continue." }, 401, origin, requestId);
 
-  const supabase = createClient(
+  const authClient = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_ANON_KEY")!,
     {
@@ -91,25 +110,46 @@ Deno.serve(async (request) => {
       global: { headers: { Authorization: `Bearer ${token}` } },
     },
   );
-  const { data: userData, error: userError } = await supabase.auth.getUser(token);
+  const { data: userData, error: userError } = await authClient.auth.getUser(token);
   if (userError || !userData.user) {
-    return json({ code: "AUTHENTICATION_INVALID", error: "Revvi identity could not be verified." }, 401);
+    return json({ code: "AUTHENTICATION_INVALID", error: "Revvi identity could not be verified." }, 401, origin, requestId);
   }
 
   const customerMemberstackId = memberstackId(userData.user);
   if (!customerMemberstackId) {
-    return json({ code: "MEMBERSTACK_IDENTITY_REQUIRED", error: "A verified Memberstack identity is required." }, 403);
+    return json({ code: "MEMBERSTACK_IDENTITY_REQUIRED", error: "A verified Memberstack identity is required." }, 403, origin, requestId);
   }
+
+  const supabase = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    { auth: { autoRefreshToken: false, persistSession: false } },
+  );
+
+  const { data: identity, error: identityError } = await supabase
+    .from("memberstack_identity_allowlist")
+    .select("memberstack_id")
+    .eq("memberstack_id", customerMemberstackId)
+    .maybeSingle();
+  if (identityError) return json({ code: "DATABASE_ERROR", error: "Member identity could not be verified." }, 500, origin, requestId);
+  if (!identity) return json({ code: "MEMBERSTACK_IDENTITY_REQUIRED", error: "A verified Memberstack identity is required." }, 403, origin, requestId);
 
   const { data: business, error: businessError } = await supabase
     .from("businesses")
-    .select("id, slug, display_name, logo_url, brand_primary, brand_accent, support_email, location_browser_path, status, booking_enabled, provider_environment, mindbody_site_id")
+    .select("id, slug, display_name, logo_url, brand_primary, brand_accent, support_email, location_browser_path, status, booking_enabled, provider_environment")
     .eq("slug", businessSlug)
     .maybeSingle();
-  if (businessError) return json({ code: "DATABASE_ERROR", error: "Business context could not be loaded." }, 500);
+  if (businessError) return json({ code: "DATABASE_ERROR", error: "Business context could not be loaded." }, 500, origin, requestId);
   if (!business || business.status !== "active" || !business.booking_enabled) {
-    return json({ code: "BUSINESS_UNAVAILABLE", error: "This Business is not available for booking." }, 409);
+    return json({ code: "BUSINESS_UNAVAILABLE", error: "This Business is not available for booking." }, 409, origin, requestId);
   }
+
+  const { data: providerConfig, error: providerConfigError } = await supabase
+    .from("business_provider_config")
+    .select("mindbody_site_id")
+    .eq("business_id", business.id)
+    .maybeSingle();
+  if (providerConfigError) return json({ code: "DATABASE_ERROR", error: "Business provider configuration could not be loaded." }, 500, origin, requestId);
 
   const { data: access, error: accessError } = await supabase
     .from("business_customer_access")
@@ -117,45 +157,76 @@ Deno.serve(async (request) => {
     .eq("business_id", business.id)
     .eq("memberstack_id", customerMemberstackId)
     .maybeSingle();
-  if (accessError) return json({ code: "DATABASE_ERROR", error: "Business context could not be verified." }, 500);
-  if (!access) return json({ code: "BUSINESS_CONTEXT_MISMATCH", error: "This customer is not authorised for that Business." }, 403);
+  if (accessError) return json({ code: "DATABASE_ERROR", error: "Business context could not be verified." }, 500, origin, requestId);
+  if (!access) return json({ code: "BUSINESS_CONTEXT_MISMATCH", error: "This customer is not authorised for that Business." }, 403, origin, requestId);
 
   const { data: location, error: locationError } = await supabase
     .from("business_locations")
-    .select("id, slug, display_name, timezone, mindbody_location_id, enabled")
+    .select("id, slug, display_name, timezone, enabled")
     .eq("business_id", business.id)
     .eq("slug", locationSlug)
     .maybeSingle();
-  if (locationError) return json({ code: "DATABASE_ERROR", error: "Location context could not be loaded." }, 500);
+  if (locationError) return json({ code: "DATABASE_ERROR", error: "Location context could not be loaded." }, 500, origin, requestId);
   if (!location || !location.enabled) {
-    return json({ code: "LOCATION_UNAVAILABLE", error: "This Location is not available." }, 404);
+    return json({ code: "LOCATION_UNAVAILABLE", error: "This Location is not available." }, 404, origin, requestId);
   }
+
+  const { data: providerLocation, error: providerLocationError } = await supabase
+    .from("business_location_provider_config")
+    .select("mindbody_location_id")
+    .eq("business_id", business.id)
+    .eq("location_id", location.id)
+    .maybeSingle();
+  if (providerLocationError) return json({ code: "DATABASE_ERROR", error: "Location provider configuration could not be loaded." }, 500, origin, requestId);
 
   const { data: configuredServices, error: serviceError } = await supabase
     .from("business_services")
-    .select("id, mindbody_session_type_id, display_name_override, enabled")
+    .select("id, display_name_override, enabled")
     .eq("business_id", business.id)
     .eq("location_id", location.id)
     .eq("enabled", true);
-  if (serviceError) return json({ code: "DATABASE_ERROR", error: "Service configuration could not be loaded." }, 500);
-
-  const siteId = sandboxSiteId(business);
-  if (!siteId) {
-    return json({ code: "PROVIDER_NOT_READY", error: "This Business has no enabled sandbox provider connection." }, 409);
+  if (serviceError) {
+    console.error(JSON.stringify({ event: "catalogue_database_error", requestId, operation: "services", code: serviceError.code, message: serviceError.message }));
+    return json({ code: "DATABASE_ERROR", error: "Service configuration could not be loaded." }, 500, origin, requestId);
   }
 
+  const serviceIds = (configuredServices ?? []).map((service) => service.id);
+  const { data: providerServices, error: providerServiceError } = serviceIds.length === 0
+    ? { data: [], error: null }
+    : await supabase
+      .from("business_service_provider_config")
+      .select("service_id, mindbody_session_type_id")
+      .eq("business_id", business.id)
+      .in("service_id", serviceIds);
+  if (providerServiceError) return json({ code: "DATABASE_ERROR", error: "Service provider configuration could not be loaded." }, 500, origin, requestId);
+
+  const siteId = sandboxSiteId({ ...business, mindbody_site_id: providerConfig?.mindbody_site_id ?? "" });
+  const locationProviderId = providerLocation?.mindbody_location_id;
+  if (!siteId || !locationProviderId) {
+    return json({ code: "PROVIDER_NOT_READY", error: "This Business has no enabled sandbox provider connection." }, 409, origin, requestId);
+  }
+
+  const providerServiceIds = new Map((providerServices ?? []).map((service) => [service.service_id, service.mindbody_session_type_id]));
+  const configuredServicesWithProviderIds = (configuredServices ?? [])
+    .map((service) => ({ ...service, mindbody_session_type_id: providerServiceIds.get(service.id) }))
+    .filter((service) => service.mindbody_session_type_id);
+
   try {
+    const useTestDouble = Deno.env.get("MINDBODY_ALLOW_TEST_DOUBLE") === "true" && !Deno.env.get("DENO_DEPLOYMENT_ID");
     const client = createMindbodyClient({
       apiKey: Deno.env.get("MINDBODY_API_KEY"),
       baseUrl: Deno.env.get("MINDBODY_BASE_URL"),
       siteId,
+      fetchImpl: useTestDouble
+        ? createMindbodyTestDouble({ apiKey: Deno.env.get("MINDBODY_API_KEY"), siteId })
+        : fetch,
     });
     const liveLocations = await client.getLocations();
-    if (!liveLocations.some((item) => item.providerId === String(location.mindbody_location_id))) {
-      return json({ code: "LOCATION_CONTEXT_MISMATCH", error: "This Location is not available for the configured Mindbody Site." }, 409);
+    if (!liveLocations.some((item) => item.providerId === String(locationProviderId))) {
+      return json({ code: "LOCATION_CONTEXT_MISMATCH", error: "This Location is not available for the configured Mindbody Site." }, 409, origin, requestId);
     }
     const liveServices = await client.getSessionTypes();
-    const services = selectEnabledServices(liveServices, configuredServices ?? []);
+    const services = selectEnabledServices(liveServices, configuredServicesWithProviderIds);
 
     return json({
       business: {
@@ -177,8 +248,10 @@ Deno.serve(async (request) => {
     });
   } catch (error) {
     if (error instanceof MindbodyApiError) {
-      return json({ code: "MINDBODY_UNAVAILABLE", error: error.message }, error.status);
+      console.error(JSON.stringify({ event: "mindbody_catalogue_error", requestId, operation: "catalogue_lookup", status: error.status }));
+      return json({ code: "MINDBODY_UNAVAILABLE", error: error.message }, error.status, origin, requestId);
     }
-    return json({ code: "MINDBODY_UNAVAILABLE", error: "Live service catalogue is temporarily unavailable." }, 502);
+    console.error(JSON.stringify({ event: "mindbody_catalogue_error", requestId, operation: "catalogue_lookup", status: 502 }));
+    return json({ code: "MINDBODY_UNAVAILABLE", error: "Live service catalogue is temporarily unavailable." }, 502, origin, requestId);
   }
 });
