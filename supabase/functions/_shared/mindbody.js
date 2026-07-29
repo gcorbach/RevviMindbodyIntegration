@@ -234,7 +234,8 @@ export function createMindbodyTestDouble({ apiKey, siteId }) {
       const candidateDate = startDate === emptyDate
         ? new Date(new Date(`${startDate}T00:00:00.000Z`).getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
         : startDate;
-      const start = new Date(`${candidateDate}T16:00:00.000Z`);
+      const staleOnDateRange = Deno.env.get("MINDBODY_TEST_DOUBLE_STALE_ON_DATE_RANGE") === "true" && url.searchParams.get("StartDate")?.endsWith("T00:00:00.000Z");
+      const start = new Date(`${candidateDate}T${staleOnDateRange ? "17:00" : "16:00"}:00.000Z`);
       const items = sessionTypeId === "23"
         ? [{
             Id: `sandbox-slot-${candidateDate}`,
@@ -250,6 +251,8 @@ export function createMindbodyTestDouble({ apiKey, siteId }) {
     }
 
     if (path.endsWith("/appointment/addappointment")) {
+      const delay = Number(Deno.env.get("MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_DELAY_MS") ?? 0);
+      if (Number.isFinite(delay) && delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
       const body = await new Response(init.body).json();
       return new Response(JSON.stringify({ Appointment: { Id: "sandbox-appointment-100", UniqueId: "sandbox-appointment-unique-100", ClientId: body.ClientId } }), { headers: { "Content-Type": "application/json" } });
     }

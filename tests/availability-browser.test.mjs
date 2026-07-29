@@ -16,11 +16,16 @@ test("availability page covers live times, empty dates, and review responsively"
   const html = source.replace("<script>", '<script>window.REVVI_CUSTOMER_TOKEN = "test-token"; window.REVVI_CATALOGUE_API_URL = "/functions/v1/booking-availability"; window.REVVI_BOOKING_API_URL = "/functions/v1/booking-attempt"; window.REVVI_TEST_RESPONSIVE = true;\n').replace("</body>", '<script>const testClick = setInterval(() => { const button = document.querySelector("#continue-booking"); if (button && !button.disabled && !button.closest("[hidden]")) { clearInterval(testClick); button.click(); } }, 25);</script></body>');
   const createdClientHtml = source.replace("<script>", '<script>window.REVVI_CUSTOMER_TOKEN = "test-token"; window.REVVI_CATALOGUE_API_URL = "/functions/v1/booking-availability"; window.REVVI_BOOKING_API_URL = "/functions/v1/booking-attempt?client-created=true"; window.REVVI_TEST_RESPONSIVE = true;\n').replace("</body>", '<script>const testClick = setInterval(() => { const button = document.querySelector("#continue-booking"); if (button && !button.disabled && !button.closest("[hidden]")) { clearInterval(testClick); button.click(); } }, 25);</script></body>');
   const ambiguousHtml = source.replace("<script>", '<script>window.REVVI_CUSTOMER_TOKEN = "test-token"; window.REVVI_CATALOGUE_API_URL = "/functions/v1/booking-availability"; window.REVVI_BOOKING_API_URL = "/functions/v1/booking-attempt?ambiguous=true"; window.REVVI_TEST_RESPONSIVE = true;\n').replace("</body>", '<script>const testClick = setInterval(() => { const button = document.querySelector("#continue-booking"); if (button && !button.disabled && !button.closest("[hidden]")) { clearInterval(testClick); button.click(); } }, 25);</script></body>');
+  const staleHtml = source.replace("<script>", '<script>window.REVVI_CUSTOMER_TOKEN = "test-token"; window.REVVI_CATALOGUE_API_URL = "/functions/v1/booking-availability"; window.REVVI_BOOKING_API_URL = "/functions/v1/booking-attempt?stale=true"; window.REVVI_TEST_RESPONSIVE = true;\n').replace("</body>", '<script>let recovered = false; const testClick = setInterval(() => { const slot = document.querySelector("#slots button"); if (!recovered && slot && !slot.closest("[hidden]")) { recovered = true; slot.click(); return; } const button = document.querySelector("#continue-booking"); if (button && !button.disabled && !button.closest("[hidden]")) { clearInterval(testClick); button.click(); } }, 25);</script></body>');
   const server = createServer((request, response) => {
     if (request.url?.startsWith("/functions/v1/booking-attempt")) {
       const ambiguous = new URL(request.url, "http://localhost").searchParams.get("ambiguous") === "true";
       const clientCreated = new URL(request.url, "http://localhost").searchParams.get("client-created") === "true";
-      response.writeHead(ambiguous ? 409 : 200, { "content-type": "application/json" }); response.end(JSON.stringify(ambiguous ? { code: "CLIENT_MATCH_AMBIGUOUS", supportRequired: true, error: "More than one verified-email Mindbody Client matched.", bookingAttempt: { state: "failed" } } : { clientCreated, bookingAttempt: { state: "confirmed", service: "Nutrition Consultation", startTime: "2026-07-28T16:00:00.000Z", locationTimezone: "America/Los_Angeles" } })); return;
+      const stale = new URL(request.url, "http://localhost").searchParams.get("stale") === "true";
+      const staleBody = { code: "SLOT_UNAVAILABLE", error: "That time was taken before the Booking was written. Choose a new live time.", staleSelection: { startTime: "2026-07-28T16:00:00.000Z" }, business: { displayName: "Revvi Sandbox Wellness", locationBrowserPath: "/locations" }, location: { displayName: "Sandbox Location", timezone: "America/Los_Angeles" }, service: { name: "Nutrition Consultation", durationMinutes: 45, price: 120 }, availability: { state: "available", selectedDate: "2026-07-28", slots: [{ startTime: "2026-07-28T17:00:00.000Z", endTime: "2026-07-28T17:45:00.000Z", durationMinutes: 45, price: 120 }], earliestNextAvailability: null } };
+      if (ambiguous) { response.writeHead(409, { "content-type": "application/json" }); response.end(JSON.stringify({ code: "CLIENT_MATCH_AMBIGUOUS", supportRequired: true, error: "More than one verified-email Mindbody Client matched.", bookingAttempt: { state: "failed" } })); return; }
+      if (stale && !server.staleResponseUsed) { server.staleResponseUsed = true; response.writeHead(409, { "content-type": "application/json" }); response.end(JSON.stringify(staleBody)); return; }
+      response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ clientCreated, bookingAttempt: { state: "confirmed", service: "Nutrition Consultation", startTime: "2026-07-28T17:00:00.000Z", locationTimezone: "America/Los_Angeles" } })); return;
     }
     if (request.url?.startsWith("/functions/v1/booking-availability")) {
       const query = new URL(request.url, "http://localhost").searchParams;
@@ -35,8 +40,9 @@ test("availability page covers live times, empty dates, and review responsively"
       if (query.get("start")) body.review = { business: { displayName: "Revvi Sandbox Wellness" }, location: { displayName: "Sandbox Location" }, service: { name: "Nutrition Consultation", durationMinutes: 45, price: 120 }, startTime: slot.startTime, endTime: slot.endTime };
       response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(body)); return;
     }
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8" }); response.end(request.url?.includes("ambiguous-page") ? ambiguousHtml : request.url?.includes("created-client-page") ? createdClientHtml : html);
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" }); response.end(request.url?.includes("ambiguous-page") ? ambiguousHtml : request.url?.includes("created-client-page") ? createdClientHtml : request.url?.includes("stale-page") ? staleHtml : html);
   });
+  server.staleResponseUsed = false;
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
   const launch = async (query, size = "390,844") => {
@@ -75,7 +81,8 @@ test("availability page covers live times, empty dates, and review responsively"
     const review = await launch("date=2026-07-28&start=2026-07-28T16%3A00%3A00.000Z");
     const createdClient = await launch("created-client-page&date=2026-07-28&start=2026-07-28T16%3A00%3A00.000Z");
     const ambiguous = await launch("ambiguous-page&date=2026-07-28&start=2026-07-28T16%3A00%3A00.000Z");
-    for (const result of [available, desktop, empty, review, createdClient, ambiguous]) {
+    const stale = await launch("stale-page&date=2026-07-28&start=2026-07-28T16%3A00%3A00.000Z");
+    for (const result of [available, desktop, empty, review, createdClient, ambiguous, stale]) {
       if (result.error && ["ETIMEDOUT", "ENOENT"].includes(result.error.code)) { testContext.skip(`Chrome could not launch in this environment (${result.error.code}).`); return; }
       assert.equal(result.error, undefined, result.error?.message); assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /data-responsive="true"/);
     }
@@ -85,5 +92,6 @@ test("availability page covers live times, empty dates, and review responsively"
     assert.match(review.stdout, /Booking confirmed/); assert.match(review.stdout, /Your Booking is confirmed/); assert.match(review.stdout, /Nutrition Consultation/);
     assert.match(createdClient.stdout, /Booking confirmed/); assert.match(createdClient.stdout, /data-client-created="true"/);
     assert.match(ambiguous.stdout, /Please contact Revvi support/); assert.doesNotMatch(ambiguous.stdout, /sandbox-client-10[01]/);
+    assert.match(stale.stdout, /Choose a new live time/); assert.match(stale.stdout, /Booking confirmed/); assert.match(stale.stdout, /17:00|5:00/);
   } finally { server.closeAllConnections(); server.close(); }
 });

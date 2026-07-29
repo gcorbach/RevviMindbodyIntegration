@@ -5,10 +5,13 @@ import {
   MindbodyApiError,
   selectEnabledServices,
 } from "../_shared/mindbody.js";
+import { availabilityResponse, dateRange, localDate, serviceResponse } from "../_shared/availability.js";
 
 const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 const CLIENT_RESOLUTION_LOCK_TTL_MS = 30 * 1000;
 const CLIENT_RESOLUTION_LOCK_WAIT_ATTEMPTS = Number(Deno.env.get("CLIENT_RESOLUTION_LOCK_WAIT_ATTEMPTS") ?? 150);
+const DUPLICATE_WAIT_MS = Number(Deno.env.get("BOOKING_DUPLICATE_WAIT_MS") ?? 100);
+const DUPLICATE_WAIT_ATTEMPTS = Number(Deno.env.get("BOOKING_DUPLICATE_WAIT_ATTEMPTS") ?? 150);
 
 function allowedOrigins() {
   return new Set((Deno.env.get("ALLOWED_ORIGINS") ?? "").split(",").map((origin) => origin.trim()).filter(Boolean));
@@ -118,6 +121,46 @@ function attemptResponse(attempt: Record<string, any>) {
   };
 }
 
+function bookingDisplayContext({ business, location, service, liveService, selectedDate }: any) {
+  return {
+    business: {
+      slug: business.slug,
+      displayName: business.display_name,
+      locationBrowserPath: business.location_browser_path,
+    },
+    location: {
+      slug: location.slug,
+      displayName: location.display_name,
+      timezone: location.timezone,
+    },
+    service: serviceResponse({ id: service.id, ...liveService }),
+    selectedDate,
+  };
+}
+
+function staleAvailabilityResponse({ business, location, service, liveService, availability, selectedStart, attempt }: any) {
+  const context = bookingDisplayContext({ business, location, service, liveService, selectedDate: availability.selectedDate });
+  return {
+    ...context,
+    bookingContext: context,
+    availability,
+    staleSelection: {
+      startTime: selectedStart,
+      message: "That time was taken before the Booking was written. Choose a new live time.",
+    },
+    ...(attempt ? { bookingAttempt: attemptResponse(attempt).bookingAttempt } : {}),
+  };
+}
+
+function staleBookingResponse(staleResponse: Record<string, unknown>, attempt: Record<string, any>) {
+  return {
+    code: "SLOT_UNAVAILABLE",
+    error: "That time was taken before the Booking was written. Choose a new live time.",
+    ...staleResponse,
+    bookingAttempt: attemptResponse(attempt).bookingAttempt,
+  };
+}
+
 async function recordEvent(supabase: any, attempt: Record<string, any>, event: Record<string, unknown>) {
   const { error } = await supabase.from("booking_attempt_events").insert({
     ...attemptEventContext(attempt),
@@ -136,7 +179,7 @@ function attemptEventContext(attempt: Record<string, any>) {
 }
 
 async function createSupportItem(supabase: any, attempt: Record<string, any>, reason: string) {
-  await supabase.from("booking_support_items").insert({ ...attemptEventContext(attempt), reason });
+  await supabase.from("booking_support_items").upsert({ ...attemptEventContext(attempt), reason }, { onConflict: "booking_attempt_id,reason", ignoreDuplicates: true });
 }
 
 async function readClientMapping(supabase: any, businessId: string, memberstackIdValue: string) {
@@ -271,8 +314,17 @@ async function markUnknown(supabase: any, attempt: Record<string, any>, reason: 
     .eq("state", "pending_checkout")
     .select()
     .maybeSingle();
-  const current = unknownAttempt ?? { ...attempt, state: "unknown" };
-  await recordEvent(supabase, current, { event_type: "provider_write_unknown", operation: "appointment_create", error_category: reason });
+  if (!unknownAttempt) {
+    const { data: current } = await supabase.from("booking_attempts").select("*").eq("id", attempt.id).maybeSingle();
+    return current ?? attempt;
+  }
+  const current = unknownAttempt;
+  await recordEvent(supabase, current, {
+    event_type: "provider_write_unknown",
+    operation: "appointment_create",
+    error_category: reason,
+    metadata: { failure_response: { code: "BOOKING_OUTCOME_UNKNOWN", error: "Mindbody's result needs support reconciliation before retrying." } },
+  });
   await createSupportItem(supabase, current, reason);
   return current;
 }
@@ -286,12 +338,103 @@ async function failAttempt(supabase: any, attempt: Record<string, any>, code: st
     .select()
     .maybeSingle();
   if (!error && failed) attempt = failed;
-  await recordEvent(supabase, attempt, { event_type: "attempt_failed", operation: "booking_attempt", error_category: reason });
-  if (["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(reason)) {
+  const supportRequired = ["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(reason);
+  const status = ["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_IN_PROGRESS", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(code) ? 409 : code === "MINDBODY_UNAVAILABLE" ? 502 : 422;
+  await recordEvent(supabase, attempt, {
+    event_type: "attempt_failed",
+    operation: "booking_attempt",
+    error_category: reason,
+    metadata: { failure_response: { code, error: message, ...(supportRequired ? { supportRequired: true } : {}) } },
+  });
+  if (supportRequired) {
     await createSupportItem(supabase, attempt, reason);
   }
-  const status = ["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_IN_PROGRESS", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(code) ? 409 : code === "MINDBODY_UNAVAILABLE" ? 502 : 422;
-  return json({ code, error: message, ...(["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(reason) ? { supportRequired: true } : {}), bookingAttempt: attemptResponse(attempt).bookingAttempt }, status);
+  return json({ code, error: message, ...(supportRequired ? { supportRequired: true } : {}), bookingAttempt: attemptResponse(attempt).bookingAttempt }, status);
+}
+
+async function rejectStaleAttempt({ supabase, attempt, expectedState, business, location, service, liveService, availability, selectedStart }: any) {
+  const { data: failed } = await supabase
+    .from("booking_attempts")
+    .update({ state: "failed" })
+    .eq("id", attempt.id)
+    .eq("state", expectedState)
+    .select()
+    .single();
+  const current = failed ?? { ...attempt, state: "failed" };
+  const staleResponse = staleAvailabilityResponse({ business, location, service, liveService, availability, selectedStart, attempt: null });
+  await recordEvent(supabase, current, {
+    event_type: "provider_revalidation_rejected",
+    operation: "booking_facts_revalidation",
+    error_category: "slot_unavailable",
+    metadata: { stale_response: staleResponse },
+  });
+  await recordEvent(supabase, current, { event_type: "attempt_failed", operation: "booking_attempt", error_category: "slot_unavailable" });
+  return { current, staleResponse };
+}
+
+function sameBookingFacts(attempt: Record<string, any>, { serviceId, locationId, selectedStart }: { serviceId: string; locationId: string; selectedStart: string }) {
+  return new Date(attempt.selected_start_time).getTime() === new Date(selectedStart).getTime()
+    && attempt.service_id === serviceId
+    && attempt.location_id === locationId;
+}
+
+async function waitForAttemptSettlement(supabase: any, attempt: Record<string, any>) {
+  let current = attempt;
+  for (let attemptNumber = 0; attemptNumber < DUPLICATE_WAIT_ATTEMPTS; attemptNumber += 1) {
+    if (!["created", "pending_checkout"].includes(current.state)) return current;
+    await wait(DUPLICATE_WAIT_MS);
+    const { data } = await supabase.from("booking_attempts").select("*").eq("id", attempt.id).maybeSingle();
+    if (!data) return current;
+    current = data;
+  }
+  return current;
+}
+
+async function replayAttempt({ supabase, attempt, origin = null, requestId = crypto.randomUUID() }: any) {
+  const settled = await waitForAttemptSettlement(supabase, attempt);
+  const current = settled;
+  await recordEvent(supabase, current, { event_type: "duplicate_request", operation: "idempotency_replay" });
+  const { data: staleEvent } = await supabase
+    .from("booking_attempt_events")
+    .select("metadata")
+    .eq("booking_attempt_id", current.id)
+    .eq("event_type", "provider_revalidation_rejected")
+    .eq("error_category", "slot_unavailable")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (staleEvent?.metadata?.stale_response) {
+    return json(staleBookingResponse(staleEvent.metadata.stale_response, current), 409, origin, requestId);
+  }
+  const { data: unknownEvent } = await supabase
+    .from("booking_attempt_events")
+    .select("metadata")
+    .eq("booking_attempt_id", current.id)
+    .eq("event_type", "provider_write_unknown")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (unknownEvent?.metadata?.failure_response) {
+    return json({ ...unknownEvent.metadata.failure_response, bookingAttempt: attemptResponse(current).bookingAttempt }, 502, origin, requestId);
+  }
+  const { data: failedEvent } = await supabase
+    .from("booking_attempt_events")
+    .select("metadata")
+    .eq("booking_attempt_id", current.id)
+    .eq("event_type", "attempt_failed")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (failedEvent?.metadata?.failure_response) {
+    const failure = failedEvent.metadata.failure_response;
+    const status = ["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_IN_PROGRESS", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(failure.code) ? 409 : failure.code === "MINDBODY_UNAVAILABLE" ? 502 : 422;
+    return json({ ...failure, bookingAttempt: attemptResponse(current).bookingAttempt }, status, origin, requestId);
+  }
+  const status = current.state === "confirmed" ? 200 : current.state === "unknown" ? 502 : 202;
+  const outcome = current.state === "unknown"
+    ? { code: "BOOKING_OUTCOME_UNKNOWN", error: "The previous provider write needs support reconciliation before retrying." }
+    : {};
+  return json({ ...outcome, ...attemptResponse(current) }, status, origin, requestId);
 }
 
 async function loadCaller(supabaseUrl: string, anonKey: string, token: string) {
@@ -339,7 +482,7 @@ Deno.serve(async (request) => {
   if (!identity) return json({ code: "MEMBERSTACK_IDENTITY_REQUIRED", error: "A verified Memberstack identity is required." }, 403, origin, requestId);
 
   const { data: business, error: businessError } = await supabase.from("businesses")
-    .select("id, slug, display_name, status, booking_enabled, completion_mode, provider_environment")
+    .select("id, slug, display_name, location_browser_path, status, booking_enabled, completion_mode, provider_environment")
     .eq("slug", businessSlug).maybeSingle();
   if (businessError) return json({ code: "DATABASE_ERROR", error: "Business context could not be loaded." }, 500, origin, requestId);
   if (!business) return json({ code: "BUSINESS_UNAVAILABLE", error: "This Business is not available for Booking." }, 409, origin, requestId);
@@ -361,12 +504,8 @@ Deno.serve(async (request) => {
   const { data: existingAttempt, error: existingAttemptError } = await supabase.from("booking_attempts").select("*").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).eq("idempotency_key", idempotencyKey).maybeSingle();
   if (existingAttemptError) return json({ code: "DATABASE_ERROR", error: "Booking attempt could not be loaded." }, 500, origin, requestId);
   if (existingAttempt) {
-    if (new Date(existingAttempt.selected_start_time).getTime() !== new Date(selectedStart).getTime() || existingAttempt.service_id !== service.id || existingAttempt.location_id !== location.id) return json({ code: "IDEMPOTENCY_KEY_REUSED", error: "That idempotency key belongs to another Booking." }, 409, origin, requestId);
-    if (existingAttempt.state === "pending_checkout") {
-      const unknownAttempt = await markUnknown(supabase, existingAttempt, "provider_write_interrupted");
-      return json({ code: "BOOKING_OUTCOME_UNKNOWN", error: "The previous provider write needs support reconciliation before retrying.", bookingAttempt: attemptResponse(unknownAttempt).bookingAttempt }, 502, origin, requestId);
-    }
-    return json(attemptResponse(existingAttempt), existingAttempt.state === "confirmed" ? 200 : 202, origin, requestId);
+    if (!sameBookingFacts(existingAttempt, { serviceId: service.id, locationId: location.id, selectedStart })) return json({ code: "IDEMPOTENCY_KEY_REUSED", error: "That idempotency key belongs to another Booking." }, 409, origin, requestId);
+    return replayAttempt({ supabase, attempt: existingAttempt, origin, requestId });
   }
 
   const [{ data: providerConfig, error: providerConfigError }, { data: providerLocation, error: providerLocationError }, { data: providerService, error: providerServiceError }] = await Promise.all([
@@ -387,6 +526,7 @@ Deno.serve(async (request) => {
   });
 
   let liveSlot: any;
+  let liveItems: any[] = [];
   let liveService: any;
   try {
     const liveSessionTypes = await client.getSessionTypes();
@@ -396,10 +536,8 @@ Deno.serve(async (request) => {
     if (!liveLocations.some((item) => item.providerId === String(providerLocation.mindbody_location_id))) return json({ code: "LOCATION_CONTEXT_MISMATCH", error: "This Location is not available for the configured Mindbody Site." }, 409, origin, requestId);
     const startDate = new Date(selectedStart).toISOString();
     const endDate = new Date(new Date(selectedStart).getTime() + 24 * 60 * 60 * 1000).toISOString();
-    const liveItems = await client.getBookableItems({ sessionTypeId: providerService.mindbody_session_type_id, locationId: providerLocation.mindbody_location_id, startDate, endDate });
+    liveItems = await client.getBookableItems({ sessionTypeId: providerService.mindbody_session_type_id, locationId: providerLocation.mindbody_location_id, startDate, endDate });
     liveSlot = liveItems.find((item) => item.startTime === selectedStart && (!item.locationProviderId || item.locationProviderId === String(providerLocation.mindbody_location_id)));
-    if (!liveSlot) return json({ code: "SLOT_UNAVAILABLE", error: "That time is no longer available. Choose a refreshed time." }, 409, origin, requestId);
-    if (!liveSlot.staffProviderId) return json({ code: "PROVIDER_NOT_READY", error: "Mindbody did not return the staff needed for this time." }, 409, origin, requestId);
   } catch (error) {
     if (error instanceof MindbodyApiError) return json({ code: "MINDBODY_UNAVAILABLE", error: error.message }, error.status, origin, requestId);
     return json({ code: "MINDBODY_UNAVAILABLE", error: "Live Booking facts are temporarily unavailable." }, 502, origin, requestId);
@@ -408,6 +546,13 @@ Deno.serve(async (request) => {
   const now = Date.now();
   const selectedStartMs = new Date(selectedStart).getTime();
   const expiresAt = new Date(Math.min(now + ATTEMPT_WINDOW_MS, selectedStartMs)).toISOString();
+  const refreshedAvailability = availabilityResponse({
+    items: liveItems,
+    service: liveService,
+    selectedDate: localDate(selectedStart, location.timezone),
+    timezone: location.timezone,
+    locationProviderId: providerLocation.mindbody_location_id,
+  });
   const { data: created, error: createError } = await supabase.from("booking_attempts").insert({
     business_id: business.id,
     memberstack_id: customerMemberstackId,
@@ -421,20 +566,28 @@ Deno.serve(async (request) => {
     mindbody_location_id: String(providerLocation.mindbody_location_id),
     mindbody_session_type_id: String(providerService.mindbody_session_type_id),
     selected_start_time: selectedStart,
-    selected_end_time: liveSlot.endTime,
-    duration_minutes: liveSlot.durationMinutes,
-    price: liveSlot.price,
+    selected_end_time: liveSlot?.endTime ?? null,
+    duration_minutes: liveSlot?.durationMinutes ?? liveService.durationMinutes,
+    price: liveSlot?.price ?? liveService.price,
     completion_mode: business.completion_mode,
     expires_at: expiresAt,
   }).select().single();
   if (createError) {
+    console.error(JSON.stringify({ event: "booking_attempt_create_failed", requestId, error_code: createError.code, error_category: createError.message }));
     if (createError.code === "23505") {
       const { data: raced } = await supabase.from("booking_attempts").select("*").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).eq("idempotency_key", idempotencyKey).single();
-      return raced ? json(attemptResponse(raced), raced.state === "confirmed" ? 200 : 202, origin, requestId) : json({ code: "BOOKING_ATTEMPT_CONFLICT", error: "The Booking attempt is already being processed." }, 409, origin, requestId);
+      if (!raced) return json({ code: "BOOKING_ATTEMPT_CONFLICT", error: "The Booking attempt is already being processed." }, 409, origin, requestId);
+      if (!sameBookingFacts(raced, { serviceId: service.id, locationId: location.id, selectedStart })) return json({ code: "IDEMPOTENCY_KEY_REUSED", error: "That idempotency key belongs to another Booking." }, 409, origin, requestId);
+      return replayAttempt({ supabase, attempt: raced, origin, requestId });
     }
     return json({ code: "DATABASE_ERROR", error: "Booking attempt could not be created." }, 500, origin, requestId);
   }
   await recordEvent(supabase, created, { event_type: "attempt_created", operation: "booking_attempt" });
+  if (!liveSlot) {
+    const { current, staleResponse } = await rejectStaleAttempt({ supabase, attempt: created, expectedState: "created", business, location, service, liveService, availability: refreshedAvailability, selectedStart });
+    return json(staleBookingResponse(staleResponse, current), 409, origin, requestId);
+  }
+  if (!liveSlot.staffProviderId) return failAttempt(supabase, created, "PROVIDER_NOT_READY", "Mindbody did not return the staff needed for this time.", "provider_staff_missing");
   await recordEvent(supabase, created, { event_type: "provider_revalidation_succeeded", operation: "booking_facts_revalidation", metadata: { checks: ["session_catalogue", "location_catalogue", "availability"] } });
 
   const resolution = await resolveMindbodyClient({ supabase, client, businessId: business.id, memberstackIdValue: customerMemberstackId, customerEmail, customerFields, attempt: created });
@@ -455,6 +608,33 @@ Deno.serve(async (request) => {
     await recordEvent(supabase, current, { event_type: "attempt_expired", operation: "appointment_create", error_category: "attempt_expired_before_provider_write" });
     return json({ code: "BOOKING_ATTEMPT_EXPIRED", error: "This Booking attempt has expired. Choose a new time.", bookingAttempt: attemptResponse(current).bookingAttempt }, 409, origin, requestId);
   }
+
+  let latestItems: any[];
+  try {
+    latestItems = await client.getBookableItems({
+      sessionTypeId: providerService.mindbody_session_type_id,
+      locationId: providerLocation.mindbody_location_id,
+      ...dateRange(localDate(selectedStart, location.timezone)),
+    });
+  } catch (error) {
+    return failAttempt(supabase, claimed, "MINDBODY_UNAVAILABLE", "Live availability is temporarily unavailable. Try again shortly.", "booking_facts_revalidation_failed");
+  }
+  const latestAvailability = availabilityResponse({
+    items: latestItems,
+    service: liveService,
+    selectedDate: localDate(selectedStart, location.timezone),
+    timezone: location.timezone,
+    locationProviderId: providerLocation.mindbody_location_id,
+  });
+  const latestSlot = latestAvailability.slots.find((slot) => slot.startTime === selectedStart);
+  const latestProviderSlot = latestItems.find((item) => item.startTime === selectedStart && (!item.locationProviderId || item.locationProviderId === String(providerLocation.mindbody_location_id)));
+  if (!latestSlot || !latestProviderSlot) {
+    const { current, staleResponse } = await rejectStaleAttempt({ supabase, attempt: claimed, expectedState: "pending_checkout", business, location, service, liveService, availability: latestAvailability, selectedStart });
+    return json(staleBookingResponse(staleResponse, current), 409, origin, requestId);
+  }
+  if (!latestSlot.endTime || !latestSlot.durationMinutes) return failAttempt(supabase, claimed, "PROVIDER_NOT_READY", "Mindbody did not return complete facts for this time.", "provider_slot_facts_missing");
+  if (!latestProviderSlot.staffProviderId) return failAttempt(supabase, claimed, "PROVIDER_NOT_READY", "Mindbody did not return the staff needed for this time.", "provider_staff_missing");
+  liveSlot = { ...latestProviderSlot, endTime: latestSlot.endTime, durationMinutes: latestSlot.durationMinutes, price: latestSlot.price };
   await recordEvent(supabase, claimed, { event_type: "provider_write_started", operation: "appointment_create" });
 
   const providerStartedAt = Date.now();
@@ -477,7 +657,14 @@ Deno.serve(async (request) => {
     }
     const { data: finalAttempt } = await supabase.from("booking_attempts").update({ state }).eq("id", claimed.id).eq("state", "pending_checkout").select().single();
     const current = finalAttempt ?? claimed;
-    await recordEvent(supabase, current, { event_type: state === "unknown" ? "provider_write_unknown" : "attempt_failed", operation: "appointment_create", provider_status: providerStatus, error_category: state === "unknown" ? "provider_unknown" : "provider_rejected", latency_ms: Date.now() - providerStartedAt });
+    await recordEvent(supabase, current, {
+      event_type: state === "unknown" ? "provider_write_unknown" : "attempt_failed",
+      operation: "appointment_create",
+      provider_status: providerStatus,
+      error_category: state === "unknown" ? "provider_unknown" : "provider_rejected",
+      latency_ms: Date.now() - providerStartedAt,
+      metadata: { failure_response: { code: state === "unknown" ? "BOOKING_OUTCOME_UNKNOWN" : "BOOKING_FAILED", error: state === "unknown" ? "Mindbody's result needs support reconciliation before retrying." : "Mindbody could not complete this Booking." } },
+    });
     return json({ code: "BOOKING_FAILED", error: "Mindbody could not complete this Booking.", bookingAttempt: attemptResponse(current).bookingAttempt }, 409, origin, requestId);
   }
 });
