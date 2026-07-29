@@ -21,6 +21,22 @@ function asIsoDateTime(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function normalizeClient(item) {
+  return {
+    providerId: asString(item?.Id ?? item?.ID ?? item?.ClientId),
+    uniqueId: asString(item?.UniqueId ?? item?.UniqueID ?? item?.ClientUniqueId),
+    email: asString(item?.Email ?? item?.EmailAddress),
+  };
+}
+
+function normalizeAppointment(payload) {
+  const item = payload?.Appointment ?? payload?.appointment ?? payload;
+  return {
+    providerId: asString(item?.Id ?? item?.ID ?? item?.AppointmentId ?? payload?.AppointmentId),
+    uniqueId: asString(item?.UniqueId ?? item?.UniqueID ?? item?.AppointmentUniqueId ?? payload?.AppointmentUniqueId),
+  };
+}
+
 export function normalizeSessionTypes(payload) {
   const values = payload?.SessionTypes ?? payload?.sessionTypes ?? payload?.Services ?? payload?.services ?? [];
   if (!Array.isArray(values)) return [];
@@ -56,11 +72,13 @@ export function normalizeBookableItems(payload) {
     .map((item) => {
       const sessionType = item.SessionType ?? item.sessionType ?? {};
       const location = item.Location ?? item.location ?? {};
+      const staffProviderId = asString((item.Staff ?? item.staff)?.Id ?? (item.Staff ?? item.staff)?.ID ?? item.StaffId);
       return {
         providerId: asString(item.Id ?? item.ID ?? item.AppointmentId ?? item.BookableItemId),
         startTime: asIsoDateTime(item.StartDateTime ?? item.startDateTime ?? item.StartTime),
         endTime: asIsoDateTime(item.EndDateTime ?? item.endDateTime ?? item.EndTime),
         locationProviderId: asString(location.Id ?? location.ID ?? location.LocationId ?? item.LocationId),
+        ...(staffProviderId ? { staffProviderId } : {}),
         durationMinutes: asNumber(item.DurationMinutes ?? item.Duration ?? sessionType.DurationMinutes ?? sessionType.Duration),
         price: asNumber(item.Price ?? item.OnlinePrice ?? sessionType.OnlinePrice ?? sessionType.Price),
       };
@@ -93,18 +111,21 @@ export function createMindbodyClient({ apiKey, baseUrl, siteId, fetchImpl = fetc
     throw new MindbodyApiError("Mindbody sandbox configuration is incomplete.", 500);
   }
 
-  async function getJson(path, errorMessage) {
+  async function requestJson(path, errorMessage, method = "GET", body = undefined) {
     const response = await fetchImpl(`${baseUrl.replace(/\/$/, "")}${path}`, {
+      method,
       headers: {
         Accept: "application/json",
+        "Content-Type": "application/json",
         "Api-Key": apiKey,
         SiteId: siteId,
       },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
 
     if (!response.ok) {
       await response.text();
-      throw new MindbodyApiError(errorMessage, 502);
+      throw new MindbodyApiError(errorMessage, method === "GET" ? 502 : response.status >= 400 && response.status < 600 ? response.status : 502);
     }
 
     return response.json();
@@ -112,10 +133,15 @@ export function createMindbodyClient({ apiKey, baseUrl, siteId, fetchImpl = fetc
 
   return {
     async getLocations() {
-      return normalizeLocations(await getJson("/site/locations?Limit=100", "Mindbody location lookup failed."));
+      return normalizeLocations(await requestJson("/site/locations?Limit=100", "Mindbody location lookup failed."));
     },
     async getSessionTypes() {
-      return normalizeSessionTypes(await getJson("/site/sessiontypes?Limit=100", "Mindbody service catalogue lookup failed."));
+      return normalizeSessionTypes(await requestJson("/site/sessiontypes?Limit=100", "Mindbody service catalogue lookup failed."));
+    },
+    async findClientsByEmail(email) {
+      const payload = await requestJson(`/client/clients?Email=${encodeURIComponent(email)}&Limit=10`, "Mindbody Client lookup failed.");
+      const values = payload?.Clients ?? payload?.clients ?? [];
+      return Array.isArray(values) ? values.map(normalizeClient).filter((client) => client.providerId && client.email) : [];
     },
     async getBookableItems({ sessionTypeId, locationId, startDate, endDate }) {
       const query = new URLSearchParams({
@@ -124,7 +150,21 @@ export function createMindbodyClient({ apiKey, baseUrl, siteId, fetchImpl = fetc
         StartDate: startDate,
         EndDate: endDate,
       });
-      return normalizeBookableItems(await getJson(`/appointment/bookableitems?${query}`, "Mindbody availability lookup failed."));
+      return normalizeBookableItems(await requestJson(`/appointment/bookableitems?${query}`, "Mindbody availability lookup failed."));
+    },
+    async addAppointment({ clientId, locationId, staffId, sessionTypeId, startDateTime }) {
+      return normalizeAppointment(await requestJson("/appointment/addappointment", "Mindbody appointment creation failed.", "POST", {
+        ClientId: clientId,
+        LocationId: locationId,
+        StaffId: staffId,
+        SessionTypeId: sessionTypeId,
+        StartDateTime: startDateTime,
+        ApplyPayment: false,
+        IgnoreDefaultSessionLength: false,
+        // Confirmation state is based on the authoritative appointment result;
+        // provider notification delivery is deliberately outside this write.
+        SendEmail: false,
+      }));
     },
   };
 }
@@ -152,6 +192,16 @@ export function createMindbodyTestDouble({ apiKey, siteId }) {
       }), { headers: { "Content-Type": "application/json" } });
     }
 
+    if (path.endsWith("/client/clients")) {
+      const email = new URL(String(input)).searchParams.get("Email") ?? "customer@example.test";
+      const mode = Deno.env.get("MINDBODY_TEST_DOUBLE_CLIENT_MODE") ?? "existing";
+      const clients = mode === "none" ? [] : [
+        { Id: "sandbox-client-100", UniqueId: "sandbox-client-unique-100", Email: email },
+        ...(mode === "ambiguous" ? [{ Id: "sandbox-client-101", UniqueId: "sandbox-client-unique-101", Email: email }] : []),
+      ];
+      return new Response(JSON.stringify({ Clients: clients }), { headers: { "Content-Type": "application/json" } });
+    }
+
     if (path.endsWith("/appointment/bookableitems")) {
       const url = new URL(String(input));
       const startDate = url.searchParams.get("StartDate")?.slice(0, 10) ?? new Date().toISOString().slice(0, 10);
@@ -168,11 +218,17 @@ export function createMindbodyTestDouble({ apiKey, siteId }) {
             StartDateTime: start.toISOString(),
             EndDateTime: new Date(start.getTime() + 45 * 60 * 1000).toISOString(),
             Location: { Id: locationId, Name: "Clubville" },
+            Staff: { Id: 10 },
             SessionType: { Id: 23, Duration: 45, OnlinePrice: 120 },
             Price: 120,
           }]
         : [];
       return new Response(JSON.stringify({ Availabilities: items }), { headers: { "Content-Type": "application/json" } });
+    }
+
+    if (path.endsWith("/appointment/addappointment")) {
+      const body = await new Response(init.body).json();
+      return new Response(JSON.stringify({ Appointment: { Id: "sandbox-appointment-100", UniqueId: "sandbox-appointment-unique-100", ClientId: body.ClientId } }), { headers: { "Content-Type": "application/json" } });
     }
 
     return new Response(JSON.stringify({ Error: "Unknown test-double endpoint." }), {

@@ -38,7 +38,11 @@
     <section class="panel" data-testid="review" id="review" hidden>
       <a class="back" id="back-to-times" href="#">← Change time</a><div class="eyebrow" style="margin-top: 20px">Final review</div><h2>Check your Booking details</h2>
       <div class="review"><div class="review-row"><span>Business</span><strong id="review-business"></strong></div><div class="review-row"><span>Location</span><strong id="review-location"></strong></div><div class="review-row"><span>Service</span><strong id="review-service"></strong></div><div class="review-row"><span>Start time</span><strong id="review-start"></strong></div><div class="review-row"><span>Duration</span><strong id="review-duration"></strong></div><div class="review-row"><span>Price</span><strong id="review-price"></strong></div></div>
-      <div class="review-actions"><a class="back" id="review-back" href="#">Back to times</a><button class="button" type="button" disabled>Continue</button></div>
+      <div class="review-actions"><a class="back" id="review-back" href="#">Back to times</a><button class="button" id="continue-booking" type="button">Continue</button></div>
+      <section class="state" data-testid="review-error" id="review-error" hidden></section>
+    </section>
+    <section class="panel" data-testid="confirmation" id="confirmation" hidden>
+      <div class="eyebrow">Booking confirmed</div><h2>Your Booking is confirmed.</h2><p id="confirmation-details"></p>
     </section>
   </main>
   <script>
@@ -47,8 +51,9 @@
     const elements = {
       context: document.querySelector("[data-testid='booking-context']"), business: document.querySelector("#business-name"), location: document.querySelector("#location-name"), change: document.querySelector("#change-location"),
       timeSelection: document.querySelector("[data-testid='time-selection']"), serviceName: document.querySelector("#service-name"), serviceSummary: document.querySelector("#service-summary"), date: document.querySelector("#date-picker"), loading: document.querySelector("#loading"), empty: document.querySelector("#empty-date"), next: document.querySelector("#earliest-next"), slots: document.querySelector("#slots"), error: document.querySelector("#error"), review: document.querySelector("#review"),
-      reviewBusiness: document.querySelector("#review-business"), reviewLocation: document.querySelector("#review-location"), reviewService: document.querySelector("#review-service"), reviewStart: document.querySelector("#review-start"), reviewDuration: document.querySelector("#review-duration"), reviewPrice: document.querySelector("#review-price"), backToTimes: document.querySelector("#back-to-times"), reviewBack: document.querySelector("#review-back"),
+      reviewBusiness: document.querySelector("#review-business"), reviewLocation: document.querySelector("#review-location"), reviewService: document.querySelector("#review-service"), reviewStart: document.querySelector("#review-start"), reviewDuration: document.querySelector("#review-duration"), reviewPrice: document.querySelector("#review-price"), backToTimes: document.querySelector("#back-to-times"), reviewBack: document.querySelector("#review-back"), continueBooking: document.querySelector("#continue-booking"), reviewError: document.querySelector("#review-error"), confirmation: document.querySelector("#confirmation"), confirmationDetails: document.querySelector("#confirmation-details"),
     };
+    const bookingApiBase = window.REVVI_BOOKING_API_URL || "/functions/v1/booking-attempt";
     function today() { return new Date().toISOString().slice(0, 10); }
     function currentParams() { return new URLSearchParams(location.search); }
     function selectedDate(params = currentParams()) { return params.get("date") || today(); }
@@ -59,15 +64,28 @@
     function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character])); }
     function context(data) { elements.business.textContent = data.business.displayName; elements.location.textContent = data.location.displayName; elements.change.href = data.business.locationBrowserPath || "/locations"; elements.context.hidden = false; }
     function renderReview(data) {
-      elements.timeSelection.hidden = true; elements.review.hidden = false; document.querySelector("#page-title").textContent = "Review your Booking"; document.querySelector("#page-description").textContent = "Confirm the details before continuing.";
+      elements.timeSelection.hidden = true; elements.review.hidden = false; elements.confirmation.hidden = true; elements.reviewError.hidden = true; elements.continueBooking.disabled = false; elements.continueBooking.textContent = "Continue"; document.querySelector("#page-title").textContent = "Review your Booking"; document.querySelector("#page-description").textContent = "Confirm the details before continuing.";
       elements.reviewBusiness.textContent = data.review.business.displayName; elements.reviewLocation.textContent = data.review.location.displayName; elements.reviewService.textContent = data.review.service.name; elements.reviewStart.textContent = formatTime(data.review.startTime, data.location.timezone); elements.reviewDuration.textContent = data.review.service.durationMinutes ? `${data.review.service.durationMinutes} minutes` : "Confirmed at Booking"; elements.reviewPrice.textContent = formatPrice(data.review.service.price);
       const back = new URL(location.href); back.searchParams.delete("start"); elements.backToTimes.href = back.toString(); elements.reviewBack.href = back.toString();
+      if (window.REVVI_TEST_RESPONSIVE) document.body.dataset.responsive = document.documentElement.scrollWidth <= window.innerWidth ? "true" : "false";
+    }
+    function idempotencyKey() { const params = currentParams(); const key = `revvi-booking:${params.get("business")}:${params.get("location")}:${params.get("service")}:${params.get("start")}`; const stored = sessionStorage.getItem(key); if (stored) return stored; const created = crypto.randomUUID(); sessionStorage.setItem(key, created); return created; }
+    async function continueBooking() {
+      elements.continueBooking.disabled = true; elements.continueBooking.textContent = "Confirming…";
+      const params = currentParams();
+      try {
+        const response = await fetch(bookingApiBase, { method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ business: params.get("business"), location: params.get("location"), service: params.get("service"), startTime: params.get("start"), idempotencyKey: idempotencyKey() }) });
+        const data = await response.json();
+        if (!response.ok || data.bookingAttempt?.state !== "confirmed") throw new Error(data.error || "This Booking could not be completed.");
+        elements.review.hidden = true; elements.confirmation.hidden = false; elements.confirmationDetails.textContent = `${data.bookingAttempt.service} at ${formatTime(data.bookingAttempt.startTime, data.bookingAttempt.locationTimezone || "UTC")}.`;
+        document.querySelector("#page-title").textContent = "Booking confirmed"; document.querySelector("#page-description").textContent = "Mindbody has confirmed your Booking.";
+      } catch (error) { elements.continueBooking.disabled = false; elements.continueBooking.textContent = "Continue"; elements.reviewError.hidden = false; elements.reviewError.textContent = error.message; }
     }
     function renderTimes(data) {
       elements.timeSelection.hidden = false; elements.review.hidden = true; elements.date.value = data.availability.selectedDate; elements.serviceName.textContent = data.service.name; elements.serviceSummary.textContent = `${data.service.durationMinutes ? `${data.service.durationMinutes} minutes` : "Service"} · ${formatPrice(data.service.price)}`;
       if (data.availability.state === "empty") { showState("empty"); } else { elements.slots.innerHTML = data.availability.slots.map((slot) => `<button class="slot" type="button" data-start="${escapeHtml(slot.startTime)}">${escapeHtml(formatTime(slot.startTime, data.location.timezone))}<small>${slot.durationMinutes ? `${slot.durationMinutes} minutes` : "Live time"} · ${escapeHtml(formatPrice(slot.price))}</small></button>`).join(""); elements.slots.querySelectorAll("[data-start]").forEach((button) => button.addEventListener("click", () => { updateUrl({ date: data.availability.selectedDate, start: button.dataset.start }); load(); })); showState("slots"); }
       if (data.availability.earliestNextAvailability) { const next = data.availability.earliestNextAvailability; elements.next.innerHTML = `Earliest next availability: <strong>${escapeHtml(next.date)}</strong> <button type="button" data-next-date="${escapeHtml(next.date)}">View times</button>`; elements.next.hidden = false; elements.next.querySelector("button").addEventListener("click", () => { updateUrl({ date: next.date }); load(); }); } else { elements.next.hidden = true; }
-      if (window.REVVI_TEST_RESPONSIVE) requestAnimationFrame(() => { document.body.dataset.responsive = document.documentElement.scrollWidth <= window.innerWidth ? "true" : "false"; });
+      if (window.REVVI_TEST_RESPONSIVE) document.body.dataset.responsive = document.documentElement.scrollWidth <= window.innerWidth ? "true" : "false";
     }
     async function load() {
       const params = currentParams();
@@ -78,6 +96,7 @@
       try { const response = await fetch(`${apiBase}?${query}`, { headers: { Authorization: `Bearer ${token}` } }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "Live availability could not be loaded."); context(data); if (data.review) renderReview(data); else renderTimes(data); } catch (error) { elements.timeSelection.hidden = false; elements.review.hidden = true; elements.error.textContent = error.message; showState("error"); }
     }
     elements.date.addEventListener("change", () => { updateUrl({ date: elements.date.value || selectedDate() }); load(); });
+    elements.continueBooking.addEventListener("click", continueBooking);
     addEventListener("popstate", load);
     load();
   </script>

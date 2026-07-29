@@ -5,6 +5,7 @@ insert into public.businesses (
   support_email,
   status,
   booking_enabled,
+  completion_mode,
   provider_environment
 )
 values
@@ -15,6 +16,7 @@ values
     'support@example.test',
     'active',
     true,
+    'free_unpaid',
     'sandbox'
   ),
   (
@@ -24,6 +26,7 @@ values
     'support@example.test',
     'disabled',
     false,
+    'disabled',
     'sandbox'
   )
 on conflict (id) do update set
@@ -32,6 +35,7 @@ on conflict (id) do update set
   support_email = excluded.support_email,
   status = excluded.status,
   booking_enabled = excluded.booking_enabled,
+  completion_mode = excluded.completion_mode,
   provider_environment = excluded.provider_environment;
 
 insert into public.business_locations (

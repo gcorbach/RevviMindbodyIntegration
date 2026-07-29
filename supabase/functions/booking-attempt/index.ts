@@ -1,0 +1,354 @@
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  createMindbodyClient,
+  createMindbodyTestDouble,
+  MindbodyApiError,
+  selectEnabledServices,
+} from "../_shared/mindbody.js";
+
+const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+
+function allowedOrigins() {
+  return new Set((Deno.env.get("ALLOWED_ORIGINS") ?? "").split(",").map((origin) => origin.trim()).filter(Boolean));
+}
+
+function corsHeaders(origin: string | null, requestId: string) {
+  return {
+    ...(origin ? { "Access-Control-Allow-Origin": origin } : {}),
+    "Access-Control-Allow-Headers": "authorization, content-type, x-request-id",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Vary": "Origin",
+    "X-Request-Id": requestId,
+  };
+}
+
+function json(body: Record<string, unknown>, status = 200, origin: string | null = null, requestId = crypto.randomUUID()) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders(origin, requestId), "Content-Type": "application/json" },
+  });
+}
+
+function requiredEnvironment() {
+  return ["SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY", "MINDBODY_API_KEY", "MINDBODY_BASE_URL"]
+    .filter((name) => !Deno.env.get(name));
+}
+
+function bearerToken(request: Request) {
+  const value = request.headers.get("Authorization") ?? "";
+  return value.startsWith("Bearer ") ? value.slice("Bearer ".length) : null;
+}
+
+function memberstackId(user: { app_metadata?: Record<string, unknown> }) {
+  const metadata = user.app_metadata ?? {};
+  if (metadata.identity_provider !== "memberstack" || metadata.memberstack_verified !== true) return null;
+  return typeof metadata.memberstack_id === "string" && metadata.memberstack_id.length > 0 ? metadata.memberstack_id : null;
+}
+
+function verifiedEmail(user: { email?: string | null; email_confirmed_at?: string | null }) {
+  if (!user.email || !user.email_confirmed_at) return null;
+  return user.email.trim().toLowerCase() || null;
+}
+
+function resolvedSiteId(business: { provider_environment: string }, configuredSiteId: string) {
+  if (business.provider_environment === "sandbox") {
+    const sandboxSiteId = Deno.env.get("MINDBODY_SANDBOX_SITE_ID");
+    if (!sandboxSiteId) return null;
+    if (configuredSiteId === "__MINDBODY_SANDBOX_SITE_ID__") return sandboxSiteId;
+    return configuredSiteId === sandboxSiteId ? sandboxSiteId : null;
+  }
+  return configuredSiteId || null;
+}
+
+function isAllowedBaseUrl() {
+  const configured = Deno.env.get("MINDBODY_BASE_URL")?.replace(/\/$/, "");
+  const canonical = "https://api.mindbodyonline.com/public/v6";
+  return configured === canonical || (Deno.env.get("MINDBODY_ALLOW_TEST_DOUBLE") === "true" && !Deno.env.get("DENO_DEPLOYMENT_ID"));
+}
+
+function isoDate(value: unknown) {
+  if (typeof value !== "string") return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function attemptResponse(attempt: Record<string, any>) {
+  const confirmed = attempt.state === "confirmed";
+  return {
+    bookingAttempt: {
+      id: attempt.id,
+      state: attempt.state,
+      expiresAt: attempt.expires_at,
+      business: attempt.business_name,
+      location: attempt.location_name,
+      locationTimezone: attempt.location_timezone,
+      service: attempt.service_name,
+      startTime: attempt.selected_start_time,
+      endTime: attempt.selected_end_time,
+      durationMinutes: attempt.duration_minutes,
+      price: attempt.price,
+    },
+    ...(confirmed ? {
+      confirmation: {
+        bookingAttemptId: attempt.id,
+        providerAppointmentId: attempt.mindbody_appointment_id,
+        startTime: attempt.selected_start_time,
+        message: "Your Booking is confirmed.",
+      },
+    } : {}),
+  };
+}
+
+async function recordEvent(supabase: any, attempt: Record<string, any>, event: Record<string, unknown>) {
+  const { error } = await supabase.from("booking_attempt_events").insert({
+    ...attemptEventContext(attempt),
+    metadata: {},
+    ...event,
+  });
+  if (error) {
+    console.error(JSON.stringify({ event: "booking_attempt_event_persist_failed", requestId: attempt.correlation_id, operation: event.operation, error_category: "event_persist_failed" }));
+    return false;
+  }
+  return true;
+}
+
+function attemptEventContext(attempt: Record<string, any>) {
+  return { business_id: attempt.business_id, booking_attempt_id: attempt.id, correlation_id: attempt.correlation_id };
+}
+
+async function createSupportItem(supabase: any, attempt: Record<string, any>, reason: string) {
+  await supabase.from("booking_support_items").insert({ ...attemptEventContext(attempt), reason });
+}
+
+async function markUnknown(supabase: any, attempt: Record<string, any>, reason: string, providerReferences: Record<string, unknown> = {}) {
+  const { data: unknownAttempt } = await supabase
+    .from("booking_attempts")
+    .update({ state: "unknown", ...providerReferences })
+    .eq("id", attempt.id)
+    .eq("state", "pending_checkout")
+    .select()
+    .maybeSingle();
+  const current = unknownAttempt ?? { ...attempt, state: "unknown" };
+  await recordEvent(supabase, current, { event_type: "provider_write_unknown", operation: "appointment_create", error_category: reason });
+  await createSupportItem(supabase, current, reason);
+  return current;
+}
+
+async function failAttempt(supabase: any, attempt: Record<string, any>, code: string, message: string, reason = code) {
+  const { data: failed, error } = await supabase
+    .from("booking_attempts")
+    .update({ state: "failed" })
+    .eq("id", attempt.id)
+    .select()
+    .single();
+  if (!error && failed) attempt = failed;
+  await recordEvent(supabase, attempt, { event_type: "attempt_failed", operation: "booking_attempt", error_category: reason });
+  if (reason === "CLIENT_MATCH_AMBIGUOUS" || reason === "CLIENT_MAPPING_CONFLICT") {
+    await createSupportItem(supabase, attempt, reason);
+  }
+  const status = code === "CLIENT_MATCH_AMBIGUOUS" || code === "CLIENT_MAPPING_CONFLICT" ? 409 : code === "MINDBODY_UNAVAILABLE" ? 502 : 422;
+  return json({ code, error: message, bookingAttempt: attemptResponse(attempt).bookingAttempt }, status);
+}
+
+async function loadCaller(supabaseUrl: string, anonKey: string, token: string) {
+  const authClient = createClient(supabaseUrl, anonKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { headers: { Authorization: `Bearer ${token}` } },
+  });
+  return authClient.auth.getUser(token);
+}
+
+Deno.serve(async (request) => {
+  const requestId = crypto.randomUUID();
+  const origin = request.headers.get("Origin");
+  if (origin && !allowedOrigins().has(origin)) return json({ code: "ORIGIN_NOT_ALLOWED", error: "This origin is not authorised." }, 403, null, requestId);
+  if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(origin, requestId) });
+  if (request.method !== "POST") return json({ code: "METHOD_NOT_ALLOWED", error: "Use POST." }, 405, origin, requestId);
+
+  const missing = requiredEnvironment();
+  if (missing.length > 0) return json({ code: "CONFIGURATION_ERROR", error: "Booking configuration is incomplete.", missing }, 500, origin, requestId);
+  if (!isAllowedBaseUrl()) return json({ code: "SANDBOX_REQUIRED", error: "Only the configured Mindbody boundary is permitted." }, 409, origin, requestId);
+
+  const token = bearerToken(request);
+  if (!token) return json({ code: "AUTHENTICATION_REQUIRED", error: "Sign in through Revvi to continue." }, 401, origin, requestId);
+  const { data: userData, error: userError } = await loadCaller(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, token);
+  if (userError || !userData.user) return json({ code: "AUTHENTICATION_INVALID", error: "Revvi identity could not be verified." }, 401, origin, requestId);
+  const customerMemberstackId = memberstackId(userData.user);
+  const customerEmail = verifiedEmail(userData.user);
+  if (!customerMemberstackId) return json({ code: "MEMBERSTACK_IDENTITY_REQUIRED", error: "A verified Memberstack identity is required." }, 403, origin, requestId);
+  if (!customerEmail) return json({ code: "VERIFIED_EMAIL_REQUIRED", error: "A verified email address is required to complete this Booking." }, 403, origin, requestId);
+
+  const body = await request.json().catch(() => null);
+  const businessSlug = body?.business;
+  const locationSlug = body?.location;
+  const serviceId = body?.service;
+  const selectedStart = isoDate(body?.startTime);
+  const idempotencyKey = typeof body?.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
+  if (typeof businessSlug !== "string" || typeof locationSlug !== "string" || typeof serviceId !== "string" || !selectedStart || !idempotencyKey || idempotencyKey.length > 200) {
+    return json({ code: "INVALID_BOOKING_CONTEXT", error: "Business, Location, service, time, and idempotency data are required." }, 400, origin, requestId);
+  }
+
+  const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { autoRefreshToken: false, persistSession: false } });
+  const { data: identity, error: identityError } = await supabase.from("memberstack_identity_allowlist").select("memberstack_id").eq("memberstack_id", customerMemberstackId).maybeSingle();
+  if (identityError) return json({ code: "DATABASE_ERROR", error: "Member identity could not be verified." }, 500, origin, requestId);
+  if (!identity) return json({ code: "MEMBERSTACK_IDENTITY_REQUIRED", error: "A verified Memberstack identity is required." }, 403, origin, requestId);
+
+  const { data: business, error: businessError } = await supabase.from("businesses")
+    .select("id, slug, display_name, status, booking_enabled, completion_mode, provider_environment")
+    .eq("slug", businessSlug).maybeSingle();
+  if (businessError) return json({ code: "DATABASE_ERROR", error: "Business context could not be loaded." }, 500, origin, requestId);
+  if (!business) return json({ code: "BUSINESS_UNAVAILABLE", error: "This Business is not available for Booking." }, 409, origin, requestId);
+  if (business.completion_mode !== "free_unpaid") return json({ code: "COMPLETION_UNAVAILABLE", error: "Completion is not available for this Business." }, 409, origin, requestId);
+  if (business.status !== "active") return json({ code: "BUSINESS_UNAVAILABLE", error: "This Business is not available for Booking." }, 409, origin, requestId);
+  if (!business.booking_enabled) return json({ code: "BUSINESS_UNAVAILABLE", error: "This Business is not available for Booking." }, 409, origin, requestId);
+
+  const { data: access, error: accessError } = await supabase.from("business_customer_access").select("business_id").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).maybeSingle();
+  if (accessError) return json({ code: "DATABASE_ERROR", error: "Business context could not be verified." }, 500, origin, requestId);
+  if (!access) return json({ code: "BUSINESS_CONTEXT_MISMATCH", error: "This customer is not authorised for that Business." }, 403, origin, requestId);
+
+  const { data: location, error: locationError } = await supabase.from("business_locations").select("id, slug, display_name, timezone, enabled").eq("business_id", business.id).eq("slug", locationSlug).maybeSingle();
+  if (locationError) return json({ code: "DATABASE_ERROR", error: "Location context could not be loaded." }, 500, origin, requestId);
+  if (!location || !location.enabled) return json({ code: "LOCATION_UNAVAILABLE", error: "This Location is not available." }, 404, origin, requestId);
+  const { data: service, error: serviceError } = await supabase.from("business_services").select("id, display_name_override, enabled").eq("id", serviceId).eq("business_id", business.id).eq("location_id", location.id).eq("enabled", true).maybeSingle();
+  if (serviceError) return json({ code: "DATABASE_ERROR", error: "Service configuration could not be loaded." }, 500, origin, requestId);
+  if (!service) return json({ code: "SERVICE_UNAVAILABLE", error: "This service is not available at the selected Location." }, 404, origin, requestId);
+
+  const { data: existingAttempt, error: existingAttemptError } = await supabase.from("booking_attempts").select("*").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).eq("idempotency_key", idempotencyKey).maybeSingle();
+  if (existingAttemptError) return json({ code: "DATABASE_ERROR", error: "Booking attempt could not be loaded." }, 500, origin, requestId);
+  if (existingAttempt) {
+    if (new Date(existingAttempt.selected_start_time).getTime() !== new Date(selectedStart).getTime() || existingAttempt.service_id !== service.id || existingAttempt.location_id !== location.id) return json({ code: "IDEMPOTENCY_KEY_REUSED", error: "That idempotency key belongs to another Booking." }, 409, origin, requestId);
+    if (existingAttempt.state === "pending_checkout") {
+      const unknownAttempt = await markUnknown(supabase, existingAttempt, "provider_write_interrupted");
+      return json({ code: "BOOKING_OUTCOME_UNKNOWN", error: "The previous provider write needs support reconciliation before retrying.", bookingAttempt: attemptResponse(unknownAttempt).bookingAttempt }, 502, origin, requestId);
+    }
+    return json(attemptResponse(existingAttempt), existingAttempt.state === "confirmed" ? 200 : 202, origin, requestId);
+  }
+
+  const [{ data: providerConfig, error: providerConfigError }, { data: providerLocation, error: providerLocationError }, { data: providerService, error: providerServiceError }] = await Promise.all([
+    supabase.from("business_provider_config").select("mindbody_site_id").eq("business_id", business.id).maybeSingle(),
+    supabase.from("business_location_provider_config").select("mindbody_location_id").eq("business_id", business.id).eq("location_id", location.id).maybeSingle(),
+    supabase.from("business_service_provider_config").select("mindbody_session_type_id").eq("business_id", business.id).eq("service_id", service.id).maybeSingle(),
+  ]);
+  if (providerConfigError || providerLocationError || providerServiceError) return json({ code: "DATABASE_ERROR", error: "Provider configuration could not be loaded." }, 500, origin, requestId);
+  const siteId = resolvedSiteId(business, providerConfig?.mindbody_site_id ?? "");
+  if (!siteId || !providerLocation?.mindbody_location_id || !providerService?.mindbody_session_type_id) return json({ code: "PROVIDER_NOT_READY", error: "This Business has no enabled provider connection." }, 409, origin, requestId);
+
+  const useTestDouble = Deno.env.get("MINDBODY_ALLOW_TEST_DOUBLE") === "true" && !Deno.env.get("DENO_DEPLOYMENT_ID");
+  const client = createMindbodyClient({
+    apiKey: Deno.env.get("MINDBODY_API_KEY"),
+    baseUrl: Deno.env.get("MINDBODY_BASE_URL"),
+    siteId,
+    fetchImpl: useTestDouble ? createMindbodyTestDouble({ apiKey: Deno.env.get("MINDBODY_API_KEY"), siteId }) : fetch,
+  });
+
+  let liveSlot: any;
+  let liveService: any;
+  try {
+    const liveSessionTypes = await client.getSessionTypes();
+    [liveService] = selectEnabledServices(liveSessionTypes, [{ ...service, mindbody_session_type_id: providerService.mindbody_session_type_id }]);
+    if (!liveService) return json({ code: "SERVICE_UNAVAILABLE", error: "This service is not available in the live Mindbody catalogue." }, 409, origin, requestId);
+    const liveLocations = await client.getLocations();
+    if (!liveLocations.some((item) => item.providerId === String(providerLocation.mindbody_location_id))) return json({ code: "LOCATION_CONTEXT_MISMATCH", error: "This Location is not available for the configured Mindbody Site." }, 409, origin, requestId);
+    const startDate = new Date(selectedStart).toISOString();
+    const endDate = new Date(new Date(selectedStart).getTime() + 24 * 60 * 60 * 1000).toISOString();
+    const liveItems = await client.getBookableItems({ sessionTypeId: providerService.mindbody_session_type_id, locationId: providerLocation.mindbody_location_id, startDate, endDate });
+    liveSlot = liveItems.find((item) => item.startTime === selectedStart && (!item.locationProviderId || item.locationProviderId === String(providerLocation.mindbody_location_id)));
+    if (!liveSlot) return json({ code: "SLOT_UNAVAILABLE", error: "That time is no longer available. Choose a refreshed time." }, 409, origin, requestId);
+    if (!liveSlot.staffProviderId) return json({ code: "PROVIDER_NOT_READY", error: "Mindbody did not return the staff needed for this time." }, 409, origin, requestId);
+  } catch (error) {
+    if (error instanceof MindbodyApiError) return json({ code: "MINDBODY_UNAVAILABLE", error: error.message }, error.status, origin, requestId);
+    return json({ code: "MINDBODY_UNAVAILABLE", error: "Live Booking facts are temporarily unavailable." }, 502, origin, requestId);
+  }
+
+  const now = Date.now();
+  const selectedStartMs = new Date(selectedStart).getTime();
+  const expiresAt = new Date(Math.min(now + ATTEMPT_WINDOW_MS, selectedStartMs)).toISOString();
+  const { data: created, error: createError } = await supabase.from("booking_attempts").insert({
+    business_id: business.id,
+    memberstack_id: customerMemberstackId,
+    idempotency_key: idempotencyKey,
+    location_id: location.id,
+    service_id: service.id,
+    business_name: business.display_name,
+    location_name: location.display_name,
+    location_timezone: location.timezone,
+    service_name: liveService.name,
+    mindbody_location_id: String(providerLocation.mindbody_location_id),
+    mindbody_session_type_id: String(providerService.mindbody_session_type_id),
+    selected_start_time: selectedStart,
+    selected_end_time: liveSlot.endTime,
+    duration_minutes: liveSlot.durationMinutes,
+    price: liveSlot.price,
+    completion_mode: business.completion_mode,
+    expires_at: expiresAt,
+  }).select().single();
+  if (createError) {
+    if (createError.code === "23505") {
+      const { data: raced } = await supabase.from("booking_attempts").select("*").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).eq("idempotency_key", idempotencyKey).single();
+      return raced ? json(attemptResponse(raced), raced.state === "confirmed" ? 200 : 202, origin, requestId) : json({ code: "BOOKING_ATTEMPT_CONFLICT", error: "The Booking attempt is already being processed." }, 409, origin, requestId);
+    }
+    return json({ code: "DATABASE_ERROR", error: "Booking attempt could not be created." }, 500, origin, requestId);
+  }
+  await recordEvent(supabase, created, { event_type: "attempt_created", operation: "booking_attempt" });
+  await recordEvent(supabase, created, { event_type: "provider_revalidation_succeeded", operation: "booking_facts_revalidation", metadata: { checks: ["session_catalogue", "location_catalogue", "availability"] } });
+
+  await recordEvent(supabase, created, { event_type: "provider_read_started", operation: "client_lookup" });
+  const { data: clients, error: clientsError } = await client.findClientsByEmail(customerEmail).then((data) => ({ data, error: null })).catch((error) => ({ data: null, error }));
+  if (clientsError) return failAttempt(supabase, created, "MINDBODY_UNAVAILABLE", "Mindbody Client lookup failed.", "client_lookup_failed");
+  const matches = (clients ?? []).filter((candidate) => candidate.email?.trim().toLowerCase() === customerEmail);
+  if (matches.length === 0) return failAttempt(supabase, created, "CLIENT_NOT_FOUND", "A matching Mindbody Client was not found.", "CLIENT_NOT_FOUND");
+  if (matches.length !== 1) return failAttempt(supabase, created, "CLIENT_MATCH_AMBIGUOUS", "More than one verified-email Mindbody Client matched.", "CLIENT_MATCH_AMBIGUOUS");
+  const uniqueVerifiedEmailClient = matches[0];
+  await recordEvent(supabase, created, { event_type: "provider_read_succeeded", operation: "client_lookup" });
+
+  const { data: mapping, error: mappingReadError } = await supabase.from("mindbody_client_mappings").select("mindbody_client_id, verified_email").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).maybeSingle();
+  if (mappingReadError) return failAttempt(supabase, created, "DATABASE_ERROR", "The Mindbody Client mapping could not be loaded.", "mapping_lookup_failed");
+  if (mapping && (mapping.mindbody_client_id !== uniqueVerifiedEmailClient.providerId || mapping.verified_email !== customerEmail)) return failAttempt(supabase, created, "CLIENT_MAPPING_CONFLICT", "The verified Mindbody Client mapping needs support review.", "CLIENT_MAPPING_CONFLICT");
+  if (!mapping) {
+    const { error: mappingError } = await supabase.from("mindbody_client_mappings").insert({ business_id: business.id, memberstack_id: customerMemberstackId, mindbody_client_id: uniqueVerifiedEmailClient.providerId, verified_email: customerEmail });
+    if (mappingError) {
+      if (mappingError.code !== "23505") return failAttempt(supabase, created, "DATABASE_ERROR", "The Mindbody Client mapping could not be recorded.", "mapping_write_failed");
+      const { data: racedMapping } = await supabase.from("mindbody_client_mappings").select("mindbody_client_id, verified_email").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).single();
+      if (!racedMapping || racedMapping.mindbody_client_id !== uniqueVerifiedEmailClient.providerId || racedMapping.verified_email !== customerEmail) return failAttempt(supabase, created, "CLIENT_MAPPING_CONFLICT", "The verified Mindbody Client mapping needs support review.", "CLIENT_MAPPING_CONFLICT");
+    }
+  }
+
+  const { data: claimed, error: claimError } = await supabase.from("booking_attempts").update({ state: "pending_checkout", provider_operation_claimed_at: new Date().toISOString(), mindbody_client_id: uniqueVerifiedEmailClient.providerId }).eq("id", created.id).eq("state", "created").is("provider_operation_claimed_at", null).select().maybeSingle();
+  if (claimError) return failAttempt(supabase, created, "DATABASE_ERROR", "The Booking attempt could not be claimed.", "attempt_claim_failed");
+  if (!claimed) {
+    const { data: current } = await supabase.from("booking_attempts").select("*").eq("id", created.id).single();
+    return current ? json(attemptResponse(current), 202, origin, requestId) : json({ code: "BOOKING_ATTEMPT_CONFLICT", error: "The Booking attempt is already being processed." }, 409, origin, requestId);
+  }
+  await recordEvent(supabase, claimed, { event_type: "attempt_pending_checkout", operation: "state_transition" });
+  if (new Date(claimed.expires_at).getTime() <= Date.now()) {
+    const { data: expired } = await supabase.from("booking_attempts").update({ state: "expired" }).eq("id", claimed.id).eq("state", "pending_checkout").select().single();
+    const current = expired ?? claimed;
+    await recordEvent(supabase, current, { event_type: "attempt_expired", operation: "appointment_create", error_category: "attempt_expired_before_provider_write" });
+    return json({ code: "BOOKING_ATTEMPT_EXPIRED", error: "This Booking attempt has expired. Choose a new time.", bookingAttempt: attemptResponse(current).bookingAttempt }, 409, origin, requestId);
+  }
+  await recordEvent(supabase, claimed, { event_type: "provider_write_started", operation: "appointment_create" });
+
+  const providerStartedAt = Date.now();
+  try {
+    const appointment = await client.addAppointment({ clientId: uniqueVerifiedEmailClient.providerId, locationId: providerLocation.mindbody_location_id, staffId: liveSlot.staffProviderId, sessionTypeId: providerService.mindbody_session_type_id, startDateTime: selectedStart });
+    if (!appointment.providerId) throw new MindbodyApiError("Mindbody did not return an appointment identifier.", 502);
+    const { data: confirmed, error: confirmationError } = await supabase.from("booking_attempts").update({ state: "confirmed", mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }).eq("id", claimed.id).eq("state", "pending_checkout").select().single();
+    if (confirmationError || !confirmed) {
+      const current = await markUnknown(supabase, claimed, "confirmation_persist_failed", { mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId });
+      return json({ code: "BOOKING_OUTCOME_UNKNOWN", error: "Mindbody confirmed the appointment, but Revvi needs support reconciliation before showing success.", bookingAttempt: attemptResponse(current).bookingAttempt }, 502, origin, requestId);
+    }
+    await recordEvent(supabase, confirmed, { event_type: "attempt_confirmed", operation: "appointment_create", latency_ms: Date.now() - providerStartedAt });
+    return json(attemptResponse(confirmed), 200, origin, requestId);
+  } catch (error) {
+    const providerStatus = error instanceof MindbodyApiError ? error.status : 502;
+    const state = providerStatus >= 500 ? "unknown" : "failed";
+    if (state === "unknown") {
+      const current = await markUnknown(supabase, claimed, "provider_unknown");
+      return json({ code: "BOOKING_OUTCOME_UNKNOWN", error: "Mindbody's result needs support reconciliation before retrying.", bookingAttempt: attemptResponse(current).bookingAttempt }, 502, origin, requestId);
+    }
+    const { data: finalAttempt } = await supabase.from("booking_attempts").update({ state }).eq("id", claimed.id).eq("state", "pending_checkout").select().single();
+    const current = finalAttempt ?? claimed;
+    await recordEvent(supabase, current, { event_type: state === "unknown" ? "provider_write_unknown" : "attempt_failed", operation: "appointment_create", provider_status: providerStatus, error_category: state === "unknown" ? "provider_unknown" : "provider_rejected", latency_ms: Date.now() - providerStartedAt });
+    return json({ code: "BOOKING_FAILED", error: "Mindbody could not complete this Booking.", bookingAttempt: attemptResponse(current).bookingAttempt }, 409, origin, requestId);
+  }
+});
