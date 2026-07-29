@@ -110,13 +110,25 @@ on conflict (business_id, service_id) do update set
   mindbody_session_type_id = excluded.mindbody_session_type_id;
 
 insert into public.memberstack_identity_allowlist (memberstack_id, source)
-values ('local-sandbox-member', 'sandbox_allowlist')
+values
+  ('local-sandbox-member', 'sandbox_allowlist'),
+  ('issue-14-missing-member', 'sandbox_allowlist'),
+  ('issue-14-ambiguous-member', 'sandbox_allowlist'),
+  ('issue-14-failure-member', 'sandbox_allowlist'),
+  ('issue-14-concurrent-member', 'sandbox_allowlist'),
+  ('issue-14-stale-lock-member', 'sandbox_allowlist')
 on conflict (memberstack_id) do update set
   source = excluded.source,
   verified_at = now();
 
 insert into public.business_customer_access (business_id, memberstack_id)
-values ('00000000-0000-0000-0000-000000000011', 'local-sandbox-member')
+values
+  ('00000000-0000-0000-0000-000000000011', 'local-sandbox-member'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-14-missing-member'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-14-ambiguous-member'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-14-failure-member'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-14-concurrent-member'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-14-stale-lock-member')
 on conflict do nothing;
 
 insert into auth.users (

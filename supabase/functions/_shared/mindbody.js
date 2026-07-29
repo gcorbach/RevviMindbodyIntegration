@@ -29,6 +29,11 @@ function normalizeClient(item) {
   };
 }
 
+function normalizeCreatedClient(payload, fallbackEmail = null) {
+  const client = normalizeClient(payload?.Client ?? payload?.client ?? payload);
+  return { ...client, email: client.email ?? fallbackEmail };
+}
+
 function normalizeAppointment(payload) {
   const item = payload?.Appointment ?? payload?.appointment ?? payload;
   return {
@@ -143,6 +148,13 @@ export function createMindbodyClient({ apiKey, baseUrl, siteId, fetchImpl = fetc
       const values = payload?.Clients ?? payload?.clients ?? [];
       return Array.isArray(values) ? values.map(normalizeClient).filter((client) => client.providerId && client.email) : [];
     },
+    async createClient({ firstName, lastName, email }) {
+      return normalizeCreatedClient(await requestJson("/client/addclient", "Mindbody Client creation failed.", "POST", {
+        FirstName: firstName,
+        LastName: lastName,
+        Email: email,
+      }), email);
+    },
     async getBookableItems({ sessionTypeId, locationId, startDate, endDate }) {
       const query = new URLSearchParams({
         SessionTypeIds: String(sessionTypeId),
@@ -200,6 +212,17 @@ export function createMindbodyTestDouble({ apiKey, siteId }) {
         ...(mode === "ambiguous" ? [{ Id: "sandbox-client-101", UniqueId: "sandbox-client-unique-101", Email: email }] : []),
       ];
       return new Response(JSON.stringify({ Clients: clients }), { headers: { "Content-Type": "application/json" } });
+    }
+
+    if (path.endsWith("/client/addclient")) {
+      if (Deno.env.get("MINDBODY_TEST_DOUBLE_CLIENT_CREATE_FAILURE") === "true") {
+        return new Response(JSON.stringify({ Error: "Client creation unavailable." }), { status: 503, headers: { "Content-Type": "application/json" } });
+      }
+      const delay = Number(Deno.env.get("MINDBODY_TEST_DOUBLE_CLIENT_CREATE_DELAY_MS") ?? 0);
+      if (Number.isFinite(delay) && delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+      const body = await new Response(init.body).json();
+      const identifier = String(body.Email).replace(/[^a-z0-9]/gi, "-");
+      return new Response(JSON.stringify({ Client: { Id: `sandbox-client-created-${identifier}`, UniqueId: `sandbox-client-created-unique-${identifier}`, Email: body.Email } }), { headers: { "Content-Type": "application/json" } });
     }
 
     if (path.endsWith("/appointment/bookableitems")) {

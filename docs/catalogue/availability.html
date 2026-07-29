@@ -70,14 +70,15 @@
       if (window.REVVI_TEST_RESPONSIVE) document.body.dataset.responsive = document.documentElement.scrollWidth <= window.innerWidth ? "true" : "false";
     }
     function idempotencyKey() { const params = currentParams(); const key = `revvi-booking:${params.get("business")}:${params.get("location")}:${params.get("service")}:${params.get("start")}`; const stored = sessionStorage.getItem(key); if (stored) return stored; const created = crypto.randomUUID(); sessionStorage.setItem(key, created); return created; }
+    function bookingError(data) { return data.code === "CLIENT_MATCH_AMBIGUOUS" ? "We could not safely match your Mindbody Client. Please contact Revvi support to complete this Booking." : data.error || "This Booking could not be completed."; }
     async function continueBooking() {
       elements.continueBooking.disabled = true; elements.continueBooking.textContent = "Confirming…";
       const params = currentParams();
       try {
         const response = await fetch(bookingApiBase, { method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ business: params.get("business"), location: params.get("location"), service: params.get("service"), startTime: params.get("start"), idempotencyKey: idempotencyKey() }) });
         const data = await response.json();
-        if (!response.ok || data.bookingAttempt?.state !== "confirmed") throw new Error(data.error || "This Booking could not be completed.");
-        elements.review.hidden = true; elements.confirmation.hidden = false; elements.confirmationDetails.textContent = `${data.bookingAttempt.service} at ${formatTime(data.bookingAttempt.startTime, data.bookingAttempt.locationTimezone || "UTC")}.`;
+        if (!response.ok || data.bookingAttempt?.state !== "confirmed") throw new Error(bookingError(data));
+        elements.review.hidden = true; elements.confirmation.hidden = false; elements.confirmation.dataset.clientCreated = data.clientCreated === true ? "true" : "false"; elements.confirmationDetails.textContent = `${data.bookingAttempt.service} at ${formatTime(data.bookingAttempt.startTime, data.bookingAttempt.locationTimezone || "UTC")}.`;
         document.querySelector("#page-title").textContent = "Booking confirmed"; document.querySelector("#page-description").textContent = "Mindbody has confirmed your Booking.";
       } catch (error) { elements.continueBooking.disabled = false; elements.continueBooking.textContent = "Continue"; elements.reviewError.hidden = false; elements.reviewError.textContent = error.message; }
     }
