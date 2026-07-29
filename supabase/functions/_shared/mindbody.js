@@ -15,6 +15,12 @@ function asNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function asIsoDateTime(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 export function normalizeSessionTypes(payload) {
   const values = payload?.SessionTypes ?? payload?.sessionTypes ?? payload?.Services ?? payload?.services ?? [];
   if (!Array.isArray(values)) return [];
@@ -42,6 +48,26 @@ export function normalizeLocations(payload) {
     .filter((item) => item.providerId && item.name);
 }
 
+export function normalizeBookableItems(payload) {
+  const values = payload?.Availabilities ?? payload?.availabilities ?? payload?.BookableItems ?? payload?.bookableItems ?? [];
+  if (!Array.isArray(values)) return [];
+
+  return values
+    .map((item) => {
+      const sessionType = item.SessionType ?? item.sessionType ?? {};
+      const location = item.Location ?? item.location ?? {};
+      return {
+        providerId: asString(item.Id ?? item.ID ?? item.AppointmentId ?? item.BookableItemId),
+        startTime: asIsoDateTime(item.StartDateTime ?? item.startDateTime ?? item.StartTime),
+        endTime: asIsoDateTime(item.EndDateTime ?? item.endDateTime ?? item.EndTime),
+        locationProviderId: asString(location.Id ?? location.ID ?? location.LocationId ?? item.LocationId),
+        durationMinutes: asNumber(item.DurationMinutes ?? item.Duration ?? sessionType.DurationMinutes ?? sessionType.Duration),
+        price: asNumber(item.Price ?? item.OnlinePrice ?? sessionType.OnlinePrice ?? sessionType.Price),
+      };
+    })
+    .filter((item) => item.providerId && item.startTime);
+}
+
 export function selectEnabledServices(sessionTypes, configuredServices) {
   const byProviderId = new Map(sessionTypes.map((service) => [service.providerId, service]));
 
@@ -67,38 +93,38 @@ export function createMindbodyClient({ apiKey, baseUrl, siteId, fetchImpl = fetc
     throw new MindbodyApiError("Mindbody sandbox configuration is incomplete.", 500);
   }
 
+  async function getJson(path, errorMessage) {
+    const response = await fetchImpl(`${baseUrl.replace(/\/$/, "")}${path}`, {
+      headers: {
+        Accept: "application/json",
+        "Api-Key": apiKey,
+        SiteId: siteId,
+      },
+    });
+
+    if (!response.ok) {
+      await response.text();
+      throw new MindbodyApiError(errorMessage, 502);
+    }
+
+    return response.json();
+  }
+
   return {
     async getLocations() {
-      const response = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/site/locations?Limit=100`, {
-        headers: {
-          Accept: "application/json",
-          "Api-Key": apiKey,
-          SiteId: siteId,
-        },
-      });
-
-      if (!response.ok) {
-        await response.text();
-        throw new MindbodyApiError("Mindbody location lookup failed.", 502);
-      }
-
-      return normalizeLocations(await response.json());
+      return normalizeLocations(await getJson("/site/locations?Limit=100", "Mindbody location lookup failed."));
     },
     async getSessionTypes() {
-      const response = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/site/sessiontypes?Limit=100`, {
-        headers: {
-          Accept: "application/json",
-          "Api-Key": apiKey,
-          SiteId: siteId,
-        },
+      return normalizeSessionTypes(await getJson("/site/sessiontypes?Limit=100", "Mindbody service catalogue lookup failed."));
+    },
+    async getBookableItems({ sessionTypeId, locationId, startDate, endDate }) {
+      const query = new URLSearchParams({
+        SessionTypeIds: String(sessionTypeId),
+        LocationIds: String(locationId),
+        StartDate: startDate,
+        EndDate: endDate,
       });
-
-      if (!response.ok) {
-        await response.text();
-        throw new MindbodyApiError("Mindbody service catalogue lookup failed.", 502);
-      }
-
-      return normalizeSessionTypes(await response.json());
+      return normalizeBookableItems(await getJson(`/appointment/bookableitems?${query}`, "Mindbody availability lookup failed."));
     },
   };
 }
@@ -124,6 +150,29 @@ export function createMindbodyTestDouble({ apiKey, siteId }) {
       return new Response(JSON.stringify({
         SessionTypes: [{ Id: 23, Name: "Nutrition Consultation", Description: "Stub live service", Duration: 45, OnlinePrice: 120 }],
       }), { headers: { "Content-Type": "application/json" } });
+    }
+
+    if (path.endsWith("/appointment/bookableitems")) {
+      const url = new URL(String(input));
+      const startDate = url.searchParams.get("StartDate")?.slice(0, 10) ?? new Date().toISOString().slice(0, 10);
+      const locationId = url.searchParams.get("LocationIds") ?? "1";
+      const sessionTypeId = url.searchParams.get("SessionTypeIds") ?? "23";
+      const emptyDate = Deno.env.get("MINDBODY_TEST_DOUBLE_EMPTY_DATE");
+      const candidateDate = startDate === emptyDate
+        ? new Date(new Date(`${startDate}T00:00:00.000Z`).getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+        : startDate;
+      const start = new Date(`${candidateDate}T16:00:00.000Z`);
+      const items = sessionTypeId === "23"
+        ? [{
+            Id: `sandbox-slot-${candidateDate}`,
+            StartDateTime: start.toISOString(),
+            EndDateTime: new Date(start.getTime() + 45 * 60 * 1000).toISOString(),
+            Location: { Id: locationId, Name: "Clubville" },
+            SessionType: { Id: 23, Duration: 45, OnlinePrice: 120 },
+            Price: 120,
+          }]
+        : [];
+      return new Response(JSON.stringify({ Availabilities: items }), { headers: { "Content-Type": "application/json" } });
     }
 
     return new Response(JSON.stringify({ Error: "Unknown test-double endpoint." }), {

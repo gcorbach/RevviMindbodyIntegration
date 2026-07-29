@@ -107,6 +107,7 @@ test("HTTP catalogue acceptance uses local Postgres/RLS and a controllable Mindb
     } else {
       functionProcess.kill();
     }
+    spawnSync("docker", ["rm", "-f", "supabase_edge_runtime_revvi-booking"], { stdio: "ignore" });
     rmSync(temp, { recursive: true, force: true });
   }
 });

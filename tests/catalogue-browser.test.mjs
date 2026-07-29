@@ -20,7 +20,7 @@ test("customer catalogue page renders the live service journey in a browser", { 
       response.end(JSON.stringify({
         business: { displayName: "Revvi Sandbox Wellness", locationBrowserPath: "/locations" },
         location: { displayName: "Sandbox Location" },
-        services: [{ name: "Nutrition Consultation", description: "A live service", durationMinutes: 45, price: null }],
+        services: [{ id: "service-23", name: "Nutrition Consultation", description: "A live service", durationMinutes: 45, price: null }],
       }));
       return;
     }
@@ -51,6 +51,7 @@ test("customer catalogue page renders the live service journey in a browser", { 
     assert.match(result.stdout, /Revvi Sandbox Wellness/);
     assert.match(result.stdout, /Sandbox Location/);
     assert.match(result.stdout, /Nutrition Consultation/);
+    assert.match(result.stdout, /Choose a time/);
     assert.match(result.stdout, /data-responsive="true"/);
   } finally {
     server.closeAllConnections();
