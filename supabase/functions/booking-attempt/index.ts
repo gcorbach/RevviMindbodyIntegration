@@ -7,6 +7,8 @@ import {
 } from "../_shared/mindbody.js";
 
 const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+const CLIENT_RESOLUTION_LOCK_TTL_MS = 30 * 1000;
+const CLIENT_RESOLUTION_LOCK_WAIT_ATTEMPTS = Number(Deno.env.get("CLIENT_RESOLUTION_LOCK_WAIT_ATTEMPTS") ?? 150);
 
 function allowedOrigins() {
   return new Set((Deno.env.get("ALLOWED_ORIGINS") ?? "").split(",").map((origin) => origin.trim()).filter(Boolean));
@@ -48,6 +50,23 @@ function memberstackId(user: { app_metadata?: Record<string, unknown> }) {
 function verifiedEmail(user: { email?: string | null; email_confirmed_at?: string | null }) {
   if (!user.email || !user.email_confirmed_at) return null;
   return user.email.trim().toLowerCase() || null;
+}
+
+function metadataValue(metadata: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function minimumClientFields(user: { user_metadata?: Record<string, unknown> }, email: string) {
+  const metadata = user.user_metadata ?? {};
+  return {
+    firstName: metadataValue(metadata, "first_name", "firstName", "given_name"),
+    lastName: metadataValue(metadata, "last_name", "lastName", "family_name"),
+    email,
+  };
 }
 
 function resolvedSiteId(business: { provider_environment: string }, configuredSiteId: string) {
@@ -120,6 +139,130 @@ async function createSupportItem(supabase: any, attempt: Record<string, any>, re
   await supabase.from("booking_support_items").insert({ ...attemptEventContext(attempt), reason });
 }
 
+async function readClientMapping(supabase: any, businessId: string, memberstackIdValue: string) {
+  return supabase
+    .from("mindbody_client_mappings")
+    .select("mindbody_client_id, verified_email")
+    .eq("business_id", businessId)
+    .eq("memberstack_id", memberstackIdValue)
+    .maybeSingle();
+}
+
+function mappedClientResolution(mapping: { mindbody_client_id: string; verified_email: string } | null, customerEmail: string) {
+  if (!mapping) return null;
+  if (mapping.verified_email !== customerEmail) return { code: "CLIENT_MAPPING_CONFLICT", message: "The verified Mindbody Client mapping needs support review.", reason: "CLIENT_MAPPING_CONFLICT" };
+  return { client: { providerId: mapping.mindbody_client_id, uniqueId: null, email: customerEmail }, mapped: true, clientCreated: false };
+}
+
+async function acquireClientResolutionLock(supabase: any, businessId: string, memberstackIdValue: string) {
+  const ownerId = crypto.randomUUID();
+  const { error } = await supabase.from("mindbody_client_resolution_locks").insert({
+    business_id: businessId,
+    memberstack_id: memberstackIdValue,
+    owner_id: ownerId,
+  });
+  if (!error) return { ownerId, acquired: true };
+  if (error.code === "23505") return { ownerId, acquired: false };
+  return { ownerId, acquired: false, error };
+}
+
+async function releaseClientResolutionLock(supabase: any, businessId: string, memberstackIdValue: string, ownerId: string) {
+  await supabase
+    .from("mindbody_client_resolution_locks")
+    .delete()
+    .eq("business_id", businessId)
+    .eq("memberstack_id", memberstackIdValue)
+    .eq("owner_id", ownerId);
+}
+
+function wait(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function resolveMindbodyClient({ supabase, client, businessId, memberstackIdValue, customerEmail, customerFields, attempt }: any): Promise<any> {
+  const initialMapping = await readClientMapping(supabase, businessId, memberstackIdValue);
+  if (initialMapping.error) return { code: "DATABASE_ERROR", message: "The Mindbody Client mapping could not be loaded.", reason: "mapping_lookup_failed" };
+  const initialResolution = mappedClientResolution(initialMapping.data, customerEmail);
+  if (initialResolution) return initialResolution;
+
+  const lock = await acquireClientResolutionLock(supabase, businessId, memberstackIdValue);
+  if (lock.error) return { code: "DATABASE_ERROR", message: "The Mindbody Client resolution could not be started.", reason: "client_resolution_lock_failed" };
+  if (!lock.acquired) {
+    for (let attemptNumber = 0; attemptNumber < CLIENT_RESOLUTION_LOCK_WAIT_ATTEMPTS; attemptNumber += 1) {
+      const mapping = await readClientMapping(supabase, businessId, memberstackIdValue);
+      if (mapping.error) return { code: "DATABASE_ERROR", message: "The Mindbody Client mapping could not be loaded.", reason: "mapping_lookup_failed" };
+      const mappingResolution = mappedClientResolution(mapping.data, customerEmail);
+      if (mappingResolution) return mappingResolution;
+      const currentLock = await supabase.from("mindbody_client_resolution_locks").select("acquired_at").eq("business_id", businessId).eq("memberstack_id", memberstackIdValue).maybeSingle();
+      if (currentLock.error) return { code: "DATABASE_ERROR", message: "The Mindbody Client resolution could not be checked.", reason: "client_resolution_lock_lookup_failed" };
+      if (!currentLock.data) return resolveMindbodyClient({ supabase, client, businessId, memberstackIdValue, customerEmail, customerFields, attempt });
+      if (Date.now() - new Date(currentLock.data.acquired_at).getTime() > CLIENT_RESOLUTION_LOCK_TTL_MS) {
+        return { code: "CLIENT_RESOLUTION_STALE", message: "Your Mindbody Client record needs support review before this Booking can continue.", reason: "CLIENT_RESOLUTION_STALE" };
+      }
+      await wait(100);
+    }
+    return { code: "CLIENT_RESOLUTION_IN_PROGRESS", message: "Your Booking needs a moment to finish resolving your Client record. Please try again shortly.", reason: "client_resolution_in_progress" };
+  }
+
+  let providerClientMayExist = false;
+  let providerClientCreateRequested = false;
+  let retainLockForSupport = false;
+  try {
+    const mapping = await readClientMapping(supabase, businessId, memberstackIdValue);
+    if (mapping.error) return { code: "DATABASE_ERROR", message: "The Mindbody Client mapping could not be loaded.", reason: "mapping_lookup_failed" };
+    const mappingResolution = mappedClientResolution(mapping.data, customerEmail);
+    if (mappingResolution) return mappingResolution;
+
+    await recordEvent(supabase, attempt, { event_type: "provider_read_started", operation: "client_lookup" });
+    const clients = await client.findClientsByEmail(customerEmail);
+    const matches = (clients ?? []).filter((candidate: any) => candidate.email?.trim().toLowerCase() === customerEmail);
+    await recordEvent(supabase, attempt, { event_type: "provider_read_succeeded", operation: "client_lookup" });
+    if (matches.length > 1) return { code: "CLIENT_MATCH_AMBIGUOUS", message: "More than one verified-email Mindbody Client matched.", reason: "CLIENT_MATCH_AMBIGUOUS" };
+
+    let resolvedClient = matches[0] ?? null;
+    let clientCreated = false;
+    if (!resolvedClient) {
+      if (!customerFields.firstName || !customerFields.lastName) return { code: "CLIENT_DETAILS_REQUIRED", message: "Your verified name is needed to create a Mindbody Client.", reason: "client_details_required" };
+      await recordEvent(supabase, attempt, { event_type: "provider_write_started", operation: "client_create" });
+      providerClientCreateRequested = true;
+      resolvedClient = await client.createClient(customerFields);
+      if (!resolvedClient.providerId) throw new MindbodyApiError("Mindbody did not return a Client identifier.", 502);
+      clientCreated = true;
+      providerClientMayExist = true;
+      await recordEvent(supabase, attempt, { event_type: "provider_write_succeeded", operation: "client_create" });
+    }
+
+    const { error: mappingError } = await supabase.from("mindbody_client_mappings").insert({
+      business_id: businessId,
+      memberstack_id: memberstackIdValue,
+      mindbody_client_id: resolvedClient.providerId,
+      verified_email: customerEmail,
+    });
+    if (mappingError) {
+      if (mappingError.code !== "23505") {
+        retainLockForSupport = providerClientMayExist;
+        return { code: "CLIENT_RESOLUTION_UNKNOWN", message: "Your Mindbody Client record needs support review before this Booking can continue.", reason: "CLIENT_RESOLUTION_UNKNOWN" };
+      }
+      const racedMapping = await readClientMapping(supabase, businessId, memberstackIdValue);
+      if (racedMapping.data?.mindbody_client_id !== resolvedClient.providerId || racedMapping.data?.verified_email !== customerEmail) {
+        retainLockForSupport = providerClientMayExist;
+        return { code: "CLIENT_MAPPING_CONFLICT", message: "The verified Mindbody Client mapping needs support review.", reason: "CLIENT_MAPPING_CONFLICT" };
+      }
+      resolvedClient = { ...resolvedClient, providerId: racedMapping.data.mindbody_client_id };
+    }
+    return { client: resolvedClient, mapped: false, clientCreated };
+  } catch (error) {
+    if (providerClientMayExist || (providerClientCreateRequested && !(error instanceof MindbodyApiError))) {
+      retainLockForSupport = true;
+      return { code: "CLIENT_RESOLUTION_UNKNOWN", message: "Your Mindbody Client record needs support review before this Booking can continue.", reason: "CLIENT_RESOLUTION_UNKNOWN" };
+    }
+    if (error instanceof MindbodyApiError) return { code: "MINDBODY_UNAVAILABLE", message: "Mindbody Client resolution is temporarily unavailable.", reason: "client_resolution_failed" };
+    return { code: "MINDBODY_UNAVAILABLE", message: "Mindbody Client resolution is temporarily unavailable.", reason: "client_resolution_failed" };
+  } finally {
+    if (!retainLockForSupport) await releaseClientResolutionLock(supabase, businessId, memberstackIdValue, lock.ownerId);
+  }
+}
+
 async function markUnknown(supabase: any, attempt: Record<string, any>, reason: string, providerReferences: Record<string, unknown> = {}) {
   const { data: unknownAttempt } = await supabase
     .from("booking_attempts")
@@ -139,15 +282,16 @@ async function failAttempt(supabase: any, attempt: Record<string, any>, code: st
     .from("booking_attempts")
     .update({ state: "failed" })
     .eq("id", attempt.id)
+    .eq("state", attempt.state)
     .select()
-    .single();
+    .maybeSingle();
   if (!error && failed) attempt = failed;
   await recordEvent(supabase, attempt, { event_type: "attempt_failed", operation: "booking_attempt", error_category: reason });
-  if (reason === "CLIENT_MATCH_AMBIGUOUS" || reason === "CLIENT_MAPPING_CONFLICT") {
+  if (["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(reason)) {
     await createSupportItem(supabase, attempt, reason);
   }
-  const status = code === "CLIENT_MATCH_AMBIGUOUS" || code === "CLIENT_MAPPING_CONFLICT" ? 409 : code === "MINDBODY_UNAVAILABLE" ? 502 : 422;
-  return json({ code, error: message, bookingAttempt: attemptResponse(attempt).bookingAttempt }, status);
+  const status = ["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_IN_PROGRESS", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(code) ? 409 : code === "MINDBODY_UNAVAILABLE" ? 502 : 422;
+  return json({ code, error: message, ...(["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(reason) ? { supportRequired: true } : {}), bookingAttempt: attemptResponse(attempt).bookingAttempt }, status);
 }
 
 async function loadCaller(supabaseUrl: string, anonKey: string, token: string) {
@@ -177,6 +321,7 @@ Deno.serve(async (request) => {
   const customerEmail = verifiedEmail(userData.user);
   if (!customerMemberstackId) return json({ code: "MEMBERSTACK_IDENTITY_REQUIRED", error: "A verified Memberstack identity is required." }, 403, origin, requestId);
   if (!customerEmail) return json({ code: "VERIFIED_EMAIL_REQUIRED", error: "A verified email address is required to complete this Booking." }, 403, origin, requestId);
+  const customerFields = minimumClientFields(userData.user, customerEmail);
 
   const body = await request.json().catch(() => null);
   const businessSlug = body?.business;
@@ -292,26 +437,10 @@ Deno.serve(async (request) => {
   await recordEvent(supabase, created, { event_type: "attempt_created", operation: "booking_attempt" });
   await recordEvent(supabase, created, { event_type: "provider_revalidation_succeeded", operation: "booking_facts_revalidation", metadata: { checks: ["session_catalogue", "location_catalogue", "availability"] } });
 
-  await recordEvent(supabase, created, { event_type: "provider_read_started", operation: "client_lookup" });
-  const { data: clients, error: clientsError } = await client.findClientsByEmail(customerEmail).then((data) => ({ data, error: null })).catch((error) => ({ data: null, error }));
-  if (clientsError) return failAttempt(supabase, created, "MINDBODY_UNAVAILABLE", "Mindbody Client lookup failed.", "client_lookup_failed");
-  const matches = (clients ?? []).filter((candidate) => candidate.email?.trim().toLowerCase() === customerEmail);
-  if (matches.length === 0) return failAttempt(supabase, created, "CLIENT_NOT_FOUND", "A matching Mindbody Client was not found.", "CLIENT_NOT_FOUND");
-  if (matches.length !== 1) return failAttempt(supabase, created, "CLIENT_MATCH_AMBIGUOUS", "More than one verified-email Mindbody Client matched.", "CLIENT_MATCH_AMBIGUOUS");
-  const uniqueVerifiedEmailClient = matches[0];
-  await recordEvent(supabase, created, { event_type: "provider_read_succeeded", operation: "client_lookup" });
-
-  const { data: mapping, error: mappingReadError } = await supabase.from("mindbody_client_mappings").select("mindbody_client_id, verified_email").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).maybeSingle();
-  if (mappingReadError) return failAttempt(supabase, created, "DATABASE_ERROR", "The Mindbody Client mapping could not be loaded.", "mapping_lookup_failed");
-  if (mapping && (mapping.mindbody_client_id !== uniqueVerifiedEmailClient.providerId || mapping.verified_email !== customerEmail)) return failAttempt(supabase, created, "CLIENT_MAPPING_CONFLICT", "The verified Mindbody Client mapping needs support review.", "CLIENT_MAPPING_CONFLICT");
-  if (!mapping) {
-    const { error: mappingError } = await supabase.from("mindbody_client_mappings").insert({ business_id: business.id, memberstack_id: customerMemberstackId, mindbody_client_id: uniqueVerifiedEmailClient.providerId, verified_email: customerEmail });
-    if (mappingError) {
-      if (mappingError.code !== "23505") return failAttempt(supabase, created, "DATABASE_ERROR", "The Mindbody Client mapping could not be recorded.", "mapping_write_failed");
-      const { data: racedMapping } = await supabase.from("mindbody_client_mappings").select("mindbody_client_id, verified_email").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).single();
-      if (!racedMapping || racedMapping.mindbody_client_id !== uniqueVerifiedEmailClient.providerId || racedMapping.verified_email !== customerEmail) return failAttempt(supabase, created, "CLIENT_MAPPING_CONFLICT", "The verified Mindbody Client mapping needs support review.", "CLIENT_MAPPING_CONFLICT");
-    }
-  }
+  const resolution = await resolveMindbodyClient({ supabase, client, businessId: business.id, memberstackIdValue: customerMemberstackId, customerEmail, customerFields, attempt: created });
+  if (resolution.code) return failAttempt(supabase, created, resolution.code, resolution.message, resolution.reason);
+  const uniqueVerifiedEmailClient = resolution.client;
+  const clientCreated = resolution.clientCreated === true;
 
   const { data: claimed, error: claimError } = await supabase.from("booking_attempts").update({ state: "pending_checkout", provider_operation_claimed_at: new Date().toISOString(), mindbody_client_id: uniqueVerifiedEmailClient.providerId }).eq("id", created.id).eq("state", "created").is("provider_operation_claimed_at", null).select().maybeSingle();
   if (claimError) return failAttempt(supabase, created, "DATABASE_ERROR", "The Booking attempt could not be claimed.", "attempt_claim_failed");
@@ -338,7 +467,7 @@ Deno.serve(async (request) => {
       return json({ code: "BOOKING_OUTCOME_UNKNOWN", error: "Mindbody confirmed the appointment, but Revvi needs support reconciliation before showing success.", bookingAttempt: attemptResponse(current).bookingAttempt }, 502, origin, requestId);
     }
     await recordEvent(supabase, confirmed, { event_type: "attempt_confirmed", operation: "appointment_create", latency_ms: Date.now() - providerStartedAt });
-    return json(attemptResponse(confirmed), 200, origin, requestId);
+    return json({ ...attemptResponse(confirmed), ...(clientCreated ? { clientCreated: true } : {}) }, 200, origin, requestId);
   } catch (error) {
     const providerStatus = error instanceof MindbodyApiError ? error.status : 502;
     const state = providerStatus >= 500 ? "unknown" : "failed";

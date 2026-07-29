@@ -22,6 +22,38 @@ async function waitForFunction(url, process, diagnostics) {
   throw new Error(`booking-attempt function did not start: ${diagnostics.join("")}`);
 }
 
+async function startBookingScenario({ memberstackId, clientMode = "existing", extraEnvironment = [] }) {
+  const temp = mkdtempSync(join(tmpdir(), "revvi-booking-attempt-scenario-"));
+  const envFile = join(temp, "functions.env");
+  if (!serviceRoleKey) throw new Error("SUPABASE_SERVICE_ROLE_KEY is required for the HTTP acceptance test.");
+  writeFileSync(envFile, [
+    "MINDBODY_API_KEY=stub-key", "MINDBODY_SANDBOX_SITE_ID=stub-site", "MINDBODY_BASE_URL=http://test-double.invalid/public/v6", "MINDBODY_ENVIRONMENT=sandbox", "MINDBODY_ALLOW_TEST_DOUBLE=true", `MINDBODY_TEST_DOUBLE_CLIENT_MODE=${clientMode}`, "MINDBODY_TEST_DOUBLE_EMPTY_DATE=2026-07-29", ...extraEnvironment,
+  ].join("\n"));
+  const invocation = process.platform === "win32"
+    ? { command: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", `& '${supabaseCommand}' functions serve booking-attempt --env-file '${envFile}' --no-verify-jwt`] }
+    : { command: supabaseCommand, args: ["functions", "serve", "booking-attempt", "--env-file", envFile, "--no-verify-jwt"] };
+  const functionProcess = spawn(invocation.command, invocation.args, { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const diagnostics = []; functionProcess.stdout.on("data", (chunk) => diagnostics.push(chunk.toString())); functionProcess.stderr.on("data", (chunk) => diagnostics.push(chunk.toString()));
+  const functionUrl = `${apiUrl}/functions/v1/booking-attempt`;
+  await waitForFunction(functionUrl, functionProcess, diagnostics);
+  const runId = Date.now(); const email = `issue-14-${memberstackId}-${runId}@example.test`; const password = "LocalSandbox123!";
+  const adminHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json" };
+  const created = await fetch(`${apiUrl}/auth/v1/admin/users`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ email, password, email_confirm: true, user_metadata: { first_name: "Issue", last_name: "Fourteen" }, app_metadata: { identity_provider: "memberstack", memberstack_id: memberstackId, memberstack_verified: true } }) });
+  assert.equal(created.status, 200);
+  const session = await fetch(`${apiUrl}/auth/v1/token?grant_type=password`, { method: "POST", headers: { apikey: anonKey, "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+  assert.equal(session.status, 200); const { access_token: accessToken } = await session.json();
+  const headers = { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" };
+  const request = { business: "sandbox-wellness", location: "sandbox-location", service: "00000000-0000-0000-0000-000000000031", startTime: "2026-07-30T16:00:00.000Z", idempotencyKey: `issue-14-${memberstackId}-${runId}` };
+  return {
+    functionUrl, headers, request, adminHeaders, email,
+    async stop() {
+      if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(functionProcess.pid), "/t", "/f"], { stdio: "ignore" }); else functionProcess.kill();
+      spawnSync("docker", ["rm", "-f", "supabase_edge_runtime_revvi-booking"], { stdio: "ignore" });
+      rmSync(temp, { recursive: true, force: true });
+    },
+  };
+}
+
 test("HTTP booking attempt completes an existing-client free Booking idempotently", { skip: !runHttpTests }, async () => {
   const temp = mkdtempSync(join(tmpdir(), "revvi-booking-attempt-http-"));
   const envFile = join(temp, "functions.env");
@@ -67,4 +99,100 @@ test("HTTP booking attempt completes an existing-client free Booking idempotentl
     spawnSync("docker", ["rm", "-f", "supabase_edge_runtime_revvi-booking"], { stdio: "ignore" });
     rmSync(temp, { recursive: true, force: true });
   }
+});
+
+test("HTTP booking attempt creates a minimum Client when no exact match exists", { skip: !runHttpTests }, async () => {
+  const memberstackId = "issue-14-missing-member";
+  const scenario = await startBookingScenario({ memberstackId, clientMode: "none" });
+  try {
+    const secondaryMapping = await fetch(`${apiUrl}/rest/v1/mindbody_client_mappings`, { method: "POST", headers: scenario.adminHeaders, body: JSON.stringify({ business_id: "00000000-0000-0000-0000-000000000012", memberstack_id: memberstackId, mindbody_client_id: `sandbox-secondary-${Date.now()}`, verified_email: scenario.email }) });
+    assert.equal(secondaryMapping.status, 201, await secondaryMapping.text());
+    const response = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) }); const body = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(body)); assert.equal(body.bookingAttempt.state, "confirmed");
+    const repeated = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify({ ...scenario.request, idempotencyKey: `${scenario.request.idempotencyKey}-new-attempt` }) }); const repeatedBody = await repeated.json();
+    assert.equal(repeated.status, 200, JSON.stringify(repeatedBody)); assert.equal(repeatedBody.bookingAttempt.state, "confirmed");
+    const mappings = await fetch(`${apiUrl}/rest/v1/mindbody_client_mappings?select=business_id,memberstack_id,mindbody_client_id,verified_email&business_id=eq.00000000-0000-0000-0000-000000000011&memberstack_id=eq.${encodeURIComponent(memberstackId)}`, { headers: scenario.adminHeaders });
+    assert.equal(mappings.status, 200); const mappingRows = await mappings.json(); assert.equal(mappingRows.length, 1); assert.equal(mappingRows[0].business_id, "00000000-0000-0000-0000-000000000011"); assert.equal(mappingRows[0].memberstack_id, memberstackId); assert.match(mappingRows[0].mindbody_client_id, /^sandbox-client-created-/); assert.equal(mappingRows[0].verified_email, scenario.email);
+    const events = await fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=operation,event_type&booking_attempt_id=eq.${body.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(events.status, 200); assert.equal((await events.json()).filter((event) => event.operation === "client_create" && event.event_type === "provider_write_started").length, 1);
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP booking attempt stops before provider writes for an ambiguous Client match", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({ memberstackId: "issue-14-ambiguous-member", clientMode: "ambiguous" });
+  try {
+    const response = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) }); const body = await response.json();
+    assert.equal(response.status, 409, JSON.stringify(body)); assert.equal(body.code, "CLIENT_MATCH_AMBIGUOUS"); assert.equal(body.supportRequired, true); assert.doesNotMatch(JSON.stringify(body), /sandbox-client-10[01]/);
+    const attempts = await fetch(`${apiUrl}/rest/v1/booking_attempts?select=id,state,mindbody_client_id,mindbody_appointment_id&memberstack_id=eq.issue-14-ambiguous-member`, { headers: scenario.adminHeaders });
+    assert.equal(attempts.status, 200); const attemptRows = await attempts.json(); assert.deepEqual(attemptRows.map((row) => ({ state: row.state, mindbody_client_id: row.mindbody_client_id, mindbody_appointment_id: row.mindbody_appointment_id })), [{ state: "failed", mindbody_client_id: null, mindbody_appointment_id: null }]);
+    const mappings = await fetch(`${apiUrl}/rest/v1/mindbody_client_mappings?memberstack_id=eq.issue-14-ambiguous-member`, { headers: scenario.adminHeaders });
+    assert.equal(mappings.status, 200); assert.deepEqual(await mappings.json(), []);
+    const support = await fetch(`${apiUrl}/rest/v1/booking_support_items?select=reason,business_id,booking_attempt_id&booking_attempt_id=eq.${attemptRows[0].id}`, { headers: scenario.adminHeaders });
+    assert.equal(support.status, 200); assert.deepEqual((await support.json()).map((item) => item.reason), ["CLIENT_MATCH_AMBIGUOUS"]);
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP booking attempt reports provider Client creation failure without an appointment", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({ memberstackId: "issue-14-failure-member", clientMode: "none", extraEnvironment: ["MINDBODY_TEST_DOUBLE_CLIENT_CREATE_FAILURE=true"] });
+  try {
+    const response = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) }); const body = await response.json();
+    assert.equal(response.status, 502, JSON.stringify(body)); assert.equal(body.code, "MINDBODY_UNAVAILABLE");
+    const attempts = await fetch(`${apiUrl}/rest/v1/booking_attempts?select=state,mindbody_client_id,mindbody_appointment_id&memberstack_id=eq.issue-14-failure-member`, { headers: scenario.adminHeaders });
+    assert.equal(attempts.status, 200); assert.deepEqual((await attempts.json()).map((row) => ({ state: row.state, mindbody_client_id: row.mindbody_client_id, mindbody_appointment_id: row.mindbody_appointment_id })), [{ state: "failed", mindbody_client_id: null, mindbody_appointment_id: null }]);
+    const mappings = await fetch(`${apiUrl}/rest/v1/mindbody_client_mappings?memberstack_id=eq.issue-14-failure-member`, { headers: scenario.adminHeaders });
+    assert.equal(mappings.status, 200); assert.deepEqual(await mappings.json(), []);
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP booking attempt retains its Client-resolution lock when mapping a created Client conflicts", { skip: !runHttpTests }, async () => {
+  const memberstackId = "issue-14-created-conflict";
+  const scenario = await startBookingScenario({ memberstackId, clientMode: "none", extraEnvironment: ["CLIENT_RESOLUTION_LOCK_WAIT_ATTEMPTS=1"] });
+  try {
+    const providerClientId = `sandbox-client-created-${scenario.email.replace(/[^a-z0-9]/gi, "-")}`;
+    const conflictingMapping = await fetch(`${apiUrl}/rest/v1/mindbody_client_mappings`, {
+      method: "POST",
+      headers: scenario.adminHeaders,
+      body: JSON.stringify({ business_id: "00000000-0000-0000-0000-000000000011", memberstack_id: "issue-14-existing-provider-owner", mindbody_client_id: providerClientId, verified_email: "existing-owner@example.test" }),
+    });
+    assert.equal(conflictingMapping.status, 201, await conflictingMapping.text());
+
+    const first = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) }); const firstBody = await first.json();
+    assert.equal(first.status, 409, JSON.stringify(firstBody)); assert.equal(firstBody.code, "CLIENT_MAPPING_CONFLICT"); assert.equal(firstBody.supportRequired, true);
+    const retry = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify({ ...scenario.request, idempotencyKey: `${scenario.request.idempotencyKey}-retry` }) }); const retryBody = await retry.json();
+    assert.equal(retry.status, 409, JSON.stringify(retryBody)); assert.equal(retryBody.code, "CLIENT_RESOLUTION_IN_PROGRESS");
+    const locks = await fetch(`${apiUrl}/rest/v1/mindbody_client_resolution_locks?select=owner_id&business_id=eq.00000000-0000-0000-0000-000000000011&memberstack_id=eq.${memberstackId}`, { headers: scenario.adminHeaders });
+    assert.equal(locks.status, 200); assert.equal((await locks.json()).length, 1);
+    const attempts = await fetch(`${apiUrl}/rest/v1/booking_attempts?select=id&memberstack_id=eq.${memberstackId}`, { headers: scenario.adminHeaders });
+    assert.equal(attempts.status, 200); const attemptRows = await attempts.json();
+    const events = await Promise.all(attemptRows.map((attempt) => fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=operation,event_type&booking_attempt_id=eq.${attempt.id}`, { headers: scenario.adminHeaders }).then((response) => response.json())));
+    assert.equal(events.flat().filter((event) => event.operation === "client_create" && event.event_type === "provider_write_started").length, 1);
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP booking attempt stops safely for a stale Client-resolution lock", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({ memberstackId: "issue-14-stale-lock-member", clientMode: "none" });
+  try {
+    const staleLock = await fetch(`${apiUrl}/rest/v1/mindbody_client_resolution_locks`, { method: "POST", headers: scenario.adminHeaders, body: JSON.stringify({ business_id: "00000000-0000-0000-0000-000000000011", memberstack_id: "issue-14-stale-lock-member", owner_id: "00000000-0000-0000-0000-000000000099", acquired_at: "2000-01-01T00:00:00.000Z" }) });
+    assert.equal(staleLock.status, 201, await staleLock.text());
+    const response = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) }); const body = await response.json();
+    assert.equal(response.status, 409, JSON.stringify(body)); assert.equal(body.code, "CLIENT_RESOLUTION_STALE"); assert.equal(body.supportRequired, true);
+    const support = await fetch(`${apiUrl}/rest/v1/booking_support_items?select=reason&booking_attempt_id=eq.${body.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(support.status, 200); assert.deepEqual(await support.json(), [{ reason: "CLIENT_RESOLUTION_STALE" }]);
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP concurrent no-match Bookings create one Client mapping", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({ memberstackId: "issue-14-concurrent-member", clientMode: "none", extraEnvironment: ["MINDBODY_TEST_DOUBLE_CLIENT_CREATE_DELAY_MS=250"] });
+  try {
+    const responses = await Promise.all([1, 2].map((suffix) => fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify({ ...scenario.request, idempotencyKey: `${scenario.request.idempotencyKey}-${suffix}` }) })));
+    const bodies = await Promise.all(responses.map((response) => response.json()));
+    assert.deepEqual(responses.map((response) => response.status).sort(), [200, 200], JSON.stringify(bodies)); assert.deepEqual(bodies.map((body) => body.bookingAttempt.state).sort(), ["confirmed", "confirmed"]);
+    const mappings = await fetch(`${apiUrl}/rest/v1/mindbody_client_mappings?select=mindbody_client_id&memberstack_id=eq.issue-14-concurrent-member`, { headers: scenario.adminHeaders });
+    assert.equal(mappings.status, 200); assert.equal((await mappings.json()).length, 1);
+    const attemptRows = await fetch(`${apiUrl}/rest/v1/booking_attempts?select=id&memberstack_id=eq.issue-14-concurrent-member`, { headers: scenario.adminHeaders });
+    assert.equal(attemptRows.status, 200); const attemptIds = await attemptRows.json(); assert.equal(attemptIds.length, 2);
+    const eventResponses = await Promise.all(attemptIds.map((attempt) => fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=operation,event_type&booking_attempt_id=eq.${attempt.id}`, { headers: scenario.adminHeaders })));
+    assert.ok(eventResponses.every((response) => response.status === 200)); const eventRows = await Promise.all(eventResponses.map((response) => response.json()));
+    assert.equal(eventRows.flat().filter((event) => event.operation === "client_create" && event.event_type === "provider_write_started").length, 1);
+  } finally { await scenario.stop(); }
 });
