@@ -238,3 +238,20 @@ test("HTTP duplicate submissions wait for one serialized provider write", { skip
     assert.equal(eventRows.filter((event) => event.event_type === "provider_write_started" && event.operation === "appointment_create").length, 1);
   } finally { await scenario.stop(); }
 });
+
+test("HTTP worker-style retry replays an unknown outcome without a second provider write", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({ memberstackId: "issue-15-unknown-retry", clientMode: "existing", extraEnvironment: ["MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_FAILURE=true"] });
+  try {
+    const first = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
+    const firstBody = await first.json();
+    const retry = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
+    const retryBody = await retry.json();
+    assert.equal(first.status, 502, JSON.stringify(firstBody)); assert.equal(retry.status, 502, JSON.stringify(retryBody));
+    assert.deepEqual(retryBody, firstBody);
+    assert.equal(firstBody.bookingAttempt.id, retryBody.bookingAttempt.id); assert.equal(firstBody.bookingAttempt.state, "unknown");
+    const events = await fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=event_type,operation&booking_attempt_id=eq.${firstBody.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(events.status, 200); const eventRows = await events.json();
+    assert.equal(eventRows.filter((event) => event.event_type === "provider_write_started" && event.operation === "appointment_create").length, 1);
+    assert.equal(eventRows.filter((event) => event.event_type === "provider_write_unknown" && event.operation === "appointment_create").length, 1);
+  } finally { await scenario.stop(); }
+});

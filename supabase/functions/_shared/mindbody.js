@@ -251,6 +251,9 @@ export function createMindbodyTestDouble({ apiKey, siteId }) {
     }
 
     if (path.endsWith("/appointment/addappointment")) {
+      if (Deno.env.get("MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_FAILURE") === "true") {
+        return new Response(JSON.stringify({ Error: "Appointment creation unavailable." }), { status: 503, headers: { "Content-Type": "application/json" } });
+      }
       const delay = Number(Deno.env.get("MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_DELAY_MS") ?? 0);
       if (Number.isFinite(delay) && delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
       const body = await new Response(init.body).json();

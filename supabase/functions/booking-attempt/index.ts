@@ -12,6 +12,7 @@ const CLIENT_RESOLUTION_LOCK_TTL_MS = 30 * 1000;
 const CLIENT_RESOLUTION_LOCK_WAIT_ATTEMPTS = Number(Deno.env.get("CLIENT_RESOLUTION_LOCK_WAIT_ATTEMPTS") ?? 150);
 const DUPLICATE_WAIT_MS = Number(Deno.env.get("BOOKING_DUPLICATE_WAIT_MS") ?? 100);
 const DUPLICATE_WAIT_ATTEMPTS = Number(Deno.env.get("BOOKING_DUPLICATE_WAIT_ATTEMPTS") ?? 150);
+const BOOKING_OUTCOME_UNKNOWN_ERROR = "Mindbody's result needs support reconciliation before retrying.";
 
 function allowedOrigins() {
   return new Set((Deno.env.get("ALLOWED_ORIGINS") ?? "").split(",").map((origin) => origin.trim()).filter(Boolean));
@@ -159,6 +160,16 @@ function staleBookingResponse(staleResponse: Record<string, unknown>, attempt: R
     ...staleResponse,
     bookingAttempt: attemptResponse(attempt).bookingAttempt,
   };
+}
+
+function failureStatus(code: string) {
+  if (["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_IN_PROGRESS", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(code)) return 409;
+  if (code === "MINDBODY_UNAVAILABLE" || code === "BOOKING_OUTCOME_UNKNOWN") return 502;
+  return 422;
+}
+
+function unknownOutcomeResponse(attempt: Record<string, any>) {
+  return { code: "BOOKING_OUTCOME_UNKNOWN", error: BOOKING_OUTCOME_UNKNOWN_ERROR, bookingAttempt: attemptResponse(attempt).bookingAttempt };
 }
 
 async function recordEvent(supabase: any, attempt: Record<string, any>, event: Record<string, unknown>) {
@@ -323,7 +334,7 @@ async function markUnknown(supabase: any, attempt: Record<string, any>, reason: 
     event_type: "provider_write_unknown",
     operation: "appointment_create",
     error_category: reason,
-    metadata: { failure_response: { code: "BOOKING_OUTCOME_UNKNOWN", error: "Mindbody's result needs support reconciliation before retrying." } },
+    metadata: { failure_response: { code: "BOOKING_OUTCOME_UNKNOWN", error: BOOKING_OUTCOME_UNKNOWN_ERROR } },
   });
   await createSupportItem(supabase, current, reason);
   return current;
@@ -339,7 +350,7 @@ async function failAttempt(supabase: any, attempt: Record<string, any>, code: st
     .maybeSingle();
   if (!error && failed) attempt = failed;
   const supportRequired = ["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(reason);
-  const status = ["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_IN_PROGRESS", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(code) ? 409 : code === "MINDBODY_UNAVAILABLE" ? 502 : 422;
+  const status = failureStatus(code);
   await recordEvent(supabase, attempt, {
     event_type: "attempt_failed",
     operation: "booking_attempt",
@@ -352,7 +363,7 @@ async function failAttempt(supabase: any, attempt: Record<string, any>, code: st
   return json({ code, error: message, ...(supportRequired ? { supportRequired: true } : {}), bookingAttempt: attemptResponse(attempt).bookingAttempt }, status);
 }
 
-async function rejectStaleAttempt({ supabase, attempt, expectedState, business, location, service, liveService, availability, selectedStart }: any) {
+async function rejectStaleAttempt({ supabase, attempt, expectedState, staleContext }: any) {
   const { data: failed } = await supabase
     .from("booking_attempts")
     .update({ state: "failed" })
@@ -361,7 +372,7 @@ async function rejectStaleAttempt({ supabase, attempt, expectedState, business, 
     .select()
     .single();
   const current = failed ?? { ...attempt, state: "failed" };
-  const staleResponse = staleAvailabilityResponse({ business, location, service, liveService, availability, selectedStart, attempt: null });
+  const staleResponse = staleAvailabilityResponse({ ...staleContext, attempt: null });
   await recordEvent(supabase, current, {
     event_type: "provider_revalidation_rejected",
     operation: "booking_facts_revalidation",
@@ -427,13 +438,11 @@ async function replayAttempt({ supabase, attempt, origin = null, requestId = cry
     .maybeSingle();
   if (failedEvent?.metadata?.failure_response) {
     const failure = failedEvent.metadata.failure_response;
-    const status = ["CLIENT_MATCH_AMBIGUOUS", "CLIENT_MAPPING_CONFLICT", "CLIENT_RESOLUTION_IN_PROGRESS", "CLIENT_RESOLUTION_STALE", "CLIENT_RESOLUTION_UNKNOWN"].includes(failure.code) ? 409 : failure.code === "MINDBODY_UNAVAILABLE" ? 502 : 422;
+    const status = failureStatus(failure.code);
     return json({ ...failure, bookingAttempt: attemptResponse(current).bookingAttempt }, status, origin, requestId);
   }
   const status = current.state === "confirmed" ? 200 : current.state === "unknown" ? 502 : 202;
-  const outcome = current.state === "unknown"
-    ? { code: "BOOKING_OUTCOME_UNKNOWN", error: "The previous provider write needs support reconciliation before retrying." }
-    : {};
+  const outcome = current.state === "unknown" ? unknownOutcomeResponse(current) : {};
   return json({ ...outcome, ...attemptResponse(current) }, status, origin, requestId);
 }
 
@@ -553,6 +562,7 @@ Deno.serve(async (request) => {
     timezone: location.timezone,
     locationProviderId: providerLocation.mindbody_location_id,
   });
+  const staleContext = { business, location, service, liveService, availability: refreshedAvailability, selectedStart };
   const { data: created, error: createError } = await supabase.from("booking_attempts").insert({
     business_id: business.id,
     memberstack_id: customerMemberstackId,
@@ -584,7 +594,7 @@ Deno.serve(async (request) => {
   }
   await recordEvent(supabase, created, { event_type: "attempt_created", operation: "booking_attempt" });
   if (!liveSlot) {
-    const { current, staleResponse } = await rejectStaleAttempt({ supabase, attempt: created, expectedState: "created", business, location, service, liveService, availability: refreshedAvailability, selectedStart });
+    const { current, staleResponse } = await rejectStaleAttempt({ supabase, attempt: created, expectedState: "created", staleContext });
     return json(staleBookingResponse(staleResponse, current), 409, origin, requestId);
   }
   if (!liveSlot.staffProviderId) return failAttempt(supabase, created, "PROVIDER_NOT_READY", "Mindbody did not return the staff needed for this time.", "provider_staff_missing");
@@ -629,7 +639,7 @@ Deno.serve(async (request) => {
   const latestSlot = latestAvailability.slots.find((slot) => slot.startTime === selectedStart);
   const latestProviderSlot = latestItems.find((item) => item.startTime === selectedStart && (!item.locationProviderId || item.locationProviderId === String(providerLocation.mindbody_location_id)));
   if (!latestSlot || !latestProviderSlot) {
-    const { current, staleResponse } = await rejectStaleAttempt({ supabase, attempt: claimed, expectedState: "pending_checkout", business, location, service, liveService, availability: latestAvailability, selectedStart });
+    const { current, staleResponse } = await rejectStaleAttempt({ supabase, attempt: claimed, expectedState: "pending_checkout", staleContext: { ...staleContext, availability: latestAvailability } });
     return json(staleBookingResponse(staleResponse, current), 409, origin, requestId);
   }
   if (!latestSlot.endTime || !latestSlot.durationMinutes) return failAttempt(supabase, claimed, "PROVIDER_NOT_READY", "Mindbody did not return complete facts for this time.", "provider_slot_facts_missing");
@@ -644,7 +654,7 @@ Deno.serve(async (request) => {
     const { data: confirmed, error: confirmationError } = await supabase.from("booking_attempts").update({ state: "confirmed", mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }).eq("id", claimed.id).eq("state", "pending_checkout").select().single();
     if (confirmationError || !confirmed) {
       const current = await markUnknown(supabase, claimed, "confirmation_persist_failed", { mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId });
-      return json({ code: "BOOKING_OUTCOME_UNKNOWN", error: "Mindbody confirmed the appointment, but Revvi needs support reconciliation before showing success.", bookingAttempt: attemptResponse(current).bookingAttempt }, 502, origin, requestId);
+      return json(unknownOutcomeResponse(current), 502, origin, requestId);
     }
     await recordEvent(supabase, confirmed, { event_type: "attempt_confirmed", operation: "appointment_create", latency_ms: Date.now() - providerStartedAt });
     return json({ ...attemptResponse(confirmed), ...(clientCreated ? { clientCreated: true } : {}) }, 200, origin, requestId);
@@ -653,7 +663,7 @@ Deno.serve(async (request) => {
     const state = providerStatus >= 500 ? "unknown" : "failed";
     if (state === "unknown") {
       const current = await markUnknown(supabase, claimed, "provider_unknown");
-      return json({ code: "BOOKING_OUTCOME_UNKNOWN", error: "Mindbody's result needs support reconciliation before retrying.", bookingAttempt: attemptResponse(current).bookingAttempt }, 502, origin, requestId);
+      return json(unknownOutcomeResponse(current), 502, origin, requestId);
     }
     const { data: finalAttempt } = await supabase.from("booking_attempts").update({ state }).eq("id", claimed.id).eq("state", "pending_checkout").select().single();
     const current = finalAttempt ?? claimed;

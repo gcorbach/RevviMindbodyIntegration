@@ -119,7 +119,8 @@ values
   ('issue-14-concurrent-member', 'sandbox_allowlist'),
   ('issue-14-stale-lock-member', 'sandbox_allowlist'),
   ('issue-15-stale-slot', 'sandbox_allowlist'),
-  ('issue-15-duplicate', 'sandbox_allowlist')
+  ('issue-15-duplicate', 'sandbox_allowlist'),
+  ('issue-15-unknown-retry', 'sandbox_allowlist')
 on conflict (memberstack_id) do update set
   source = excluded.source,
   verified_at = now();
@@ -134,7 +135,8 @@ values
   ('00000000-0000-0000-0000-000000000011', 'issue-14-concurrent-member'),
   ('00000000-0000-0000-0000-000000000011', 'issue-14-stale-lock-member'),
   ('00000000-0000-0000-0000-000000000011', 'issue-15-stale-slot'),
-  ('00000000-0000-0000-0000-000000000011', 'issue-15-duplicate')
+  ('00000000-0000-0000-0000-000000000011', 'issue-15-duplicate'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-15-unknown-retry')
 on conflict do nothing;
 
 insert into auth.users (
