@@ -5,6 +5,7 @@ import {
   MindbodyApiError,
   selectEnabledServices,
 } from "../_shared/mindbody.js";
+import { availabilityResponse, dateRange, localDate, serviceResponse } from "../_shared/availability.js";
 
 function allowedOrigins() {
   return new Set(
@@ -68,49 +69,6 @@ function validDate(value: string | null) {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const date = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
-}
-
-function dateRange(selectedDate: string) {
-  const lookaheadDays = Number(Deno.env.get("MINDBODY_AVAILABILITY_LOOKAHEAD_DAYS") ?? 365);
-  const start = new Date(`${selectedDate}T00:00:00.000Z`);
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + (Number.isInteger(lookaheadDays) && lookaheadDays > 0 ? lookaheadDays : 30));
-  return { startDate: start.toISOString(), endDate: end.toISOString() };
-}
-
-function localDate(isoDateTime: string, timezone: string) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone || "UTC",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date(isoDateTime));
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
-function serviceResponse(service: { id: string; name: string; description: string | null; durationMinutes: number | null; price: number | null }) {
-  return {
-    id: service.id,
-    name: service.name,
-    description: service.description,
-    durationMinutes: service.durationMinutes,
-    price: service.price,
-  };
-}
-
-function slotResponse(item: { startTime: string; endTime: string | null; durationMinutes: number | null; price: number | null }, service: { durationMinutes: number | null; price: number | null }) {
-  const durationMinutes = item.durationMinutes ?? service.durationMinutes;
-  const endTime = item.endTime ?? (durationMinutes
-    ? new Date(new Date(item.startTime).getTime() + durationMinutes * 60_000).toISOString()
-    : null);
-  return {
-    id: `slot-${item.startTime}`,
-    startTime: item.startTime,
-    endTime,
-    durationMinutes,
-    price: item.price ?? service.price,
-  };
 }
 
 Deno.serve(async (request) => {
@@ -233,20 +191,13 @@ Deno.serve(async (request) => {
       locationId: providerLocation.mindbody_location_id,
       ...range,
     });
-    const slots = liveItems
-      .filter((item) => !item.locationProviderId || item.locationProviderId === String(providerLocation.mindbody_location_id))
-      .map((item) => slotResponse(item, liveService))
-      .sort((left, right) => left.startTime.localeCompare(right.startTime));
-    const selectedDateSlots = slots.filter((slot) => localDate(slot.startTime, location.timezone) === selectedDate);
-    const nextSlot = slots.find((slot) => localDate(slot.startTime, location.timezone) > selectedDate!);
-    const availability = {
-      state: selectedDateSlots.length > 0 ? "available" : "empty",
-      selectedDate,
-      slots: selectedDateSlots,
-      earliestNextAvailability: nextSlot
-        ? { date: localDate(nextSlot.startTime, location.timezone), startTime: nextSlot.startTime }
-        : null,
-    };
+    const availability = availabilityResponse({
+      items: liveItems,
+      service: liveService,
+      selectedDate: selectedDate!,
+      timezone: location.timezone,
+      locationProviderId: providerLocation.mindbody_location_id,
+    });
 
     const response: Record<string, unknown> = {
       business: {
@@ -264,7 +215,7 @@ Deno.serve(async (request) => {
     };
 
     if (selectedStart) {
-      const selectedSlot = selectedDateSlots.find((slot) => slot.startTime === selectedStart);
+      const selectedSlot = availability.slots.find((slot) => slot.startTime === selectedStart);
       if (!selectedSlot) return json({ code: "SLOT_UNAVAILABLE", error: "That time is no longer available. Choose a refreshed time." }, 409, origin, requestId);
       response.review = {
         business: { displayName: business.display_name },

@@ -85,13 +85,15 @@ test("HTTP booking attempt completes an existing-client free Booking idempotentl
     assert.equal(first.status, 200, JSON.stringify(firstBody)); assert.equal(firstBody.bookingAttempt.state, "confirmed"); assert.equal(firstBody.confirmation.message, "Your Booking is confirmed."); assert.match(firstBody.confirmation.providerAppointmentId, /^sandbox-appointment-/);
     const repeated = await fetch(functionUrl, { method: "POST", headers, body: JSON.stringify(request) }); const repeatedBody = await repeated.json();
     assert.equal(repeated.status, 200); assert.equal(repeatedBody.bookingAttempt.id, firstBody.bookingAttempt.id); assert.equal(repeatedBody.confirmation.providerAppointmentId, firstBody.confirmation.providerAppointmentId);
+    const conflicting = await fetch(functionUrl, { method: "POST", headers, body: JSON.stringify({ ...request, startTime: "2026-07-30T17:00:00.000Z" }) }); const conflictingBody = await conflicting.json();
+    assert.equal(conflicting.status, 409); assert.equal(conflictingBody.code, "IDEMPOTENCY_KEY_REUSED");
     const attempts = await fetch(`${apiUrl}/rest/v1/booking_attempts?select=id,state,business_id,memberstack_id,mindbody_client_id,mindbody_appointment_id&memberstack_id=eq.${encodeURIComponent(memberstackId)}`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } });
     assert.equal(attempts.status, 200); const attemptRows = await attempts.json(); const row = attemptRows.find((candidate) => candidate.id === firstBody.bookingAttempt.id);
     assert.deepEqual(row, { id: firstBody.bookingAttempt.id, state: "confirmed", business_id: "00000000-0000-0000-0000-000000000011", memberstack_id: memberstackId, mindbody_client_id: "sandbox-client-100", mindbody_appointment_id: "sandbox-appointment-100" });
     const mappings = await fetch(`${apiUrl}/rest/v1/mindbody_client_mappings?select=business_id,memberstack_id,mindbody_client_id,verified_email&memberstack_id=eq.${memberstackId}`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } });
     assert.equal(mappings.status, 200); assert.deepEqual((await mappings.json()).find((candidate) => candidate.business_id === "00000000-0000-0000-0000-000000000011"), { business_id: "00000000-0000-0000-0000-000000000011", memberstack_id: memberstackId, mindbody_client_id: "sandbox-client-100", verified_email: email });
     const events = await fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=event_type,operation,metadata&booking_attempt_id=eq.${firstBody.bookingAttempt.id}&order=created_at.asc`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } });
-    assert.equal(events.status, 200); const eventRows = await events.json(); assert.deepEqual(eventRows.map((event) => `${event.event_type}:${event.operation}`), ["attempt_created:booking_attempt", "provider_revalidation_succeeded:booking_facts_revalidation", "provider_read_started:client_lookup", "provider_read_succeeded:client_lookup", "attempt_pending_checkout:state_transition", "provider_write_started:appointment_create", "attempt_confirmed:appointment_create"]); assert.doesNotMatch(JSON.stringify(eventRows), /Api-Key|FirstName|LastName|PAN|CVV|raw payment/i);
+    assert.equal(events.status, 200); const eventRows = await events.json(); assert.deepEqual(eventRows.map((event) => `${event.event_type}:${event.operation}`), ["attempt_created:booking_attempt", "provider_revalidation_succeeded:booking_facts_revalidation", "provider_read_started:client_lookup", "provider_read_succeeded:client_lookup", "attempt_pending_checkout:state_transition", "provider_write_started:appointment_create", "attempt_confirmed:appointment_create", "duplicate_request:idempotency_replay"]); assert.doesNotMatch(JSON.stringify(eventRows), /Api-Key|FirstName|LastName|PAN|CVV|raw payment/i);
     const disabled = await fetch(functionUrl, { method: "POST", headers, body: JSON.stringify({ ...request, business: "sandbox-secondary", location: "secondary-location" }) });
     assert.equal(disabled.status, 409); assert.equal((await disabled.json()).code, "COMPLETION_UNAVAILABLE");
   } finally {
@@ -123,6 +125,8 @@ test("HTTP booking attempt stops before provider writes for an ambiguous Client 
   try {
     const response = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) }); const body = await response.json();
     assert.equal(response.status, 409, JSON.stringify(body)); assert.equal(body.code, "CLIENT_MATCH_AMBIGUOUS"); assert.equal(body.supportRequired, true); assert.doesNotMatch(JSON.stringify(body), /sandbox-client-10[01]/);
+    const repeated = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) }); const repeatedBody = await repeated.json();
+    assert.equal(repeated.status, 409, JSON.stringify(repeatedBody)); assert.equal(repeatedBody.code, "CLIENT_MATCH_AMBIGUOUS"); assert.equal(repeatedBody.bookingAttempt.id, body.bookingAttempt.id);
     const attempts = await fetch(`${apiUrl}/rest/v1/booking_attempts?select=id,state,mindbody_client_id,mindbody_appointment_id&memberstack_id=eq.issue-14-ambiguous-member`, { headers: scenario.adminHeaders });
     assert.equal(attempts.status, 200); const attemptRows = await attempts.json(); assert.deepEqual(attemptRows.map((row) => ({ state: row.state, mindbody_client_id: row.mindbody_client_id, mindbody_appointment_id: row.mindbody_appointment_id })), [{ state: "failed", mindbody_client_id: null, mindbody_appointment_id: null }]);
     const mappings = await fetch(`${apiUrl}/rest/v1/mindbody_client_mappings?memberstack_id=eq.issue-14-ambiguous-member`, { headers: scenario.adminHeaders });
@@ -194,5 +198,60 @@ test("HTTP concurrent no-match Bookings create one Client mapping", { skip: !run
     const eventResponses = await Promise.all(attemptIds.map((attempt) => fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=operation,event_type&booking_attempt_id=eq.${attempt.id}`, { headers: scenario.adminHeaders })));
     assert.ok(eventResponses.every((response) => response.status === 200)); const eventRows = await Promise.all(eventResponses.map((response) => response.json()));
     assert.equal(eventRows.flat().filter((event) => event.operation === "client_create" && event.event_type === "provider_write_started").length, 1);
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP Booking revalidation returns refreshed availability when the selected time is taken", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({ memberstackId: "issue-15-stale-slot", clientMode: "none", extraEnvironment: ["MINDBODY_TEST_DOUBLE_STALE_ON_DATE_RANGE=true"] });
+  try {
+    const response = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
+    const body = await response.json();
+    assert.equal(response.status, 409, JSON.stringify(body));
+    assert.equal(body.code, "SLOT_UNAVAILABLE");
+    assert.equal(body.staleSelection.startTime, scenario.request.startTime);
+    assert.equal(body.bookingAttempt.state, "failed");
+    assert.equal(body.bookingContext.selectedDate, "2026-07-30");
+    assert.equal(body.availability.selectedDate, "2026-07-30");
+    assert.deepEqual(body.availability.slots.map((slot) => slot.startTime), ["2026-07-30T17:00:00.000Z"]);
+    const repeated = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
+    const repeatedBody = await repeated.json();
+    assert.equal(repeated.status, 409, JSON.stringify(repeatedBody));
+    assert.equal(repeatedBody.bookingAttempt.id, body.bookingAttempt.id);
+    assert.deepEqual(repeatedBody.availability, body.availability);
+    const attempts = await fetch(`${apiUrl}/rest/v1/booking_attempts?select=id,state,mindbody_client_id,mindbody_appointment_id&memberstack_id=eq.issue-15-stale-slot`, { headers: scenario.adminHeaders });
+    assert.equal(attempts.status, 200); const attemptRows = await attempts.json(); const row = attemptRows.find((candidate) => candidate.id === body.bookingAttempt.id); assert.ok(row); assert.equal(row.state, "failed"); assert.match(row.mindbody_client_id, /^sandbox-client-created-/); assert.equal(row.mindbody_appointment_id, null);
+    const events = await fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=event_type,operation,error_category&booking_attempt_id=eq.${body.bookingAttempt.id}&order=created_at.asc`, { headers: scenario.adminHeaders });
+    assert.equal(events.status, 200); assert.deepEqual((await events.json()).map((event) => `${event.event_type}:${event.operation}:${event.error_category ?? ""}`), ["attempt_created:booking_attempt:", "provider_revalidation_succeeded:booking_facts_revalidation:", "provider_read_started:client_lookup:", "provider_read_succeeded:client_lookup:", "provider_write_started:client_create:", "provider_write_succeeded:client_create:", "attempt_pending_checkout:state_transition:", "provider_revalidation_rejected:booking_facts_revalidation:slot_unavailable", "attempt_failed:booking_attempt:slot_unavailable", "duplicate_request:idempotency_replay:"]);
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP duplicate submissions wait for one serialized provider write", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({ memberstackId: "issue-15-duplicate", clientMode: "none", extraEnvironment: ["MINDBODY_TEST_DOUBLE_CLIENT_CREATE_DELAY_MS=250", "MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_DELAY_MS=250"] });
+  try {
+    const responses = await Promise.all([1, 2].map(() => fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) })));
+    const bodies = await Promise.all(responses.map((response) => response.json()));
+    assert.deepEqual(responses.map((response) => response.status).sort(), [200, 200], JSON.stringify(bodies));
+    assert.equal(bodies[0].bookingAttempt.id, bodies[1].bookingAttempt.id);
+    assert.equal(bodies[0].confirmation.providerAppointmentId, bodies[1].confirmation.providerAppointmentId);
+    const events = await fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=event_type,operation&booking_attempt_id=eq.${bodies[0].bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(events.status, 200); const eventRows = await events.json();
+    assert.equal(eventRows.filter((event) => event.event_type === "provider_write_started" && event.operation === "appointment_create").length, 1);
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP worker-style retry replays an unknown outcome without a second provider write", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({ memberstackId: "issue-15-unknown-retry", clientMode: "existing", extraEnvironment: ["MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_FAILURE=true"] });
+  try {
+    const first = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
+    const firstBody = await first.json();
+    const retry = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
+    const retryBody = await retry.json();
+    assert.equal(first.status, 502, JSON.stringify(firstBody)); assert.equal(retry.status, 502, JSON.stringify(retryBody));
+    assert.deepEqual(retryBody, firstBody);
+    assert.equal(firstBody.bookingAttempt.id, retryBody.bookingAttempt.id); assert.equal(firstBody.bookingAttempt.state, "unknown");
+    const events = await fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=event_type,operation&booking_attempt_id=eq.${firstBody.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(events.status, 200); const eventRows = await events.json();
+    assert.equal(eventRows.filter((event) => event.event_type === "provider_write_started" && event.operation === "appointment_create").length, 1);
+    assert.equal(eventRows.filter((event) => event.event_type === "provider_write_unknown" && event.operation === "appointment_create").length, 1);
   } finally { await scenario.stop(); }
 });

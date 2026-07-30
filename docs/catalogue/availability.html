@@ -67,7 +67,7 @@
       elements.timeSelection.hidden = true; elements.review.hidden = false; elements.confirmation.hidden = true; elements.reviewError.hidden = true; elements.continueBooking.disabled = false; elements.continueBooking.textContent = "Continue"; document.querySelector("#page-title").textContent = "Review your Booking"; document.querySelector("#page-description").textContent = "Confirm the details before continuing.";
       elements.reviewBusiness.textContent = data.review.business.displayName; elements.reviewLocation.textContent = data.review.location.displayName; elements.reviewService.textContent = data.review.service.name; elements.reviewStart.textContent = formatTime(data.review.startTime, data.location.timezone); elements.reviewDuration.textContent = data.review.service.durationMinutes ? `${data.review.service.durationMinutes} minutes` : "Confirmed at Booking"; elements.reviewPrice.textContent = formatPrice(data.review.service.price);
       const back = new URL(location.href); back.searchParams.delete("start"); elements.backToTimes.href = back.toString(); elements.reviewBack.href = back.toString();
-      if (window.REVVI_TEST_RESPONSIVE) document.body.dataset.responsive = document.documentElement.scrollWidth <= window.innerWidth ? "true" : "false";
+      if (window.REVVI_TEST_RESPONSIVE) { document.body.dataset.responsive = document.documentElement.scrollWidth <= window.innerWidth ? "true" : "false"; document.body.dataset.reviewStart = data.review.startTime; }
     }
     function idempotencyKey() { const params = currentParams(); const key = `revvi-booking:${params.get("business")}:${params.get("location")}:${params.get("service")}:${params.get("start")}`; const stored = sessionStorage.getItem(key); if (stored) return stored; const created = crypto.randomUUID(); sessionStorage.setItem(key, created); return created; }
     function bookingError(data) { return data.code === "CLIENT_MATCH_AMBIGUOUS" ? "We could not safely match your Mindbody Client. Please contact Revvi support to complete this Booking." : data.error || "This Booking could not be completed."; }
@@ -77,6 +77,13 @@
       try {
         const response = await fetch(bookingApiBase, { method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ business: params.get("business"), location: params.get("location"), service: params.get("service"), startTime: params.get("start"), idempotencyKey: idempotencyKey() }) });
         const data = await response.json();
+        if (data.code === "SLOT_UNAVAILABLE" && data.availability) {
+          context(data);
+          renderTimes(data);
+          elements.error.hidden = false;
+          elements.error.textContent = data.staleSelection?.message || data.error || "That time is no longer available. Choose a new live time.";
+          return;
+        }
         if (!response.ok || data.bookingAttempt?.state !== "confirmed") throw new Error(bookingError(data));
         elements.review.hidden = true; elements.confirmation.hidden = false; elements.confirmation.dataset.clientCreated = data.clientCreated === true ? "true" : "false"; elements.confirmationDetails.textContent = `${data.bookingAttempt.service} at ${formatTime(data.bookingAttempt.startTime, data.bookingAttempt.locationTimezone || "UTC")}.`;
         document.querySelector("#page-title").textContent = "Booking confirmed"; document.querySelector("#page-description").textContent = "Mindbody has confirmed your Booking.";
