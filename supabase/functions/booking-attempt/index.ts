@@ -7,11 +7,12 @@ import {
 } from "../_shared/mindbody.js";
 import { availabilityResponse, dateRange, localDate, serviceResponse } from "../_shared/availability.js";
 
-const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+const ATTEMPT_WINDOW_MS = Number(Deno.env.get("BOOKING_ATTEMPT_WINDOW_MS") ?? 15 * 60 * 1000);
 const CLIENT_RESOLUTION_LOCK_TTL_MS = 30 * 1000;
 const CLIENT_RESOLUTION_LOCK_WAIT_ATTEMPTS = Number(Deno.env.get("CLIENT_RESOLUTION_LOCK_WAIT_ATTEMPTS") ?? 150);
 const DUPLICATE_WAIT_MS = Number(Deno.env.get("BOOKING_DUPLICATE_WAIT_MS") ?? 100);
 const DUPLICATE_WAIT_ATTEMPTS = Number(Deno.env.get("BOOKING_DUPLICATE_WAIT_ATTEMPTS") ?? 150);
+const RECONCILIATION_MAX_ATTEMPTS = Number(Deno.env.get("BOOKING_RECONCILIATION_MAX_ATTEMPTS") ?? 3);
 const BOOKING_OUTCOME_UNKNOWN_ERROR = "Mindbody's result needs support reconciliation before retrying.";
 
 function allowedOrigins() {
@@ -169,7 +170,15 @@ function failureStatus(code: string) {
 }
 
 function unknownOutcomeResponse(attempt: Record<string, any>) {
-  return { code: "BOOKING_OUTCOME_UNKNOWN", error: BOOKING_OUTCOME_UNKNOWN_ERROR, bookingAttempt: attemptResponse(attempt).bookingAttempt };
+  return { code: "BOOKING_RESOLVING", error: "We are resolving your Booking attempt with Mindbody. Do not submit it again.", bookingAttempt: attemptResponse(attempt).bookingAttempt };
+}
+
+function expiredAttemptResponse(attempt: Record<string, any>) {
+  return { code: "BOOKING_ATTEMPT_EXPIRED", error: "This Booking attempt has expired. Choose a new time.", bookingAttempt: attemptResponse(attempt).bookingAttempt };
+}
+
+function notCompletedResponse(attempt: Record<string, any>) {
+  return { code: "BOOKING_NOT_COMPLETED", error: "Mindbody confirmed that this Booking attempt did not result in a Booking. You may choose a new time.", bookingAttempt: attemptResponse(attempt).bookingAttempt };
 }
 
 async function recordEvent(supabase: any, attempt: Record<string, any>, event: Record<string, unknown>) {
@@ -317,23 +326,24 @@ async function resolveMindbodyClient({ supabase, client, businessId, memberstack
   }
 }
 
-async function markUnknown(supabase: any, attempt: Record<string, any>, reason: string, providerReferences: Record<string, unknown> = {}) {
+async function markUnknown(supabase: any, attempt: Record<string, any>, reason: string, providerReferences: Record<string, unknown> = {}, latencyMs?: number) {
   const { data: unknownAttempt } = await supabase
     .from("booking_attempts")
     .update({ state: "unknown", ...providerReferences })
     .eq("id", attempt.id)
     .eq("state", "pending_checkout")
+    .gt("expires_at", new Date().toISOString())
     .select()
     .maybeSingle();
   if (!unknownAttempt) {
-    const { data: current } = await supabase.from("booking_attempts").select("*").eq("id", attempt.id).maybeSingle();
-    return current ?? attempt;
+    return expireAttempt(supabase, attempt, "appointment_create");
   }
   const current = unknownAttempt;
   await recordEvent(supabase, current, {
     event_type: "provider_write_unknown",
     operation: "appointment_create",
     error_category: reason,
+    ...(latencyMs === undefined ? {} : { latency_ms: latencyMs }),
     metadata: { failure_response: { code: "BOOKING_OUTCOME_UNKNOWN", error: BOOKING_OUTCOME_UNKNOWN_ERROR } },
   });
   await createSupportItem(supabase, current, reason);
@@ -401,9 +411,111 @@ async function waitForAttemptSettlement(supabase: any, attempt: Record<string, a
   return current;
 }
 
-async function replayAttempt({ supabase, attempt, origin = null, requestId = crypto.randomUUID() }: any) {
+async function expireAttempt(supabase: any, attempt: Record<string, any>, operation: string) {
+  const { data: expired } = await supabase
+    .from("booking_attempts")
+    .update({ state: "expired" })
+    .eq("id", attempt.id)
+    .in("state", ["created", "pending_checkout", "payment_needs_attention", "unknown"])
+    .lte("expires_at", new Date().toISOString())
+    .select()
+    .maybeSingle();
+  let current = expired;
+  if (!current) {
+    const { data } = await supabase.from("booking_attempts").select("*").eq("id", attempt.id).maybeSingle();
+    current = data;
+  }
+  if (expired) await recordEvent(supabase, current, { event_type: "attempt_expired", operation, error_category: "attempt_expired" });
+  return current ?? attempt;
+}
+
+function isAuthoritativeAppointmentForAttempt(appointment: Record<string, any>, attempt: Record<string, any>) {
+  return appointment.clientId === attempt.mindbody_client_id
+    && appointment.locationId === attempt.mindbody_location_id
+    && appointment.sessionTypeId === attempt.mindbody_session_type_id
+    && appointment.startDateTime === new Date(attempt.selected_start_time).toISOString();
+}
+
+async function reconcileUnknownAttempt({ supabase, client, attempt }: any) {
+  if (attempt.state !== "unknown") return attempt;
+  if (new Date(attempt.expires_at).getTime() <= Date.now()) return expireAttempt(supabase, attempt, "appointment_reconciliation");
+
+  const previousAttempts = Number(attempt.reconciliation_attempts ?? 0);
+  if (previousAttempts >= RECONCILIATION_MAX_ATTEMPTS) {
+    await createSupportItem(supabase, attempt, "RECONCILIATION_EXHAUSTED");
+    return attempt;
+  }
+  const reconciledAt = new Date().toISOString();
+  const { data: claimed } = await supabase
+    .from("booking_attempts")
+    .update({ reconciliation_attempts: previousAttempts + 1, reconciliation_last_attempted_at: reconciledAt })
+    .eq("id", attempt.id)
+    .eq("state", "unknown")
+    .eq("reconciliation_attempts", previousAttempts)
+    .select()
+    .maybeSingle();
+  if (!claimed) {
+    const { data: current } = await supabase.from("booking_attempts").select("*").eq("id", attempt.id).maybeSingle();
+    return current ?? attempt;
+  }
+
+  const startedAt = Date.now();
+  await recordEvent(supabase, claimed, { event_type: "reconciliation_read_started", operation: "appointment_reconciliation" });
+  let appointments: any[];
+  try {
+    appointments = await client.findAppointments({
+      clientId: claimed.mindbody_client_id,
+      startDate: claimed.selected_start_time,
+      endDate: new Date(new Date(claimed.selected_start_time).getTime() + 24 * 60 * 60 * 1000).toISOString(),
+    });
+  } catch (error) {
+    const exhausted = claimed.reconciliation_attempts >= RECONCILIATION_MAX_ATTEMPTS;
+    await recordEvent(supabase, claimed, {
+      event_type: exhausted ? "reconciliation_exhausted" : "reconciliation_uncertain",
+      operation: "appointment_reconciliation",
+      error_category: "authoritative_read_unavailable",
+      latency_ms: Date.now() - startedAt,
+    });
+    if (exhausted) await createSupportItem(supabase, claimed, "RECONCILIATION_EXHAUSTED");
+    return claimed;
+  }
+
+  const appointment = appointments.find((candidate) => isAuthoritativeAppointmentForAttempt(candidate, claimed));
+  if (appointment) {
+    const { data: confirmed } = await supabase
+      .from("booking_attempts")
+      .update({ state: "confirmed", mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId })
+      .eq("id", claimed.id)
+      .eq("state", "unknown")
+      .gt("expires_at", new Date().toISOString())
+      .select()
+      .maybeSingle();
+    if (confirmed) {
+      await recordEvent(supabase, confirmed, { event_type: "reconciliation_confirmed", operation: "appointment_reconciliation", error_category: "authoritative_success", latency_ms: Date.now() - startedAt });
+      return confirmed;
+    }
+    return expireAttempt(supabase, claimed, "appointment_reconciliation");
+  }
+
+  const { data: failed } = await supabase
+    .from("booking_attempts")
+    .update({ state: "failed" })
+    .eq("id", claimed.id)
+    .eq("state", "unknown")
+    .gt("expires_at", new Date().toISOString())
+    .select()
+    .maybeSingle();
+  const current = failed ?? await expireAttempt(supabase, claimed, "appointment_reconciliation");
+  if (failed) await recordEvent(supabase, current, { event_type: "reconciliation_absent", operation: "appointment_reconciliation", error_category: "authoritative_absence", latency_ms: Date.now() - startedAt });
+  return current;
+}
+
+async function replayAttempt({ supabase, client, attempt, origin = null, requestId = crypto.randomUUID() }: any) {
   const settled = await waitForAttemptSettlement(supabase, attempt);
-  const current = settled;
+  const expired = !["confirmed", "failed", "expired"].includes(settled.state) && new Date(settled.expires_at).getTime() <= Date.now();
+  const current = expired
+    ? await expireAttempt(supabase, settled, "idempotency_replay")
+    : settled.state === "unknown" ? await reconcileUnknownAttempt({ supabase, client, attempt: settled }) : settled;
   await recordEvent(supabase, current, { event_type: "duplicate_request", operation: "idempotency_replay" });
   const { data: staleEvent } = await supabase
     .from("booking_attempt_events")
@@ -416,17 +528,6 @@ async function replayAttempt({ supabase, attempt, origin = null, requestId = cry
     .maybeSingle();
   if (staleEvent?.metadata?.stale_response) {
     return json(staleBookingResponse(staleEvent.metadata.stale_response, current), 409, origin, requestId);
-  }
-  const { data: unknownEvent } = await supabase
-    .from("booking_attempt_events")
-    .select("metadata")
-    .eq("booking_attempt_id", current.id)
-    .eq("event_type", "provider_write_unknown")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (unknownEvent?.metadata?.failure_response) {
-    return json({ ...unknownEvent.metadata.failure_response, bookingAttempt: attemptResponse(current).bookingAttempt }, 502, origin, requestId);
   }
   const { data: failedEvent } = await supabase
     .from("booking_attempt_events")
@@ -441,7 +542,9 @@ async function replayAttempt({ supabase, attempt, origin = null, requestId = cry
     const status = failureStatus(failure.code);
     return json({ ...failure, bookingAttempt: attemptResponse(current).bookingAttempt }, status, origin, requestId);
   }
-  const status = current.state === "confirmed" ? 200 : current.state === "unknown" ? 502 : 202;
+  if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
+  if (current.state === "failed") return json(notCompletedResponse(current), 409, origin, requestId);
+  const status = current.state === "confirmed" ? 200 : current.state === "unknown" ? 202 : current.state === "expired" ? 409 : 202;
   const outcome = current.state === "unknown" ? unknownOutcomeResponse(current) : {};
   return json({ ...outcome, ...attemptResponse(current) }, status, origin, requestId);
 }
@@ -510,13 +613,6 @@ Deno.serve(async (request) => {
   if (serviceError) return json({ code: "DATABASE_ERROR", error: "Service configuration could not be loaded." }, 500, origin, requestId);
   if (!service) return json({ code: "SERVICE_UNAVAILABLE", error: "This service is not available at the selected Location." }, 404, origin, requestId);
 
-  const { data: existingAttempt, error: existingAttemptError } = await supabase.from("booking_attempts").select("*").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).eq("idempotency_key", idempotencyKey).maybeSingle();
-  if (existingAttemptError) return json({ code: "DATABASE_ERROR", error: "Booking attempt could not be loaded." }, 500, origin, requestId);
-  if (existingAttempt) {
-    if (!sameBookingFacts(existingAttempt, { serviceId: service.id, locationId: location.id, selectedStart })) return json({ code: "IDEMPOTENCY_KEY_REUSED", error: "That idempotency key belongs to another Booking." }, 409, origin, requestId);
-    return replayAttempt({ supabase, attempt: existingAttempt, origin, requestId });
-  }
-
   const [{ data: providerConfig, error: providerConfigError }, { data: providerLocation, error: providerLocationError }, { data: providerService, error: providerServiceError }] = await Promise.all([
     supabase.from("business_provider_config").select("mindbody_site_id").eq("business_id", business.id).maybeSingle(),
     supabase.from("business_location_provider_config").select("mindbody_location_id").eq("business_id", business.id).eq("location_id", location.id).maybeSingle(),
@@ -531,8 +627,34 @@ Deno.serve(async (request) => {
     apiKey: Deno.env.get("MINDBODY_API_KEY"),
     baseUrl: Deno.env.get("MINDBODY_BASE_URL"),
     siteId,
+    requestTimeoutMs: Number(Deno.env.get("MINDBODY_REQUEST_TIMEOUT_MS") ?? 10_000),
     fetchImpl: useTestDouble ? createMindbodyTestDouble({ apiKey: Deno.env.get("MINDBODY_API_KEY"), siteId }) : fetch,
   });
+
+  const { data: existingAttempt, error: existingAttemptError } = await supabase.from("booking_attempts").select("*").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).eq("idempotency_key", idempotencyKey).maybeSingle();
+  if (existingAttemptError) return json({ code: "DATABASE_ERROR", error: "Booking attempt could not be loaded." }, 500, origin, requestId);
+  if (existingAttempt) {
+    if (!sameBookingFacts(existingAttempt, { serviceId: service.id, locationId: location.id, selectedStart })) return json({ code: "IDEMPOTENCY_KEY_REUSED", error: "That idempotency key belongs to another Booking." }, 409, origin, requestId);
+    return replayAttempt({ supabase, client, attempt: existingAttempt, origin, requestId });
+  }
+
+  const { data: unresolvedAttempt, error: unresolvedAttemptError } = await supabase
+    .from("booking_attempts")
+    .select("*")
+    .eq("business_id", business.id)
+    .eq("memberstack_id", customerMemberstackId)
+    .eq("state", "unknown")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (unresolvedAttemptError) return json({ code: "DATABASE_ERROR", error: "Booking reconciliation could not be loaded." }, 500, origin, requestId);
+  if (unresolvedAttempt) {
+    const reconciled = await reconcileUnknownAttempt({ supabase, client, attempt: unresolvedAttempt });
+    if (reconciled.state === "confirmed") return json(attemptResponse(reconciled), 200, origin, requestId);
+    if (reconciled.state === "unknown") return json(unknownOutcomeResponse(reconciled), 202, origin, requestId);
+    if (reconciled.state === "expired") return json(expiredAttemptResponse(reconciled), 409, origin, requestId);
+    // Authoritative absence is the only result that permits this new provider write.
+  }
 
   let liveSlot: any;
   let liveItems: any[] = [];
@@ -588,7 +710,7 @@ Deno.serve(async (request) => {
       const { data: raced } = await supabase.from("booking_attempts").select("*").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).eq("idempotency_key", idempotencyKey).single();
       if (!raced) return json({ code: "BOOKING_ATTEMPT_CONFLICT", error: "The Booking attempt is already being processed." }, 409, origin, requestId);
       if (!sameBookingFacts(raced, { serviceId: service.id, locationId: location.id, selectedStart })) return json({ code: "IDEMPOTENCY_KEY_REUSED", error: "That idempotency key belongs to another Booking." }, 409, origin, requestId);
-      return replayAttempt({ supabase, attempt: raced, origin, requestId });
+      return replayAttempt({ supabase, client, attempt: raced, origin, requestId });
     }
     return json({ code: "DATABASE_ERROR", error: "Booking attempt could not be created." }, 500, origin, requestId);
   }
@@ -644,17 +766,31 @@ Deno.serve(async (request) => {
   }
   if (!latestSlot.endTime || !latestSlot.durationMinutes) return failAttempt(supabase, claimed, "PROVIDER_NOT_READY", "Mindbody did not return complete facts for this time.", "provider_slot_facts_missing");
   if (!latestProviderSlot.staffProviderId) return failAttempt(supabase, claimed, "PROVIDER_NOT_READY", "Mindbody did not return the staff needed for this time.", "provider_staff_missing");
+  if (new Date(claimed.expires_at).getTime() <= Date.now()) {
+    const current = await expireAttempt(supabase, claimed, "appointment_create");
+    return json(expiredAttemptResponse(current), 409, origin, requestId);
+  }
   liveSlot = { ...latestProviderSlot, endTime: latestSlot.endTime, durationMinutes: latestSlot.durationMinutes, price: latestSlot.price };
   await recordEvent(supabase, claimed, { event_type: "provider_write_started", operation: "appointment_create" });
 
   const providerStartedAt = Date.now();
   try {
     const appointment = await client.addAppointment({ clientId: uniqueVerifiedEmailClient.providerId, locationId: providerLocation.mindbody_location_id, staffId: liveSlot.staffProviderId, sessionTypeId: providerService.mindbody_session_type_id, startDateTime: selectedStart });
+    if (appointment.paymentNeedsAttention) {
+      const { data: paymentNeedsAttention } = await supabase.from("booking_attempts").update({ state: "payment_needs_attention", mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }).eq("id", claimed.id).eq("state", "pending_checkout").gt("expires_at", new Date().toISOString()).select().single();
+      const current = paymentNeedsAttention ?? await expireAttempt(supabase, claimed, "appointment_create");
+      if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
+      await recordEvent(supabase, current, { event_type: "attempt_payment_needs_attention", operation: "appointment_create", error_category: "payment_needs_attention", latency_ms: Date.now() - providerStartedAt });
+      return json({ code: "PAYMENT_NEEDS_ATTENTION", error: "Mindbody requires an additional payment action before this Booking attempt can be confirmed.", bookingAttempt: attemptResponse(current).bookingAttempt }, 202, origin, requestId);
+    }
     if (!appointment.providerId) throw new MindbodyApiError("Mindbody did not return an appointment identifier.", 502);
-    const { data: confirmed, error: confirmationError } = await supabase.from("booking_attempts").update({ state: "confirmed", mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }).eq("id", claimed.id).eq("state", "pending_checkout").select().single();
+    const { data: confirmed, error: confirmationError } = await supabase.from("booking_attempts").update({ state: "confirmed", mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }).eq("id", claimed.id).eq("state", "pending_checkout").gt("expires_at", new Date().toISOString()).select().single();
     if (confirmationError || !confirmed) {
-      const current = await markUnknown(supabase, claimed, "confirmation_persist_failed", { mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId });
-      return json(unknownOutcomeResponse(current), 502, origin, requestId);
+      const current = await expireAttempt(supabase, claimed, "appointment_create");
+      if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
+      const unknown = await markUnknown(supabase, current, "confirmation_persist_failed", { mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }, Date.now() - providerStartedAt);
+      if (unknown.state === "expired") return json(expiredAttemptResponse(unknown), 409, origin, requestId);
+      return json(unknownOutcomeResponse(unknown), 502, origin, requestId);
     }
     await recordEvent(supabase, confirmed, { event_type: "attempt_confirmed", operation: "appointment_create", latency_ms: Date.now() - providerStartedAt });
     return json({ ...attemptResponse(confirmed), ...(clientCreated ? { clientCreated: true } : {}) }, 200, origin, requestId);
@@ -662,11 +798,13 @@ Deno.serve(async (request) => {
     const providerStatus = error instanceof MindbodyApiError ? error.status : 502;
     const state = providerStatus >= 500 ? "unknown" : "failed";
     if (state === "unknown") {
-      const current = await markUnknown(supabase, claimed, "provider_unknown");
+      const current = await markUnknown(supabase, claimed, "provider_unknown", {}, Date.now() - providerStartedAt);
+      if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
       return json(unknownOutcomeResponse(current), 502, origin, requestId);
     }
-    const { data: finalAttempt } = await supabase.from("booking_attempts").update({ state }).eq("id", claimed.id).eq("state", "pending_checkout").select().single();
-    const current = finalAttempt ?? claimed;
+    const { data: finalAttempt } = await supabase.from("booking_attempts").update({ state }).eq("id", claimed.id).eq("state", "pending_checkout").gt("expires_at", new Date().toISOString()).select().single();
+    const current = finalAttempt ?? await expireAttempt(supabase, claimed, "appointment_create");
+    if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
     await recordEvent(supabase, current, {
       event_type: state === "unknown" ? "provider_write_unknown" : "attempt_failed",
       operation: "appointment_create",

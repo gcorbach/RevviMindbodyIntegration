@@ -120,7 +120,16 @@ values
   ('issue-14-stale-lock-member', 'sandbox_allowlist'),
   ('issue-15-stale-slot', 'sandbox_allowlist'),
   ('issue-15-duplicate', 'sandbox_allowlist'),
-  ('issue-15-unknown-retry', 'sandbox_allowlist')
+  ('issue-15-unknown-retry', 'sandbox_allowlist'),
+  ('issue-16-authoritative-success', 'sandbox_allowlist'),
+  ('issue-16-authoritative-absence', 'sandbox_allowlist'),
+  ('issue-16-payment-needs-attention', 'sandbox_allowlist'),
+  ('issue-16-reconciliation-exhausted', 'sandbox_allowlist'),
+  ('issue-16-expired', 'sandbox_allowlist'),
+  ('issue-16-expired-during-confirmation', 'sandbox_allowlist'),
+  ('issue-16-expired-payment-attention', 'sandbox_allowlist'),
+  ('issue-16-malformed-reconciliation', 'sandbox_allowlist'),
+  ('issue-16-delayed-callback', 'sandbox_allowlist')
 on conflict (memberstack_id) do update set
   source = excluded.source,
   verified_at = now();
@@ -136,7 +145,16 @@ values
   ('00000000-0000-0000-0000-000000000011', 'issue-14-stale-lock-member'),
   ('00000000-0000-0000-0000-000000000011', 'issue-15-stale-slot'),
   ('00000000-0000-0000-0000-000000000011', 'issue-15-duplicate'),
-  ('00000000-0000-0000-0000-000000000011', 'issue-15-unknown-retry')
+  ('00000000-0000-0000-0000-000000000011', 'issue-15-unknown-retry'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-authoritative-success'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-authoritative-absence'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-payment-needs-attention'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-reconciliation-exhausted'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-expired'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-expired-during-confirmation'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-expired-payment-attention'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-malformed-reconciliation'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-delayed-callback')
 on conflict do nothing;
 
 insert into auth.users (
