@@ -60,6 +60,7 @@ test("HTTP catalogue acceptance uses local Postgres/RLS and a controllable Mindb
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
     shell: functionInvocation.shell,
+    detached: process.platform !== "win32",
   });
   const diagnostics = [];
   functionProcess.stdout.on("data", (chunk) => diagnostics.push(chunk.toString()));
@@ -105,7 +106,7 @@ test("HTTP catalogue acceptance uses local Postgres/RLS and a controllable Mindb
     if (process.platform === "win32") {
       spawnSync("taskkill", ["/pid", String(functionProcess.pid), "/t", "/f"], { stdio: "ignore" });
     } else {
-      functionProcess.kill();
+      process.kill(-functionProcess.pid);
     }
     spawnSync("docker", ["rm", "-f", "supabase_edge_runtime_revvi-booking"], { stdio: "ignore" });
     rmSync(temp, { recursive: true, force: true });

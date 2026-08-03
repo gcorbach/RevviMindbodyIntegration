@@ -43,6 +43,26 @@ function normalizeAppointment(payload) {
   };
 }
 
+function normalizeCheckout(payload) {
+  const transactions = payload?.Transactions ?? payload?.transactions ?? [];
+  if (!Array.isArray(transactions)) throw new MindbodyApiError("Mindbody checkout returned an invalid transaction list.");
+  const transactionIds = transactions
+    .map((transaction) => asString(transaction?.TransactionID ?? transaction?.TransactionId ?? transaction?.Id))
+    .filter(Boolean);
+  const authenticationUrls = transactions
+    .map((transaction) => asString(transaction?.AuthenticationUrl ?? transaction?.AuthenticationURL))
+    .filter(Boolean);
+  if (authenticationUrls.length > 0) {
+    if (transactionIds.length === 0) throw new MindbodyApiError("Mindbody checkout did not return transaction identifiers for payment authentication.");
+    return { status: "payment_needs_attention", transactionIds, authenticationUrl: authenticationUrls[0] };
+  }
+  if (payload?.PaymentNeedsAttention === true) return { status: "payment_needs_attention", transactionIds, authenticationUrl: null };
+  if (payload?.Success === false || payload?.ErrorCode || payload?.Error) return { status: "failed", transactionIds, saleId: null };
+  const saleId = asString(payload?.Sale?.Id ?? payload?.Sale?.ID ?? payload?.SaleId);
+  if (payload?.Success !== true && !saleId) throw new MindbodyApiError("Mindbody checkout did not return an authoritative result.");
+  return { status: "succeeded", transactionIds, saleId };
+}
+
 function normalizeAppointments(payload) {
   const values = payload?.Appointments ?? payload?.appointments;
   if (!Array.isArray(values)) throw new MindbodyApiError("Mindbody appointment reconciliation returned an invalid response.");
@@ -202,6 +222,9 @@ export function createMindbodyClient({ apiKey, baseUrl, siteId, fetchImpl = fetc
         SendEmail: false,
       }));
     },
+    async checkoutShoppingCart(checkoutRequest) {
+      return normalizeCheckout(await requestJson("/sale/checkoutshoppingcart", "Mindbody checkout failed.", "POST", checkoutRequest));
+    },
     async findAppointments({ clientId, startDate, endDate }) {
       const query = new URLSearchParams({
         ClientId: String(clientId),
@@ -295,6 +318,18 @@ export function createMindbodyTestDouble({ apiKey, siteId }) {
         return new Response(JSON.stringify({ Appointment: { Id: "sandbox-appointment-payment-attention", UniqueId: "sandbox-appointment-payment-attention-unique", ClientId: body.ClientId, PaymentNeedsAttention: true } }), { headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({ Appointment: { Id: "sandbox-appointment-100", UniqueId: "sandbox-appointment-unique-100", ClientId: body.ClientId } }), { headers: { "Content-Type": "application/json" } });
+    }
+
+    if (path.endsWith("/sale/checkoutshoppingcart")) {
+      const outcome = Deno.env.get("MINDBODY_TEST_DOUBLE_CHECKOUT_OUTCOME") ?? "success";
+      const body = await new Response(init.body).json();
+      if (outcome === "unknown") return new Response(JSON.stringify({ Error: "Checkout unavailable." }), { status: 503, headers: { "Content-Type": "application/json" } });
+      if (outcome === "failed") return new Response(JSON.stringify({ Error: "Checkout rejected." }), { status: 422, headers: { "Content-Type": "application/json" } });
+      if (outcome === "payment_needs_attention") return new Response(JSON.stringify({ PaymentNeedsAttention: true, Transactions: [{ TransactionID: "sandbox-transaction-attention" }] }), { headers: { "Content-Type": "application/json" } });
+      if (outcome === "sca" && (!Array.isArray(body.TransactionIds) || body.TransactionIds.length === 0)) {
+        return new Response(JSON.stringify({ Transactions: [{ TransactionID: "sandbox-transaction-sca", AuthenticationUrl: Deno.env.get("MINDBODY_TEST_DOUBLE_SCA_CHALLENGE_URL") ?? "https://provider.example.test/sca-challenge" }] }), { headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ Success: true, Sale: { Id: "sandbox-sale-100" }, Transactions: [{ TransactionID: "sandbox-transaction-100" }] }), { headers: { "Content-Type": "application/json" } });
     }
 
     if (path.endsWith("/appointment/appointments")) {

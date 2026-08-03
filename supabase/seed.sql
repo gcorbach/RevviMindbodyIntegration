@@ -28,6 +28,26 @@ values
     false,
     'disabled',
     'sandbox'
+  ),
+  (
+    '00000000-0000-0000-0000-000000000013',
+    'sandbox-checkout-disabled',
+    'Revvi Sandbox Checkout Disabled',
+    'support@example.test',
+    'active',
+    true,
+    'mindbody_checkout',
+    'sandbox'
+  ),
+  (
+    '00000000-0000-0000-0000-000000000014',
+    'sandbox-checkout',
+    'Revvi Sandbox Checkout',
+    'support@example.test',
+    'active',
+    true,
+    'mindbody_checkout',
+    'sandbox'
   )
 on conflict (id) do update set
   slug = excluded.slug,
@@ -62,6 +82,22 @@ values
     'Secondary Location',
     'UTC',
     true
+  ),
+  (
+    '00000000-0000-0000-0000-000000000023',
+    '00000000-0000-0000-0000-000000000013',
+    'checkout-disabled-location',
+    'Sandbox Checkout Disabled Location',
+    'America/Los_Angeles',
+    true
+  ),
+  (
+    '00000000-0000-0000-0000-000000000024',
+    '00000000-0000-0000-0000-000000000014',
+    'checkout-location',
+    'Sandbox Checkout Location',
+    'America/Los_Angeles',
+    true
   )
 on conflict (id) do update set
   business_id = excluded.business_id,
@@ -83,6 +119,18 @@ values (
   '00000000-0000-0000-0000-000000000021',
   null,
   true
+), (
+  '00000000-0000-0000-0000-000000000032',
+  '00000000-0000-0000-0000-000000000013',
+  '00000000-0000-0000-0000-000000000023',
+  null,
+  true
+), (
+  '00000000-0000-0000-0000-000000000033',
+  '00000000-0000-0000-0000-000000000014',
+  '00000000-0000-0000-0000-000000000024',
+  null,
+  true
 )
 on conflict (id) do update set
   business_id = excluded.business_id,
@@ -93,21 +141,44 @@ on conflict (id) do update set
 insert into public.business_provider_config (business_id, mindbody_site_id)
 values
   ('00000000-0000-0000-0000-000000000011', '__MINDBODY_SANDBOX_SITE_ID__'),
-  ('00000000-0000-0000-0000-000000000012', '__MINDBODY_SANDBOX_SITE_ID__')
+  ('00000000-0000-0000-0000-000000000012', '__MINDBODY_SANDBOX_SITE_ID__'),
+  ('00000000-0000-0000-0000-000000000013', '__MINDBODY_SANDBOX_SITE_ID__'),
+  ('00000000-0000-0000-0000-000000000014', '__MINDBODY_SANDBOX_SITE_ID__')
 on conflict (business_id) do update set
   mindbody_site_id = excluded.mindbody_site_id;
 
 insert into public.business_location_provider_config (business_id, location_id, mindbody_location_id)
 values
   ('00000000-0000-0000-0000-000000000011', '00000000-0000-0000-0000-000000000021', '1'),
-  ('00000000-0000-0000-0000-000000000012', '00000000-0000-0000-0000-000000000022', '2')
+  ('00000000-0000-0000-0000-000000000012', '00000000-0000-0000-0000-000000000022', '2'),
+  ('00000000-0000-0000-0000-000000000013', '00000000-0000-0000-0000-000000000023', '1'),
+  ('00000000-0000-0000-0000-000000000014', '00000000-0000-0000-0000-000000000024', '1')
 on conflict (business_id, location_id) do update set
   mindbody_location_id = excluded.mindbody_location_id;
 
 insert into public.business_service_provider_config (business_id, service_id, mindbody_session_type_id)
-values ('00000000-0000-0000-0000-000000000011', '00000000-0000-0000-0000-000000000031', '23')
+values
+  ('00000000-0000-0000-0000-000000000011', '00000000-0000-0000-0000-000000000031', '23'),
+  ('00000000-0000-0000-0000-000000000013', '00000000-0000-0000-0000-000000000032', '23'),
+  ('00000000-0000-0000-0000-000000000014', '00000000-0000-0000-0000-000000000033', '23')
 on conflict (business_id, service_id) do update set
   mindbody_session_type_id = excluded.mindbody_session_type_id;
+
+insert into public.business_checkout_config (business_id, payment_mode, checkout_request, validation_evidence_ref, validated_at, enabled)
+values (
+  '00000000-0000-0000-0000-000000000014',
+  'approved_non_sensitive',
+  '{"ClientId":"$REVVI_CLIENT_ID","AppointmentId":"$REVVI_APPOINTMENT_ID","TransactionIds":"$REVVI_TRANSACTION_IDS","PaymentAuthenticationCallbackUrl":"$REVVI_CALLBACK_URL","PaymentInfo":{"PaymentMethodId":801},"Test":true}'::jsonb,
+  'sandbox-checkout-validation-2026-08-03',
+  '2026-08-03T00:00:00.000Z',
+  true
+)
+on conflict (business_id) do update set
+  payment_mode = excluded.payment_mode,
+  checkout_request = excluded.checkout_request,
+  validation_evidence_ref = excluded.validation_evidence_ref,
+  validated_at = excluded.validated_at,
+  enabled = excluded.enabled;
 
 insert into public.memberstack_identity_allowlist (memberstack_id, source)
 values
@@ -129,7 +200,13 @@ values
   ('issue-16-expired-during-confirmation', 'sandbox_allowlist'),
   ('issue-16-expired-payment-attention', 'sandbox_allowlist'),
   ('issue-16-malformed-reconciliation', 'sandbox_allowlist'),
-  ('issue-16-delayed-callback', 'sandbox_allowlist')
+  ('issue-16-delayed-callback', 'sandbox_allowlist'),
+  ('issue-17-checkout-disabled', 'sandbox_allowlist'),
+  ('issue-17-checkout-enabled', 'sandbox_allowlist'),
+  ('issue-17-checkout-sca', 'sandbox_allowlist'),
+  ('issue-17-checkout-callback', 'sandbox_allowlist'),
+  ('issue-17-checkout-failed', 'sandbox_allowlist'),
+  ('issue-17-checkout-unknown', 'sandbox_allowlist')
 on conflict (memberstack_id) do update set
   source = excluded.source,
   verified_at = now();
@@ -154,7 +231,13 @@ values
   ('00000000-0000-0000-0000-000000000011', 'issue-16-expired-during-confirmation'),
   ('00000000-0000-0000-0000-000000000011', 'issue-16-expired-payment-attention'),
   ('00000000-0000-0000-0000-000000000011', 'issue-16-malformed-reconciliation'),
-  ('00000000-0000-0000-0000-000000000011', 'issue-16-delayed-callback')
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-delayed-callback'),
+  ('00000000-0000-0000-0000-000000000013', 'issue-17-checkout-disabled'),
+  ('00000000-0000-0000-0000-000000000014', 'issue-17-checkout-enabled'),
+  ('00000000-0000-0000-0000-000000000014', 'issue-17-checkout-sca'),
+  ('00000000-0000-0000-0000-000000000014', 'issue-17-checkout-callback'),
+  ('00000000-0000-0000-0000-000000000014', 'issue-17-checkout-failed'),
+  ('00000000-0000-0000-0000-000000000014', 'issue-17-checkout-unknown')
 on conflict do nothing;
 
 insert into auth.users (

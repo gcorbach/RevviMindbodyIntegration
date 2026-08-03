@@ -44,7 +44,7 @@ async function startBookingScenario({ memberstackId, clientMode = "existing", ex
     const [name, ...value] = entry.split("=");
     return [name, value.join("=")];
   }));
-  const functionProcess = spawn(invocation.command, invocation.args, { cwd: projectRoot, env: { ...process.env, ...functionEnvironment }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const functionProcess = spawn(invocation.command, invocation.args, { cwd: projectRoot, env: { ...process.env, ...functionEnvironment }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" });
   const diagnostics = []; functionProcess.stdout.on("data", (chunk) => diagnostics.push(chunk.toString())); functionProcess.stderr.on("data", (chunk) => diagnostics.push(chunk.toString()));
   const functionUrl = `${apiUrl}/functions/v1/${functionName}`;
   await waitForFunction(functionUrl, functionProcess, diagnostics);
@@ -56,13 +56,17 @@ async function startBookingScenario({ memberstackId, clientMode = "existing", ex
   assert.equal(session.status, 200); const { access_token: accessToken } = await session.json();
   const headers = { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" };
   const request = { business: "sandbox-wellness", location: "sandbox-location", service: "00000000-0000-0000-0000-000000000031", startTime, idempotencyKey: `issue-14-${memberstackId}-${runId}` };
+  let stopped = false;
   return {
     functionUrl, headers, request, adminHeaders, email,
     async stop() {
+      if (stopped) return;
+      stopped = true;
       if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(functionProcess.pid), "/t", "/f"], { stdio: "ignore" });
-      else if (functionProcess.exitCode === null) {
-        functionProcess.kill();
-        await new Promise((resolve) => functionProcess.once("exit", resolve));
+      else if (functionProcess.exitCode === null && functionProcess.signalCode === null) {
+        let alreadyExited = false;
+        try { process.kill(-functionProcess.pid); } catch (error) { if (error.code === "ESRCH") alreadyExited = true; else throw error; }
+        if (!alreadyExited) await new Promise((resolve) => functionProcess.once("exit", resolve));
       }
       spawnSync("docker", ["rm", "-f", "supabase_edge_runtime_revvi-booking"], { stdio: "ignore" });
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -81,7 +85,7 @@ test("HTTP booking attempt completes an existing-client free Booking idempotentl
   const invocation = process.platform === "win32"
     ? { command: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", `& '${supabaseCommand}' functions serve booking-attempt --env-file '${envFile}' --no-verify-jwt`] }
     : { command: supabaseCommand, args: ["functions", "serve", "booking-attempt", "--env-file", envFile, "--no-verify-jwt"] };
-  const functionProcess = spawn(invocation.command, invocation.args, { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const functionProcess = spawn(invocation.command, invocation.args, { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" });
   const diagnostics = []; functionProcess.stdout.on("data", (chunk) => diagnostics.push(chunk.toString())); functionProcess.stderr.on("data", (chunk) => diagnostics.push(chunk.toString()));
   try {
     const functionUrl = `${apiUrl}/functions/v1/booking-attempt`;
@@ -116,8 +120,8 @@ test("HTTP booking attempt completes an existing-client free Booking idempotentl
     assert.equal(disabled.status, 409); assert.equal((await disabled.json()).code, "COMPLETION_UNAVAILABLE");
   } finally {
     if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(functionProcess.pid), "/t", "/f"], { stdio: "ignore" });
-    else if (functionProcess.exitCode === null) {
-      functionProcess.kill();
+    else if (functionProcess.exitCode === null && functionProcess.signalCode === null) {
+      process.kill(-functionProcess.pid);
       await new Promise((resolve) => functionProcess.once("exit", resolve));
     }
     spawnSync("docker", ["rm", "-f", "supabase_edge_runtime_revvi-booking"], { stdio: "ignore" });
@@ -511,4 +515,159 @@ test("HTTP callback records correlation for an expired attempt without reviving 
     booking.stop();
     if (callback) await callback.stop();
   }
+});
+
+test("HTTP disabled Mindbody Checkout stops before provider writes", { skip: !runHttpTests }, async () => {
+  const memberstackId = "issue-17-checkout-disabled";
+  const scenario = await startBookingScenario({ memberstackId, clientMode: "none" });
+  try {
+    const response = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify({ ...scenario.request, business: "sandbox-checkout-disabled", location: "checkout-disabled-location", service: "00000000-0000-0000-0000-000000000032" }) });
+    const body = await response.json();
+    assert.equal(response.status, 409, JSON.stringify(body));
+    assert.equal(body.code, "CHECKOUT_UNAVAILABLE");
+    const attempts = await fetch(`${apiUrl}/rest/v1/booking_attempts?select=id&memberstack_id=eq.${memberstackId}`, { headers: scenario.adminHeaders });
+    assert.equal(attempts.status, 200);
+    assert.deepEqual(await attempts.json(), []);
+    const mappings = await fetch(`${apiUrl}/rest/v1/mindbody_client_mappings?select=memberstack_id&memberstack_id=eq.${memberstackId}`, { headers: scenario.adminHeaders });
+    assert.equal(mappings.status, 200);
+    assert.deepEqual(await mappings.json(), []);
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP approved Mindbody Checkout confirms only after checkout succeeds", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({
+    memberstackId: "issue-17-checkout-enabled",
+    clientMode: "existing",
+    extraEnvironment: ["BOOKING_SCA_CALLBACK_URL=http://127.0.0.1:54321/functions/v1/booking-attempt-callback"],
+  });
+  const request = { ...scenario.request, business: "sandbox-checkout", location: "checkout-location", service: "00000000-0000-0000-0000-000000000033" };
+  try {
+    const sensitive = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify({ ...request, payment: { cardNumber: "never-accepted" } }) });
+    assert.equal(sensitive.status, 400);
+    const response = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(request) });
+    const body = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(body));
+    assert.equal(body.bookingAttempt.state, "confirmed");
+    assert.equal(body.confirmation.message, "Your Booking is confirmed.");
+    const attempts = await fetch(`${apiUrl}/rest/v1/booking_attempts?select=state,mindbody_appointment_id,mindbody_checkout_sale_id,mindbody_checkout_transaction_ids&id=eq.${body.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(attempts.status, 200);
+    assert.deepEqual(await attempts.json(), [{ state: "confirmed", mindbody_appointment_id: "sandbox-appointment-100", mindbody_checkout_sale_id: "sandbox-sale-100", mindbody_checkout_transaction_ids: ["sandbox-transaction-100"] }]);
+    const events = await fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=event_type,operation,metadata&booking_attempt_id=eq.${body.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(events.status, 200);
+    const eventRows = await events.json();
+    assert.equal(eventRows.filter((event) => event.event_type === "provider_write_started" && event.operation === "checkout").length, 1);
+    assert.doesNotMatch(JSON.stringify(eventRows), /Api-Key|PAN|CVV|cardNumber|payment token/i);
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP SCA resume reuses one Booking attempt and preserves transaction IDs", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({
+    memberstackId: "issue-17-checkout-sca",
+    clientMode: "existing",
+    extraEnvironment: [
+      "BOOKING_SCA_CALLBACK_URL=http://127.0.0.1:54321/functions/v1/booking-attempt-callback",
+      "MINDBODY_TEST_DOUBLE_CHECKOUT_OUTCOME=sca",
+    ],
+  });
+  const request = { ...scenario.request, idempotencyKey: `${scenario.request.idempotencyKey}-sca`, business: "sandbox-checkout", location: "checkout-location", service: "00000000-0000-0000-0000-000000000033" };
+  try {
+    const first = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(request) });
+    const firstBody = await first.json();
+    assert.equal(first.status, 202, JSON.stringify(firstBody));
+    assert.equal(firstBody.bookingAttempt.state, "payment_needs_attention");
+    assert.deepEqual(firstBody.scaChallenge, { url: "https://provider.example.test/sca-challenge" });
+    const repeated = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(request) });
+    const repeatedBody = await repeated.json();
+    assert.equal(repeated.status, 202, JSON.stringify(repeatedBody));
+    assert.equal(repeatedBody.bookingAttempt.id, firstBody.bookingAttempt.id);
+    const resumed = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify({ ...request, resumeCheckout: true }) });
+    const resumedBody = await resumed.json();
+    assert.equal(resumed.status, 200, JSON.stringify(resumedBody));
+    assert.equal(resumedBody.bookingAttempt.id, firstBody.bookingAttempt.id);
+    assert.equal(resumedBody.bookingAttempt.state, "confirmed");
+    const attempts = await fetch(`${apiUrl}/rest/v1/booking_attempts?select=mindbody_checkout_transaction_ids&id=eq.${firstBody.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(attempts.status, 200);
+    assert.deepEqual(await attempts.json(), [{ mindbody_checkout_transaction_ids: ["sandbox-transaction-sca", "sandbox-transaction-100"] }]);
+    const events = await fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=event_type,operation&booking_attempt_id=eq.${firstBody.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(events.status, 200);
+    const eventRows = await events.json();
+    assert.equal(eventRows.filter((event) => event.event_type === "provider_write_started" && event.operation === "appointment_create").length, 1);
+    assert.equal(eventRows.filter((event) => event.event_type === "provider_write_started" && event.operation === "checkout").length, 2);
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP SCA callback returns to Revvi without confirming the Booking", { skip: !runHttpTests }, async () => {
+  const booking = await startBookingScenario({
+    memberstackId: "issue-17-checkout-callback",
+    clientMode: "existing",
+    extraEnvironment: [
+      "BOOKING_SCA_CALLBACK_URL=http://127.0.0.1:54321/functions/v1/booking-attempt-callback",
+      "MINDBODY_TEST_DOUBLE_CHECKOUT_OUTCOME=sca",
+    ],
+  });
+  let callback;
+  const request = { ...booking.request, business: "sandbox-checkout", location: "checkout-location", service: "00000000-0000-0000-0000-000000000033" };
+  try {
+    const first = await fetch(booking.functionUrl, { method: "POST", headers: booking.headers, body: JSON.stringify(request) });
+    const firstBody = await first.json();
+    assert.equal(first.status, 202, JSON.stringify(firstBody));
+    const attempts = await fetch(`${apiUrl}/rest/v1/booking_attempts?select=id,sca_resume_token,state&id=eq.${firstBody.bookingAttempt.id}`, { headers: booking.adminHeaders });
+    assert.equal(attempts.status, 200);
+    const [attempt] = await attempts.json();
+    await booking.stop();
+    callback = await startBookingScenario({ memberstackId: "issue-17-checkout-callback", functionName: "booking-attempt-callback", extraEnvironment: ["BOOKING_SCA_RETURN_URL=https://booking.example.test/availability.html"] });
+    const returned = await fetch(`${callback.functionUrl}?attempt=${attempt.id}&resume=${attempt.sca_resume_token}`, { redirect: "manual" });
+    assert.equal(returned.status, 302);
+    const returnLocation = new URL(returned.headers.get("location"));
+    assert.equal(returnLocation.origin + returnLocation.pathname, "https://booking.example.test/availability.html");
+    assert.equal(returnLocation.searchParams.get("business"), "sandbox-checkout");
+    assert.equal(returnLocation.searchParams.get("location"), "checkout-location");
+    assert.equal(returnLocation.searchParams.get("service"), "00000000-0000-0000-0000-000000000033");
+    assert.equal(new Date(returnLocation.searchParams.get("start")).toISOString(), request.startTime);
+    assert.equal(returnLocation.searchParams.get("sca"), "returned");
+    const after = await fetch(`${apiUrl}/rest/v1/booking_attempts?select=state&id=eq.${attempt.id}`, { headers: callback.adminHeaders });
+    assert.equal(after.status, 200);
+    assert.deepEqual(await after.json(), [{ state: "payment_needs_attention" }]);
+  } finally {
+    await booking.stop();
+    if (callback) await callback.stop();
+  }
+});
+
+test("HTTP checkout failure does not confirm the Booking", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({
+    memberstackId: "issue-17-checkout-failed",
+    clientMode: "existing",
+    extraEnvironment: ["BOOKING_SCA_CALLBACK_URL=http://127.0.0.1:54321/functions/v1/booking-attempt-callback", "MINDBODY_TEST_DOUBLE_CHECKOUT_OUTCOME=failed"],
+  });
+  const request = { ...scenario.request, business: "sandbox-checkout", location: "checkout-location", service: "00000000-0000-0000-0000-000000000033" };
+  try {
+    const response = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(request) });
+    const body = await response.json();
+    assert.equal(response.status, 409, JSON.stringify(body));
+    assert.equal(body.code, "CHECKOUT_FAILED");
+    assert.equal(body.bookingAttempt.state, "failed");
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP unknown checkout outcome blocks a second checkout write", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({
+    memberstackId: "issue-17-checkout-unknown",
+    clientMode: "existing",
+    extraEnvironment: ["BOOKING_SCA_CALLBACK_URL=http://127.0.0.1:54321/functions/v1/booking-attempt-callback", "MINDBODY_TEST_DOUBLE_CHECKOUT_OUTCOME=unknown"],
+  });
+  const request = { ...scenario.request, business: "sandbox-checkout", location: "checkout-location", service: "00000000-0000-0000-0000-000000000033" };
+  try {
+    const first = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(request) });
+    const firstBody = await first.json();
+    assert.equal(first.status, 502, JSON.stringify(firstBody));
+    assert.equal(firstBody.bookingAttempt.state, "unknown");
+    const repeated = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(request) });
+    const repeatedBody = await repeated.json();
+    assert.equal(repeated.status, 202, JSON.stringify(repeatedBody));
+    assert.equal(repeatedBody.bookingAttempt.state, "unknown");
+    const events = await fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=event_type,operation&booking_attempt_id=eq.${firstBody.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(events.status, 200);
+    assert.equal((await events.json()).filter((event) => event.event_type === "provider_write_started" && event.operation === "checkout").length, 1);
+  } finally { await scenario.stop(); }
 });

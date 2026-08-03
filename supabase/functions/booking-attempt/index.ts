@@ -169,6 +169,64 @@ function failureStatus(code: string) {
   return 422;
 }
 
+function hasUnsafePaymentData(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasUnsafePaymentData);
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value as Record<string, unknown>).some(([key, nested]) => (
+    /(?:pan|card.?number|cvv|cvc|security.?code|token|expiry|expiration|billing.?address|account.?number)/i.test(key)
+    || hasUnsafePaymentData(nested)
+  ));
+}
+
+function approvedCheckoutTemplate(template: Record<string, any> | null) {
+  if (!template || typeof template !== "object") return false;
+  const expected = new Set(["ClientId", "AppointmentId", "TransactionIds", "PaymentAuthenticationCallbackUrl", "PaymentInfo", "Test"]);
+  if (Object.keys(template).some((key) => !expected.has(key))) return false;
+  const paymentInfo = template.PaymentInfo;
+  return template.ClientId === "$REVVI_CLIENT_ID"
+    && template.AppointmentId === "$REVVI_APPOINTMENT_ID"
+    && template.TransactionIds === "$REVVI_TRANSACTION_IDS"
+    && template.PaymentAuthenticationCallbackUrl === "$REVVI_CALLBACK_URL"
+    && paymentInfo
+    && typeof paymentInfo === "object"
+    && Object.keys(paymentInfo).length === 1
+    && Number.isInteger(paymentInfo.PaymentMethodId)
+    && typeof template.Test === "boolean";
+}
+
+function checkoutConfigurationIsUsable(config: Record<string, any> | null, callbackBaseUrl: string | null) {
+  return config?.enabled === true
+    && config.payment_mode === "approved_non_sensitive"
+    && typeof config.validation_evidence_ref === "string"
+    && config.validation_evidence_ref.trim().length > 0
+    && typeof config.validated_at === "string"
+    && approvedCheckoutTemplate(config.checkout_request)
+    && Boolean(callbackBaseUrl);
+}
+
+function checkoutCallbackUrl(callbackBaseUrl: string, attempt: Record<string, any>) {
+  const url = new URL(callbackBaseUrl);
+  url.searchParams.set("attempt", attempt.id);
+  url.searchParams.set("resume", attempt.sca_resume_token);
+  return url.toString();
+}
+
+function checkoutTemplate(value: unknown, values: Record<string, unknown>): unknown {
+  if (typeof value === "string" && Object.hasOwn(values, value)) return values[value];
+  if (Array.isArray(value)) return value.map((item) => checkoutTemplate(item, values));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, checkoutTemplate(nested, values)]));
+  return value;
+}
+
+function checkoutRequest(config: Record<string, any>, attempt: Record<string, any>, transactionIds: string[], callbackBaseUrl: string) {
+  return checkoutTemplate(config.checkout_request, {
+    "$REVVI_CLIENT_ID": attempt.mindbody_client_id,
+    "$REVVI_APPOINTMENT_ID": attempt.mindbody_appointment_id,
+    "$REVVI_TRANSACTION_IDS": transactionIds,
+    "$REVVI_CALLBACK_URL": checkoutCallbackUrl(callbackBaseUrl, attempt),
+  });
+}
+
 function unknownOutcomeResponse(attempt: Record<string, any>) {
   return { code: "BOOKING_RESOLVING", error: "We are resolving your Booking attempt with Mindbody. Do not submit it again.", bookingAttempt: attemptResponse(attempt).bookingAttempt };
 }
@@ -326,22 +384,22 @@ async function resolveMindbodyClient({ supabase, client, businessId, memberstack
   }
 }
 
-async function markUnknown(supabase: any, attempt: Record<string, any>, reason: string, providerReferences: Record<string, unknown> = {}, latencyMs?: number) {
+async function markUnknown(supabase: any, attempt: Record<string, any>, reason: string, providerReferences: Record<string, unknown> = {}, latencyMs?: number, operation = "appointment_create") {
   const { data: unknownAttempt } = await supabase
     .from("booking_attempts")
     .update({ state: "unknown", ...providerReferences })
     .eq("id", attempt.id)
-    .eq("state", "pending_checkout")
+    .eq("state", attempt.state)
     .gt("expires_at", new Date().toISOString())
     .select()
     .maybeSingle();
   if (!unknownAttempt) {
-    return expireAttempt(supabase, attempt, "appointment_create");
+    return expireAttempt(supabase, attempt, operation);
   }
   const current = unknownAttempt;
   await recordEvent(supabase, current, {
     event_type: "provider_write_unknown",
-    operation: "appointment_create",
+    operation,
     error_category: reason,
     ...(latencyMs === undefined ? {} : { latency_ms: latencyMs }),
     metadata: { failure_response: { code: "BOOKING_OUTCOME_UNKNOWN", error: BOOKING_OUTCOME_UNKNOWN_ERROR } },
@@ -371,6 +429,102 @@ async function failAttempt(supabase: any, attempt: Record<string, any>, code: st
     await createSupportItem(supabase, attempt, reason);
   }
   return json({ code, error: message, ...(supportRequired ? { supportRequired: true } : {}), bookingAttempt: attemptResponse(attempt).bookingAttempt }, status);
+}
+
+async function runCheckout({ supabase, client, attempt, checkoutConfig, callbackBaseUrl, origin, requestId }: any) {
+  const startedAt = Date.now();
+  await recordEvent(supabase, attempt, { event_type: "provider_write_started", operation: "checkout" });
+  try {
+    const result = await client.checkoutShoppingCart(checkoutRequest(
+      checkoutConfig,
+      attempt,
+      attempt.mindbody_checkout_transaction_ids ?? [],
+      callbackBaseUrl,
+    ));
+    const transactionIds = [...new Set([...(attempt.mindbody_checkout_transaction_ids ?? []), ...result.transactionIds])];
+    if (result.status === "succeeded") {
+      const { data: confirmed, error } = await supabase.from("booking_attempts")
+        .update({ state: "confirmed", mindbody_checkout_transaction_ids: transactionIds, mindbody_checkout_sale_id: result.saleId })
+        .eq("id", attempt.id)
+        .eq("state", "pending_checkout")
+        .gt("expires_at", new Date().toISOString())
+        .select()
+        .maybeSingle();
+      if (error || !confirmed) {
+        const current = await expireAttempt(supabase, attempt, "checkout");
+        if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
+        const unknown = await markUnknown(supabase, current, "checkout_confirmation_persist_failed", { mindbody_checkout_transaction_ids: transactionIds, mindbody_checkout_sale_id: result.saleId }, Date.now() - startedAt, "checkout");
+        return json(unknownOutcomeResponse(unknown), 502, origin, requestId);
+      }
+      await recordEvent(supabase, confirmed, { event_type: "attempt_confirmed", operation: "checkout", latency_ms: Date.now() - startedAt });
+      return json(attemptResponse(confirmed), 200, origin, requestId);
+    }
+    if (result.status === "payment_needs_attention") {
+      const { data: pending } = await supabase.from("booking_attempts")
+        .update({ state: "payment_needs_attention", mindbody_checkout_transaction_ids: transactionIds, checkout_operation_claimed_at: null })
+        .eq("id", attempt.id)
+        .eq("state", "pending_checkout")
+        .gt("expires_at", new Date().toISOString())
+        .select()
+        .maybeSingle();
+      const current = pending ?? await expireAttempt(supabase, attempt, "checkout");
+      if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
+      await recordEvent(supabase, current, { event_type: "attempt_payment_needs_attention", operation: "checkout", error_category: result.authenticationUrl ? "sca_required" : "payment_needs_attention", latency_ms: Date.now() - startedAt });
+      return json({
+        code: "PAYMENT_NEEDS_ATTENTION",
+        error: "Mindbody requires an additional payment action before this Booking attempt can be confirmed.",
+        bookingAttempt: attemptResponse(current).bookingAttempt,
+        ...(result.authenticationUrl ? { scaChallenge: { url: result.authenticationUrl } } : {}),
+      }, 202, origin, requestId);
+    }
+    const { data: failed } = await supabase.from("booking_attempts")
+      .update({ state: "failed", mindbody_checkout_transaction_ids: transactionIds })
+      .eq("id", attempt.id)
+      .eq("state", "pending_checkout")
+      .gt("expires_at", new Date().toISOString())
+      .select()
+      .maybeSingle();
+    const current = failed ?? await expireAttempt(supabase, attempt, "checkout");
+    if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
+    await recordEvent(supabase, current, { event_type: "attempt_failed", operation: "checkout", error_category: "provider_rejected", latency_ms: Date.now() - startedAt });
+    return json({ code: "CHECKOUT_FAILED", error: "Mindbody could not complete checkout.", bookingAttempt: attemptResponse(current).bookingAttempt }, 409, origin, requestId);
+  } catch (error) {
+    const providerStatus = error instanceof MindbodyApiError ? error.status : 502;
+    if (providerStatus >= 500) {
+      const current = await markUnknown(supabase, attempt, "checkout_unknown", {}, Date.now() - startedAt, "checkout");
+      if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
+      return json(unknownOutcomeResponse(current), 502, origin, requestId);
+    }
+    const { data: failed } = await supabase.from("booking_attempts")
+      .update({ state: "failed" })
+      .eq("id", attempt.id)
+      .eq("state", "pending_checkout")
+      .gt("expires_at", new Date().toISOString())
+      .select()
+      .maybeSingle();
+    const current = failed ?? await expireAttempt(supabase, attempt, "checkout");
+    if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
+    await recordEvent(supabase, current, { event_type: "attempt_failed", operation: "checkout", provider_status: providerStatus, error_category: "provider_rejected", latency_ms: Date.now() - startedAt });
+    return json({ code: "CHECKOUT_FAILED", error: "Mindbody could not complete checkout.", bookingAttempt: attemptResponse(current).bookingAttempt }, 409, origin, requestId);
+  }
+}
+
+async function resumeCheckout({ supabase, client, attempt, checkoutConfig, callbackBaseUrl, origin, requestId }: any) {
+  if (attempt.state !== "payment_needs_attention") return replayAttempt({ supabase, client, attempt, origin, requestId });
+  if (new Date(attempt.expires_at).getTime() <= Date.now()) {
+    const current = await expireAttempt(supabase, attempt, "checkout_resume");
+    return json(expiredAttemptResponse(current), 409, origin, requestId);
+  }
+  const { data: claimed } = await supabase.from("booking_attempts")
+    .update({ state: "pending_checkout", checkout_operation_claimed_at: new Date().toISOString() })
+    .eq("id", attempt.id)
+    .eq("state", "payment_needs_attention")
+    .is("checkout_operation_claimed_at", null)
+    .select()
+    .maybeSingle();
+  if (!claimed) return replayAttempt({ supabase, client, attempt, origin, requestId });
+  await recordEvent(supabase, claimed, { event_type: "checkout_resumed", operation: "checkout" });
+  return runCheckout({ supabase, client, attempt: claimed, checkoutConfig, callbackBaseUrl, origin, requestId });
 }
 
 async function rejectStaleAttempt({ supabase, attempt, expectedState, staleContext }: any) {
@@ -457,6 +611,17 @@ async function reconcileUnknownAttempt({ supabase, client, attempt }: any) {
   if (!claimed) {
     const { data: current } = await supabase.from("booking_attempts").select("*").eq("id", attempt.id).maybeSingle();
     return current ?? attempt;
+  }
+
+  if (claimed.completion_mode === "mindbody_checkout") {
+    const exhausted = claimed.reconciliation_attempts >= RECONCILIATION_MAX_ATTEMPTS;
+    await recordEvent(supabase, claimed, {
+      event_type: exhausted ? "reconciliation_exhausted" : "reconciliation_uncertain",
+      operation: "checkout_reconciliation",
+      error_category: "authoritative_checkout_read_unavailable",
+    });
+    if (exhausted) await createSupportItem(supabase, claimed, "RECONCILIATION_EXHAUSTED");
+    return claimed;
   }
 
   const startedAt = Date.now();
@@ -584,7 +749,9 @@ Deno.serve(async (request) => {
   const serviceId = body?.service;
   const selectedStart = isoDate(body?.startTime);
   const idempotencyKey = typeof body?.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
-  if (typeof businessSlug !== "string" || typeof locationSlug !== "string" || typeof serviceId !== "string" || !selectedStart || !idempotencyKey || idempotencyKey.length > 200) {
+  const resumeCheckoutRequest = body?.resumeCheckout === true;
+  const allowedRequestFields = new Set(["business", "location", "service", "startTime", "idempotencyKey", "resumeCheckout"]);
+  if (!body || typeof body !== "object" || Object.keys(body).some((key) => !allowedRequestFields.has(key)) || hasUnsafePaymentData(body) || typeof businessSlug !== "string" || typeof locationSlug !== "string" || typeof serviceId !== "string" || !selectedStart || !idempotencyKey || idempotencyKey.length > 200) {
     return json({ code: "INVALID_BOOKING_CONTEXT", error: "Business, Location, service, time, and idempotency data are required." }, 400, origin, requestId);
   }
 
@@ -598,7 +765,7 @@ Deno.serve(async (request) => {
     .eq("slug", businessSlug).maybeSingle();
   if (businessError) return json({ code: "DATABASE_ERROR", error: "Business context could not be loaded." }, 500, origin, requestId);
   if (!business) return json({ code: "BUSINESS_UNAVAILABLE", error: "This Business is not available for Booking." }, 409, origin, requestId);
-  if (business.completion_mode !== "free_unpaid") return json({ code: "COMPLETION_UNAVAILABLE", error: "Completion is not available for this Business." }, 409, origin, requestId);
+  if (!["free_unpaid", "mindbody_checkout"].includes(business.completion_mode)) return json({ code: "COMPLETION_UNAVAILABLE", error: "Completion is not available for this Business." }, 409, origin, requestId);
   if (business.status !== "active") return json({ code: "BUSINESS_UNAVAILABLE", error: "This Business is not available for Booking." }, 409, origin, requestId);
   if (!business.booking_enabled) return json({ code: "BUSINESS_UNAVAILABLE", error: "This Business is not available for Booking." }, 409, origin, requestId);
 
@@ -613,14 +780,19 @@ Deno.serve(async (request) => {
   if (serviceError) return json({ code: "DATABASE_ERROR", error: "Service configuration could not be loaded." }, 500, origin, requestId);
   if (!service) return json({ code: "SERVICE_UNAVAILABLE", error: "This service is not available at the selected Location." }, 404, origin, requestId);
 
-  const [{ data: providerConfig, error: providerConfigError }, { data: providerLocation, error: providerLocationError }, { data: providerService, error: providerServiceError }] = await Promise.all([
+  const [{ data: providerConfig, error: providerConfigError }, { data: providerLocation, error: providerLocationError }, { data: providerService, error: providerServiceError }, { data: checkoutConfig, error: checkoutConfigError }] = await Promise.all([
     supabase.from("business_provider_config").select("mindbody_site_id").eq("business_id", business.id).maybeSingle(),
     supabase.from("business_location_provider_config").select("mindbody_location_id").eq("business_id", business.id).eq("location_id", location.id).maybeSingle(),
     supabase.from("business_service_provider_config").select("mindbody_session_type_id").eq("business_id", business.id).eq("service_id", service.id).maybeSingle(),
+    supabase.from("business_checkout_config").select("payment_mode, checkout_request, validation_evidence_ref, validated_at, enabled").eq("business_id", business.id).maybeSingle(),
   ]);
-  if (providerConfigError || providerLocationError || providerServiceError) return json({ code: "DATABASE_ERROR", error: "Provider configuration could not be loaded." }, 500, origin, requestId);
+  if (providerConfigError || providerLocationError || providerServiceError || checkoutConfigError) return json({ code: "DATABASE_ERROR", error: "Provider configuration could not be loaded." }, 500, origin, requestId);
   const siteId = resolvedSiteId(business, providerConfig?.mindbody_site_id ?? "");
   if (!siteId || !providerLocation?.mindbody_location_id || !providerService?.mindbody_session_type_id) return json({ code: "PROVIDER_NOT_READY", error: "This Business has no enabled provider connection." }, 409, origin, requestId);
+  const checkoutCallbackBaseUrl = Deno.env.get("BOOKING_SCA_CALLBACK_URL") ?? null;
+  if (business.completion_mode === "mindbody_checkout" && !checkoutConfigurationIsUsable(checkoutConfig, checkoutCallbackBaseUrl)) {
+    return json({ code: "CHECKOUT_UNAVAILABLE", error: "Mindbody Checkout is not enabled for this Business." }, 409, origin, requestId);
+  }
 
   const useTestDouble = Deno.env.get("MINDBODY_ALLOW_TEST_DOUBLE") === "true" && !Deno.env.get("DENO_DEPLOYMENT_ID");
   const client = createMindbodyClient({
@@ -635,6 +807,9 @@ Deno.serve(async (request) => {
   if (existingAttemptError) return json({ code: "DATABASE_ERROR", error: "Booking attempt could not be loaded." }, 500, origin, requestId);
   if (existingAttempt) {
     if (!sameBookingFacts(existingAttempt, { serviceId: service.id, locationId: location.id, selectedStart })) return json({ code: "IDEMPOTENCY_KEY_REUSED", error: "That idempotency key belongs to another Booking." }, 409, origin, requestId);
+    if (resumeCheckoutRequest && existingAttempt.completion_mode === "mindbody_checkout") {
+      return resumeCheckout({ supabase, client, attempt: existingAttempt, checkoutConfig, callbackBaseUrl: checkoutCallbackBaseUrl, origin, requestId });
+    }
     return replayAttempt({ supabase, client, attempt: existingAttempt, origin, requestId });
   }
 
@@ -776,6 +951,24 @@ Deno.serve(async (request) => {
   const providerStartedAt = Date.now();
   try {
     const appointment = await client.addAppointment({ clientId: uniqueVerifiedEmailClient.providerId, locationId: providerLocation.mindbody_location_id, staffId: liveSlot.staffProviderId, sessionTypeId: providerService.mindbody_session_type_id, startDateTime: selectedStart });
+    if (business.completion_mode === "mindbody_checkout") {
+      if (!appointment.providerId) throw new MindbodyApiError("Mindbody did not return an appointment identifier.", 502);
+      const { data: checkoutReady, error: checkoutReadyError } = await supabase.from("booking_attempts")
+        .update({ mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId })
+        .eq("id", claimed.id)
+        .eq("state", "pending_checkout")
+        .gt("expires_at", new Date().toISOString())
+        .select()
+        .maybeSingle();
+      if (checkoutReadyError || !checkoutReady) {
+        const current = await expireAttempt(supabase, claimed, "appointment_create");
+        if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
+        const unknown = await markUnknown(supabase, current, "appointment_persist_failed", { mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }, Date.now() - providerStartedAt);
+        return json(unknownOutcomeResponse(unknown), 502, origin, requestId);
+      }
+      await recordEvent(supabase, checkoutReady, { event_type: "provider_write_succeeded", operation: "appointment_create", latency_ms: Date.now() - providerStartedAt });
+      return runCheckout({ supabase, client, attempt: checkoutReady, checkoutConfig, callbackBaseUrl: checkoutCallbackBaseUrl, origin, requestId });
+    }
     if (appointment.paymentNeedsAttention) {
       const { data: paymentNeedsAttention } = await supabase.from("booking_attempts").update({ state: "payment_needs_attention", mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }).eq("id", claimed.id).eq("state", "pending_checkout").gt("expires_at", new Date().toISOString()).select().single();
       const current = paymentNeedsAttention ?? await expireAttempt(supabase, claimed, "appointment_create");

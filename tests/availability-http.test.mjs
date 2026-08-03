@@ -34,7 +34,7 @@ test("HTTP availability and review use tenant policy and a controllable Mindbody
   const invocation = process.platform === "win32"
     ? { command: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", `& '${supabaseCommand}' functions serve booking-availability --env-file '${envFile}' --no-verify-jwt`] }
     : { command: supabaseCommand, args: ["functions", "serve", "booking-availability", "--env-file", envFile, "--no-verify-jwt"] };
-  const functionProcess = spawn(invocation.command, invocation.args, { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const functionProcess = spawn(invocation.command, invocation.args, { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" });
   const diagnostics = []; functionProcess.stdout.on("data", (chunk) => diagnostics.push(chunk.toString())); functionProcess.stderr.on("data", (chunk) => diagnostics.push(chunk.toString()));
   try {
     const functionUrl = `${localSupabase.API_URL}/functions/v1/booking-availability`;
@@ -66,7 +66,7 @@ test("HTTP availability and review use tenant policy and a controllable Mindbody
     const crossBusiness = await fetch(`${functionUrl}?business=sandbox-secondary&location=secondary-location&service=00000000-0000-0000-0000-000000000031&date=2026-07-28`, { headers });
     assert.equal(crossBusiness.status, 409); assert.equal((await crossBusiness.json()).code, "BUSINESS_UNAVAILABLE");
   } finally {
-    if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(functionProcess.pid), "/t", "/f"], { stdio: "ignore" }); else functionProcess.kill();
+    if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(functionProcess.pid), "/t", "/f"], { stdio: "ignore" }); else process.kill(-functionProcess.pid);
     spawnSync("docker", ["rm", "-f", "supabase_edge_runtime_revvi-booking"], { stdio: "ignore" });
     rmSync(temp, { recursive: true, force: true });
   }
