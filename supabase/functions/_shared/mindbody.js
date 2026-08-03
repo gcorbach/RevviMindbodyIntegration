@@ -44,8 +44,8 @@ function normalizeAppointment(payload) {
 }
 
 function normalizeAppointments(payload) {
-  const values = payload?.Appointments ?? payload?.appointments ?? [];
-  if (!Array.isArray(values)) return [];
+  const values = payload?.Appointments ?? payload?.appointments;
+  if (!Array.isArray(values)) throw new MindbodyApiError("Mindbody appointment reconciliation returned an invalid response.");
   return values.map((item) => ({
     providerId: asString(item?.Id ?? item?.ID ?? item?.AppointmentId),
     uniqueId: asString(item?.UniqueId ?? item?.UniqueID ?? item?.AppointmentUniqueId),
@@ -268,7 +268,8 @@ export function createMindbodyTestDouble({ apiKey, siteId }) {
         ? new Date(new Date(`${startDate}T00:00:00.000Z`).getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
         : startDate;
       const staleOnDateRange = Deno.env.get("MINDBODY_TEST_DOUBLE_STALE_ON_DATE_RANGE") === "true" && url.searchParams.get("StartDate")?.endsWith("T00:00:00.000Z");
-      const start = new Date(`${candidateDate}T${staleOnDateRange ? "17:00" : "16:00"}:00.000Z`);
+      const configuredStart = Deno.env.get("MINDBODY_TEST_DOUBLE_SLOT_START_TIME");
+      const start = configuredStart ? new Date(configuredStart) : new Date(`${candidateDate}T${staleOnDateRange ? "17:00" : "16:00"}:00.000Z`);
       const items = sessionTypeId === "23"
         ? [{
             Id: `sandbox-slot-${candidateDate}`,
@@ -284,11 +285,11 @@ export function createMindbodyTestDouble({ apiKey, siteId }) {
     }
 
     if (path.endsWith("/appointment/addappointment")) {
+      const delay = Number(Deno.env.get("MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_DELAY_MS") ?? 0);
+      if (Number.isFinite(delay) && delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
       if (Deno.env.get("MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_FAILURE") === "true") {
         return new Response(JSON.stringify({ Error: "Appointment creation unavailable." }), { status: 503, headers: { "Content-Type": "application/json" } });
       }
-      const delay = Number(Deno.env.get("MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_DELAY_MS") ?? 0);
-      if (Number.isFinite(delay) && delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
       const body = await new Response(init.body).json();
       if (Deno.env.get("MINDBODY_TEST_DOUBLE_APPOINTMENT_PAYMENT_NEEDS_ATTENTION") === "true") {
         return new Response(JSON.stringify({ Appointment: { Id: "sandbox-appointment-payment-attention", UniqueId: "sandbox-appointment-payment-attention-unique", ClientId: body.ClientId, PaymentNeedsAttention: true } }), { headers: { "Content-Type": "application/json" } });
@@ -301,6 +302,7 @@ export function createMindbodyTestDouble({ apiKey, siteId }) {
       if (outcome === "unknown") {
         return new Response(JSON.stringify({ Error: "Appointment reconciliation unavailable." }), { status: 503, headers: { "Content-Type": "application/json" } });
       }
+      if (outcome === "malformed") return new Response(JSON.stringify({}), { headers: { "Content-Type": "application/json" } });
       if (outcome === "absence") return new Response(JSON.stringify({ Appointments: [] }), { headers: { "Content-Type": "application/json" } });
       const url = new URL(String(input));
       const startDate = url.searchParams.get("StartDate");

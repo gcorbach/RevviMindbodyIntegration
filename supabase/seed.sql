@@ -126,6 +126,9 @@ values
   ('issue-16-payment-needs-attention', 'sandbox_allowlist'),
   ('issue-16-reconciliation-exhausted', 'sandbox_allowlist'),
   ('issue-16-expired', 'sandbox_allowlist'),
+  ('issue-16-expired-during-confirmation', 'sandbox_allowlist'),
+  ('issue-16-expired-payment-attention', 'sandbox_allowlist'),
+  ('issue-16-malformed-reconciliation', 'sandbox_allowlist'),
   ('issue-16-delayed-callback', 'sandbox_allowlist')
 on conflict (memberstack_id) do update set
   source = excluded.source,
@@ -148,6 +151,9 @@ values
   ('00000000-0000-0000-0000-000000000011', 'issue-16-payment-needs-attention'),
   ('00000000-0000-0000-0000-000000000011', 'issue-16-reconciliation-exhausted'),
   ('00000000-0000-0000-0000-000000000011', 'issue-16-expired'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-expired-during-confirmation'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-expired-payment-attention'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-16-malformed-reconciliation'),
   ('00000000-0000-0000-0000-000000000011', 'issue-16-delayed-callback')
 on conflict do nothing;
 

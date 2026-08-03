@@ -29,7 +29,7 @@ async function waitForFunction(url, process, diagnostics) {
   throw new Error(`booking-attempt function did not start: ${diagnostics.join("")}`);
 }
 
-async function startBookingScenario({ memberstackId, clientMode = "existing", extraEnvironment = [], functionName = "booking-attempt" }) {
+async function startBookingScenario({ memberstackId, clientMode = "existing", extraEnvironment = [], functionName = "booking-attempt", startTime = nextTestDoubleSlot() }) {
   const temp = mkdtempSync(join(tmpdir(), "revvi-booking-attempt-scenario-"));
   const envFile = join(temp, "functions.env");
   if (!serviceRoleKey) throw new Error("SUPABASE_SERVICE_ROLE_KEY is required for the HTTP acceptance test.");
@@ -55,7 +55,7 @@ async function startBookingScenario({ memberstackId, clientMode = "existing", ex
   const session = await fetch(`${apiUrl}/auth/v1/token?grant_type=password`, { method: "POST", headers: { apikey: anonKey, "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
   assert.equal(session.status, 200); const { access_token: accessToken } = await session.json();
   const headers = { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" };
-  const request = { business: "sandbox-wellness", location: "sandbox-location", service: "00000000-0000-0000-0000-000000000031", startTime: nextTestDoubleSlot(), idempotencyKey: `issue-14-${memberstackId}-${runId}` };
+  const request = { business: "sandbox-wellness", location: "sandbox-location", service: "00000000-0000-0000-0000-000000000031", startTime, idempotencyKey: `issue-14-${memberstackId}-${runId}` };
   return {
     functionUrl, headers, request, adminHeaders, email,
     async stop() {
@@ -280,7 +280,7 @@ test("HTTP worker-style retry replays an unknown outcome without a second provid
   } finally { await scenario.stop(); }
 });
 
-test("HTTP replay reconciles an unknown Booking to authoritative success without another write", { skip: !runHttpTests }, async () => {
+test("HTTP replay reconciles an unknown Booking attempt to authoritative success without another write", { skip: !runHttpTests }, async () => {
   const scenario = await startBookingScenario({
     memberstackId: "issue-16-authoritative-success",
     clientMode: "existing",
@@ -311,7 +311,7 @@ test("HTTP replay reconciles an unknown Booking to authoritative success without
   } finally { await scenario.stop(); }
 });
 
-test("HTTP Booking reports payment needs attention without confirming", { skip: !runHttpTests }, async () => {
+test("HTTP Booking attempt reports payment needs attention without confirming", { skip: !runHttpTests }, async () => {
   const scenario = await startBookingScenario({
     memberstackId: "issue-16-payment-needs-attention",
     clientMode: "existing",
@@ -379,6 +379,10 @@ test("HTTP reconciliation remains resolving and opens support after bounded read
       assert.equal(replay.status, 202, JSON.stringify(replayBody));
       assert.equal(replayBody.bookingAttempt.state, "unknown");
     }
+    const afterExhaustion = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
+    const afterExhaustionBody = await afterExhaustion.json();
+    assert.equal(afterExhaustion.status, 202, JSON.stringify(afterExhaustionBody));
+    assert.equal(afterExhaustionBody.bookingAttempt.state, "unknown");
     const support = await fetch(`${apiUrl}/rest/v1/booking_support_items?select=reason&booking_attempt_id=eq.${firstBody.bookingAttempt.id}`, { headers: scenario.adminHeaders });
     assert.equal(support.status, 200);
     assert.deepEqual((await support.json()).map((item) => item.reason).sort(), ["RECONCILIATION_EXHAUSTED", "provider_unknown"].sort());
@@ -386,7 +390,74 @@ test("HTTP reconciliation remains resolving and opens support after bounded read
     assert.equal(events.status, 200);
     const eventRows = await events.json();
     assert.equal(eventRows.filter((event) => event.event_type === "provider_write_started" && event.operation === "appointment_create").length, 1);
+    assert.equal(eventRows.filter((event) => event.event_type === "reconciliation_read_started").length, 2);
     assert.equal(typeof eventRows.find((event) => event.event_type === "provider_write_unknown")?.latency_ms, "number");
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP expires a Booking attempt when its scheduled start passes during provider confirmation", { skip: !runHttpTests }, async () => {
+  const startTime = new Date(Date.now() + 5_000).toISOString();
+  const scenario = await startBookingScenario({
+    memberstackId: "issue-16-expired-during-confirmation",
+    startTime,
+    extraEnvironment: [
+      `MINDBODY_TEST_DOUBLE_SLOT_START_TIME=${startTime}`,
+      "BOOKING_ATTEMPT_WINDOW_MS=900000",
+      "MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_DELAY_MS=5250",
+      "MINDBODY_TEST_DOUBLE_UNIQUE_CLIENT=true",
+    ],
+  });
+  try {
+    const response = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
+    const body = await response.json();
+    assert.equal(response.status, 409, JSON.stringify(body));
+    assert.equal(body.code, "BOOKING_ATTEMPT_EXPIRED");
+    assert.equal(body.bookingAttempt.state, "expired");
+    const events = await fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=event_type&booking_attempt_id=eq.${body.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(events.status, 200);
+    assert.equal((await events.json()).filter((event) => event.event_type === "attempt_confirmed").length, 0);
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP expires a Booking attempt when payment needs attention arrives after its window", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({
+    memberstackId: "issue-16-expired-payment-attention",
+    extraEnvironment: [
+      "BOOKING_ATTEMPT_WINDOW_MS=1000",
+      "MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_DELAY_MS=1250",
+      "MINDBODY_TEST_DOUBLE_APPOINTMENT_PAYMENT_NEEDS_ATTENTION=true",
+      "MINDBODY_TEST_DOUBLE_UNIQUE_CLIENT=true",
+    ],
+  });
+  try {
+    const response = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
+    const body = await response.json();
+    assert.equal(response.status, 409, JSON.stringify(body));
+    assert.equal(body.code, "BOOKING_ATTEMPT_EXPIRED");
+    assert.equal(body.bookingAttempt.state, "expired");
+  } finally { await scenario.stop(); }
+});
+
+test("HTTP keeps a Booking attempt resolving when reconciliation is malformed", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({
+    memberstackId: "issue-16-malformed-reconciliation",
+    extraEnvironment: [
+      "MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_FAILURE=true",
+      "MINDBODY_TEST_DOUBLE_RECONCILIATION_OUTCOME=malformed",
+      "MINDBODY_TEST_DOUBLE_UNIQUE_CLIENT=true",
+    ],
+  });
+  try {
+    const first = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
+    const firstBody = await first.json();
+    assert.equal(first.status, 502, JSON.stringify(firstBody));
+    const replay = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
+    const replayBody = await replay.json();
+    assert.equal(replay.status, 202, JSON.stringify(replayBody));
+    assert.equal(replayBody.bookingAttempt.state, "unknown");
+    const events = await fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=event_type,error_category&booking_attempt_id=eq.${firstBody.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(events.status, 200);
+    assert.deepEqual((await events.json()).filter((event) => event.event_type === "reconciliation_uncertain").map((event) => event.error_category), ["authoritative_read_unavailable"]);
   } finally { await scenario.stop(); }
 });
 

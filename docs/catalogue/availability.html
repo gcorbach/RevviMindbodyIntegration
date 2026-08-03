@@ -74,10 +74,10 @@
     function renderBookingOutcome(data) {
       const resolving = data.bookingAttempt.state === "unknown";
       elements.review.hidden = true; elements.confirmation.hidden = false; elements.confirmation.dataset.state = data.bookingAttempt.state;
-      elements.confirmationEyebrow.textContent = resolving ? "Booking resolving" : "Booking not completed";
-      elements.confirmationTitle.textContent = resolving ? "Resolving your Booking" : "Booking not completed";
-      elements.confirmationDetails.textContent = resolving ? "We are checking the Booking with Mindbody. Do not submit it again." : bookingError(data);
-      document.querySelector("#page-title").textContent = resolving ? "Resolving your Booking" : "Booking not completed";
+      elements.confirmationEyebrow.textContent = resolving ? "Booking attempt resolving" : "Booking not completed";
+      elements.confirmationTitle.textContent = resolving ? "Resolving your Booking attempt" : "Booking not completed";
+      elements.confirmationDetails.textContent = resolving ? "We are checking the Booking attempt with Mindbody. Do not submit it again." : bookingError(data);
+      document.querySelector("#page-title").textContent = resolving ? "Resolving your Booking attempt" : "Booking not completed";
       document.querySelector("#page-description").textContent = resolving ? "We will show the result once Mindbody confirms it." : "Choose a new live time to try again.";
     }
     async function continueBooking() {

@@ -170,7 +170,7 @@ function failureStatus(code: string) {
 }
 
 function unknownOutcomeResponse(attempt: Record<string, any>) {
-  return { code: "BOOKING_RESOLVING", error: "We are resolving your Booking with Mindbody. Do not submit it again.", bookingAttempt: attemptResponse(attempt).bookingAttempt };
+  return { code: "BOOKING_RESOLVING", error: "We are resolving your Booking attempt with Mindbody. Do not submit it again.", bookingAttempt: attemptResponse(attempt).bookingAttempt };
 }
 
 function expiredAttemptResponse(attempt: Record<string, any>) {
@@ -178,7 +178,7 @@ function expiredAttemptResponse(attempt: Record<string, any>) {
 }
 
 function notCompletedResponse(attempt: Record<string, any>) {
-  return { code: "BOOKING_NOT_COMPLETED", error: "Mindbody confirmed that this Booking was not completed. You may choose a new time.", bookingAttempt: attemptResponse(attempt).bookingAttempt };
+  return { code: "BOOKING_NOT_COMPLETED", error: "Mindbody confirmed that this Booking attempt did not result in a Booking. You may choose a new time.", bookingAttempt: attemptResponse(attempt).bookingAttempt };
 }
 
 async function recordEvent(supabase: any, attempt: Record<string, any>, event: Record<string, unknown>) {
@@ -332,11 +332,11 @@ async function markUnknown(supabase: any, attempt: Record<string, any>, reason: 
     .update({ state: "unknown", ...providerReferences })
     .eq("id", attempt.id)
     .eq("state", "pending_checkout")
+    .gt("expires_at", new Date().toISOString())
     .select()
     .maybeSingle();
   if (!unknownAttempt) {
-    const { data: current } = await supabase.from("booking_attempts").select("*").eq("id", attempt.id).maybeSingle();
-    return current ?? attempt;
+    return expireAttempt(supabase, attempt, "appointment_create");
   }
   const current = unknownAttempt;
   await recordEvent(supabase, current, {
@@ -417,11 +417,16 @@ async function expireAttempt(supabase: any, attempt: Record<string, any>, operat
     .update({ state: "expired" })
     .eq("id", attempt.id)
     .in("state", ["created", "pending_checkout", "payment_needs_attention", "unknown"])
+    .lte("expires_at", new Date().toISOString())
     .select()
     .maybeSingle();
-  const current = expired ?? attempt;
+  let current = expired;
+  if (!current) {
+    const { data } = await supabase.from("booking_attempts").select("*").eq("id", attempt.id).maybeSingle();
+    current = data;
+  }
   if (expired) await recordEvent(supabase, current, { event_type: "attempt_expired", operation, error_category: "attempt_expired" });
-  return current;
+  return current ?? attempt;
 }
 
 function isAuthoritativeAppointmentForAttempt(appointment: Record<string, any>, attempt: Record<string, any>) {
@@ -497,9 +502,10 @@ async function reconcileUnknownAttempt({ supabase, client, attempt }: any) {
     .update({ state: "failed" })
     .eq("id", claimed.id)
     .eq("state", "unknown")
+    .gt("expires_at", new Date().toISOString())
     .select()
     .maybeSingle();
-  const current = failed ?? claimed;
+  const current = failed ?? await expireAttempt(supabase, claimed, "appointment_reconciliation");
   if (failed) await recordEvent(supabase, current, { event_type: "reconciliation_absent", operation: "appointment_reconciliation", error_category: "authoritative_absence", latency_ms: Date.now() - startedAt });
   return current;
 }
@@ -771,16 +777,20 @@ Deno.serve(async (request) => {
   try {
     const appointment = await client.addAppointment({ clientId: uniqueVerifiedEmailClient.providerId, locationId: providerLocation.mindbody_location_id, staffId: liveSlot.staffProviderId, sessionTypeId: providerService.mindbody_session_type_id, startDateTime: selectedStart });
     if (appointment.paymentNeedsAttention) {
-      const { data: paymentNeedsAttention } = await supabase.from("booking_attempts").update({ state: "payment_needs_attention", mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }).eq("id", claimed.id).eq("state", "pending_checkout").select().single();
-      const current = paymentNeedsAttention ?? claimed;
+      const { data: paymentNeedsAttention } = await supabase.from("booking_attempts").update({ state: "payment_needs_attention", mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }).eq("id", claimed.id).eq("state", "pending_checkout").gt("expires_at", new Date().toISOString()).select().single();
+      const current = paymentNeedsAttention ?? await expireAttempt(supabase, claimed, "appointment_create");
+      if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
       await recordEvent(supabase, current, { event_type: "attempt_payment_needs_attention", operation: "appointment_create", error_category: "payment_needs_attention", latency_ms: Date.now() - providerStartedAt });
-      return json({ code: "PAYMENT_NEEDS_ATTENTION", error: "Mindbody requires an additional payment action before this Booking can be confirmed.", bookingAttempt: attemptResponse(current).bookingAttempt }, 202, origin, requestId);
+      return json({ code: "PAYMENT_NEEDS_ATTENTION", error: "Mindbody requires an additional payment action before this Booking attempt can be confirmed.", bookingAttempt: attemptResponse(current).bookingAttempt }, 202, origin, requestId);
     }
     if (!appointment.providerId) throw new MindbodyApiError("Mindbody did not return an appointment identifier.", 502);
-    const { data: confirmed, error: confirmationError } = await supabase.from("booking_attempts").update({ state: "confirmed", mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }).eq("id", claimed.id).eq("state", "pending_checkout").select().single();
+    const { data: confirmed, error: confirmationError } = await supabase.from("booking_attempts").update({ state: "confirmed", mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }).eq("id", claimed.id).eq("state", "pending_checkout").gt("expires_at", new Date().toISOString()).select().single();
     if (confirmationError || !confirmed) {
-       const current = await markUnknown(supabase, claimed, "confirmation_persist_failed", { mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }, Date.now() - providerStartedAt);
-      return json(unknownOutcomeResponse(current), 502, origin, requestId);
+      const current = await expireAttempt(supabase, claimed, "appointment_create");
+      if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
+      const unknown = await markUnknown(supabase, current, "confirmation_persist_failed", { mindbody_appointment_id: appointment.providerId, mindbody_appointment_unique_id: appointment.uniqueId }, Date.now() - providerStartedAt);
+      if (unknown.state === "expired") return json(expiredAttemptResponse(unknown), 409, origin, requestId);
+      return json(unknownOutcomeResponse(unknown), 502, origin, requestId);
     }
     await recordEvent(supabase, confirmed, { event_type: "attempt_confirmed", operation: "appointment_create", latency_ms: Date.now() - providerStartedAt });
     return json({ ...attemptResponse(confirmed), ...(clientCreated ? { clientCreated: true } : {}) }, 200, origin, requestId);
@@ -788,11 +798,13 @@ Deno.serve(async (request) => {
     const providerStatus = error instanceof MindbodyApiError ? error.status : 502;
     const state = providerStatus >= 500 ? "unknown" : "failed";
     if (state === "unknown") {
-       const current = await markUnknown(supabase, claimed, "provider_unknown", {}, Date.now() - providerStartedAt);
+      const current = await markUnknown(supabase, claimed, "provider_unknown", {}, Date.now() - providerStartedAt);
+      if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
       return json(unknownOutcomeResponse(current), 502, origin, requestId);
     }
-    const { data: finalAttempt } = await supabase.from("booking_attempts").update({ state }).eq("id", claimed.id).eq("state", "pending_checkout").select().single();
-    const current = finalAttempt ?? claimed;
+    const { data: finalAttempt } = await supabase.from("booking_attempts").update({ state }).eq("id", claimed.id).eq("state", "pending_checkout").gt("expires_at", new Date().toISOString()).select().single();
+    const current = finalAttempt ?? await expireAttempt(supabase, claimed, "appointment_create");
+    if (current.state === "expired") return json(expiredAttemptResponse(current), 409, origin, requestId);
     await recordEvent(supabase, current, {
       event_type: state === "unknown" ? "provider_write_unknown" : "attempt_failed",
       operation: "appointment_create",
