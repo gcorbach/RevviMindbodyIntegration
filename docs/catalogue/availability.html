@@ -42,7 +42,7 @@
       <section class="state" data-testid="review-error" id="review-error" hidden></section>
     </section>
     <section class="panel" data-testid="confirmation" id="confirmation" hidden>
-      <div class="eyebrow">Booking confirmed</div><h2>Your Booking is confirmed.</h2><p id="confirmation-details"></p>
+      <div class="eyebrow" id="confirmation-eyebrow">Booking confirmed</div><h2 id="confirmation-title">Your Booking is confirmed.</h2><p id="confirmation-details"></p>
     </section>
   </main>
   <script>
@@ -51,7 +51,7 @@
     const elements = {
       context: document.querySelector("[data-testid='booking-context']"), business: document.querySelector("#business-name"), location: document.querySelector("#location-name"), change: document.querySelector("#change-location"),
       timeSelection: document.querySelector("[data-testid='time-selection']"), serviceName: document.querySelector("#service-name"), serviceSummary: document.querySelector("#service-summary"), date: document.querySelector("#date-picker"), loading: document.querySelector("#loading"), empty: document.querySelector("#empty-date"), next: document.querySelector("#earliest-next"), slots: document.querySelector("#slots"), error: document.querySelector("#error"), review: document.querySelector("#review"),
-      reviewBusiness: document.querySelector("#review-business"), reviewLocation: document.querySelector("#review-location"), reviewService: document.querySelector("#review-service"), reviewStart: document.querySelector("#review-start"), reviewDuration: document.querySelector("#review-duration"), reviewPrice: document.querySelector("#review-price"), backToTimes: document.querySelector("#back-to-times"), reviewBack: document.querySelector("#review-back"), continueBooking: document.querySelector("#continue-booking"), reviewError: document.querySelector("#review-error"), confirmation: document.querySelector("#confirmation"), confirmationDetails: document.querySelector("#confirmation-details"),
+      reviewBusiness: document.querySelector("#review-business"), reviewLocation: document.querySelector("#review-location"), reviewService: document.querySelector("#review-service"), reviewStart: document.querySelector("#review-start"), reviewDuration: document.querySelector("#review-duration"), reviewPrice: document.querySelector("#review-price"), backToTimes: document.querySelector("#back-to-times"), reviewBack: document.querySelector("#review-back"), continueBooking: document.querySelector("#continue-booking"), reviewError: document.querySelector("#review-error"), confirmation: document.querySelector("#confirmation"), confirmationEyebrow: document.querySelector("#confirmation-eyebrow"), confirmationTitle: document.querySelector("#confirmation-title"), confirmationDetails: document.querySelector("#confirmation-details"),
     };
     const bookingApiBase = window.REVVI_BOOKING_API_URL || "/functions/v1/booking-attempt";
     function today() { return new Date().toISOString().slice(0, 10); }
@@ -71,6 +71,15 @@
     }
     function idempotencyKey() { const params = currentParams(); const key = `revvi-booking:${params.get("business")}:${params.get("location")}:${params.get("service")}:${params.get("start")}`; const stored = sessionStorage.getItem(key); if (stored) return stored; const created = crypto.randomUUID(); sessionStorage.setItem(key, created); return created; }
     function bookingError(data) { return data.code === "CLIENT_MATCH_AMBIGUOUS" ? "We could not safely match your Mindbody Client. Please contact Revvi support to complete this Booking." : data.error || "This Booking could not be completed."; }
+    function renderBookingOutcome(data) {
+      const resolving = data.bookingAttempt.state === "unknown";
+      elements.review.hidden = true; elements.confirmation.hidden = false; elements.confirmation.dataset.state = data.bookingAttempt.state;
+      elements.confirmationEyebrow.textContent = resolving ? "Booking resolving" : "Booking not completed";
+      elements.confirmationTitle.textContent = resolving ? "Resolving your Booking" : "Booking not completed";
+      elements.confirmationDetails.textContent = resolving ? "We are checking the Booking with Mindbody. Do not submit it again." : bookingError(data);
+      document.querySelector("#page-title").textContent = resolving ? "Resolving your Booking" : "Booking not completed";
+      document.querySelector("#page-description").textContent = resolving ? "We will show the result once Mindbody confirms it." : "Choose a new live time to try again.";
+    }
     async function continueBooking() {
       elements.continueBooking.disabled = true; elements.continueBooking.textContent = "Confirming…";
       const params = currentParams();
@@ -84,8 +93,9 @@
           elements.error.textContent = data.staleSelection?.message || data.error || "That time is no longer available. Choose a new live time.";
           return;
         }
+        if (["unknown", "failed", "expired"].includes(data.bookingAttempt?.state)) { renderBookingOutcome(data); return; }
         if (!response.ok || data.bookingAttempt?.state !== "confirmed") throw new Error(bookingError(data));
-        elements.review.hidden = true; elements.confirmation.hidden = false; elements.confirmation.dataset.clientCreated = data.clientCreated === true ? "true" : "false"; elements.confirmationDetails.textContent = `${data.bookingAttempt.service} at ${formatTime(data.bookingAttempt.startTime, data.bookingAttempt.locationTimezone || "UTC")}.`;
+        elements.review.hidden = true; elements.confirmation.hidden = false; elements.confirmation.dataset.state = "confirmed"; elements.confirmation.dataset.clientCreated = data.clientCreated === true ? "true" : "false"; elements.confirmationEyebrow.textContent = "Booking confirmed"; elements.confirmationTitle.textContent = "Your Booking is confirmed."; elements.confirmationDetails.textContent = `${data.bookingAttempt.service} at ${formatTime(data.bookingAttempt.startTime, data.bookingAttempt.locationTimezone || "UTC")}.`;
         document.querySelector("#page-title").textContent = "Booking confirmed"; document.querySelector("#page-description").textContent = "Mindbody has confirmed your Booking.";
       } catch (error) { elements.continueBooking.disabled = false; elements.continueBooking.textContent = "Continue"; elements.reviewError.hidden = false; elements.reviewError.textContent = error.message; }
     }
