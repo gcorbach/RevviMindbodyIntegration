@@ -579,7 +579,12 @@ async function expireAttempt(supabase: any, attempt: Record<string, any>, operat
     const { data } = await supabase.from("booking_attempts").select("*").eq("id", attempt.id).maybeSingle();
     current = data;
   }
-  if (expired) await recordEvent(supabase, current, { event_type: "attempt_expired", operation, error_category: "attempt_expired" });
+  if (expired) {
+    await recordEvent(supabase, current, { event_type: "attempt_expired", operation, error_category: "attempt_expired" });
+    if (["unknown", "payment_needs_attention"].includes(attempt.state)) {
+      await createSupportItem(supabase, current, "EXPIRED_REQUIRES_ATTENTION");
+    }
+  }
   return current ?? attempt;
 }
 

@@ -86,7 +86,7 @@ test("availability page covers live times, empty dates, and review responsively"
         child.once("close", (status) => finish({ error: undefined, status }));
       });
     } finally {
-      rmSync(profile, { recursive: true, force: true });
+      rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
   };
   try {

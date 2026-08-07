@@ -20,16 +20,46 @@ function nextTestDoubleSlot() {
   return start.toISOString();
 }
 
-async function waitForFunction(url, process, diagnostics) {
+async function waitForFunction(url, functionProcess, diagnostics) {
   for (let attempt = 0; attempt < 240; attempt += 1) {
-    if (process.exitCode !== null) throw new Error(`booking-attempt function exited with ${process.exitCode}: ${diagnostics.join("")}`);
-    try { const response = await fetch(url); if ([400, 401, 405].includes(response.status)) return; } catch { /* runtime is still starting */ }
+    if (functionProcess.exitCode !== null) throw new Error(`booking-attempt function exited with ${functionProcess.exitCode}: ${diagnostics.join("")}`);
+    const probe = spawnSync(process.execPath, ["-e", `fetch(${JSON.stringify(url)}, { headers: { apikey: ${JSON.stringify(anonKey)} } }).then((response) => console.log(response.status)).catch(() => process.exit(1))`], { encoding: "utf8", timeout: 1_500, windowsHide: true });
+    if ([400, 401, 405].includes(Number(probe.stdout?.trim()))) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`booking-attempt function did not start: ${diagnostics.join("")}`);
 }
 
-async function startBookingScenario({ memberstackId, clientMode = "existing", extraEnvironment = [], functionName = "booking-attempt", startTime = nextTestDoubleSlot() }) {
+async function fetchWithTransientRetry(input, init = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try { return await fetch(input, { ...init, signal: AbortSignal.timeout(2_000) }); }
+    catch (error) { lastError = error; }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw lastError ?? new Error("Local Supabase did not become ready.");
+}
+
+function resetBookingScenarioFixtures(memberstackId) {
+  assert.match(memberstackId, /^[a-z0-9-]+$/);
+  const attemptIds = `(select id from public.booking_attempts where memberstack_id = '${memberstackId}')`;
+  const sql = [
+    "begin",
+    "set local session_replication_role = replica",
+    `delete from public.booking_support_actions where booking_attempt_id in ${attemptIds}`,
+    `delete from public.booking_support_alerts where booking_attempt_id in ${attemptIds}`,
+    `delete from public.booking_support_items where booking_attempt_id in ${attemptIds}`,
+    `delete from public.booking_attempt_events where booking_attempt_id in ${attemptIds}`,
+    `delete from public.booking_attempts where memberstack_id = '${memberstackId}'`,
+    `delete from public.mindbody_client_mappings where memberstack_id = '${memberstackId}'`,
+    `delete from public.mindbody_client_resolution_locks where memberstack_id = '${memberstackId}'`,
+    "commit",
+  ].join("; ");
+  const cleanup = spawnSync("docker", ["exec", "supabase_db_revvi-booking", "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", sql], { encoding: "utf8", windowsHide: true });
+  assert.equal(cleanup.status, 0, cleanup.stderr);
+}
+
+async function startBookingScenario({ memberstackId, clientMode = "existing", extraEnvironment = [], functionName = "booking-attempt", startTime = nextTestDoubleSlot(), resetFixtures = true }) {
   const temp = mkdtempSync(join(tmpdir(), "revvi-booking-attempt-scenario-"));
   const envFile = join(temp, "functions.env");
   if (!serviceRoleKey) throw new Error("SUPABASE_SERVICE_ROLE_KEY is required for the HTTP acceptance test.");
@@ -50,15 +80,16 @@ async function startBookingScenario({ memberstackId, clientMode = "existing", ex
   await waitForFunction(functionUrl, functionProcess, diagnostics);
   const runId = Date.now(); const email = `issue-14-${memberstackId}-${runId}@example.test`; const password = "LocalSandbox123!";
   const adminHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json" };
-  const created = await fetch(`${apiUrl}/auth/v1/admin/users`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ email, password, email_confirm: true, user_metadata: { first_name: "Issue", last_name: "Fourteen" }, app_metadata: { identity_provider: "memberstack", memberstack_id: memberstackId, memberstack_verified: true } }) });
+  if (resetFixtures) resetBookingScenarioFixtures(memberstackId);
+  const created = await fetchWithTransientRetry(`${apiUrl}/auth/v1/admin/users`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ email, password, email_confirm: true, user_metadata: { first_name: "Issue", last_name: "Fourteen" }, app_metadata: { identity_provider: "memberstack", memberstack_id: memberstackId, memberstack_verified: true } }) });
   assert.equal(created.status, 200);
-  const session = await fetch(`${apiUrl}/auth/v1/token?grant_type=password`, { method: "POST", headers: { apikey: anonKey, "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+  const session = await fetchWithTransientRetry(`${apiUrl}/auth/v1/token?grant_type=password`, { method: "POST", headers: { apikey: anonKey, "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
   assert.equal(session.status, 200); const { access_token: accessToken } = await session.json();
   const headers = { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" };
   const request = { business: "sandbox-wellness", location: "sandbox-location", service: "00000000-0000-0000-0000-000000000031", startTime, idempotencyKey: `issue-14-${memberstackId}-${runId}` };
   let stopped = false;
   return {
-    functionUrl, headers, request, adminHeaders, email,
+    functionUrl, headers, request, adminHeaders, email, diagnostics,
     async stop() {
       if (stopped) return;
       stopped = true;
@@ -233,7 +264,7 @@ test("HTTP Booking revalidation returns refreshed availability when the selected
   try {
     const response = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
     const body = await response.json();
-    assert.equal(response.status, 409, JSON.stringify(body));
+    assert.equal(response.status, 409, `${JSON.stringify(body)}\n${scenario.diagnostics.join("")}`);
     assert.equal(body.code, "SLOT_UNAVAILABLE");
     assert.equal(body.staleSelection.startTime, scenario.request.startTime);
     assert.equal(body.bookingAttempt.state, "failed");
@@ -615,7 +646,7 @@ test("HTTP SCA callback returns to Revvi without confirming the Booking", { skip
     assert.equal(attempts.status, 200);
     const [attempt] = await attempts.json();
     await booking.stop();
-    callback = await startBookingScenario({ memberstackId: "issue-17-checkout-callback", functionName: "booking-attempt-callback", extraEnvironment: ["BOOKING_SCA_RETURN_URL=https://booking.example.test/availability.html"] });
+    callback = await startBookingScenario({ memberstackId: "issue-17-checkout-callback", functionName: "booking-attempt-callback", extraEnvironment: ["BOOKING_SCA_RETURN_URL=https://booking.example.test/availability.html"], resetFixtures: false });
     const returned = await fetch(`${callback.functionUrl}?attempt=${attempt.id}&resume=${attempt.sca_resume_token}`, { redirect: "manual" });
     assert.equal(returned.status, 302);
     const returnLocation = new URL(returned.headers.get("location"));
