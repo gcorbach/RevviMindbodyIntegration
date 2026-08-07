@@ -390,7 +390,6 @@ async function markUnknown(supabase: any, attempt: Record<string, any>, reason: 
     .update({ state: "unknown", ...providerReferences })
     .eq("id", attempt.id)
     .eq("state", attempt.state)
-    .gt("expires_at", new Date().toISOString())
     .select()
     .maybeSingle();
   if (!unknownAttempt) {
@@ -570,7 +569,7 @@ async function expireAttempt(supabase: any, attempt: Record<string, any>, operat
     .from("booking_attempts")
     .update({ state: "expired" })
     .eq("id", attempt.id)
-    .in("state", ["created", "pending_checkout", "payment_needs_attention", "unknown"])
+    .in("state", ["created", "pending_checkout", "payment_needs_attention"])
     .lte("expires_at", new Date().toISOString())
     .select()
     .maybeSingle();
@@ -579,7 +578,16 @@ async function expireAttempt(supabase: any, attempt: Record<string, any>, operat
     const { data } = await supabase.from("booking_attempts").select("*").eq("id", attempt.id).maybeSingle();
     current = data;
   }
-  if (expired) await recordEvent(supabase, current, { event_type: "attempt_expired", operation, error_category: "attempt_expired" });
+  if (expired) {
+    await recordEvent(supabase, current, { event_type: "attempt_expired", operation, error_category: "attempt_expired" });
+    if (attempt.state === "payment_needs_attention") {
+      await createSupportItem(supabase, current, "EXPIRED_REQUIRES_ATTENTION");
+    }
+  } else if (current?.state === "unknown" && new Date(current.expires_at).getTime() <= Date.now()) {
+    // Time cannot establish whether a provider write succeeded. Keep the
+    // attempt retry-blocked and surface the elapsed window to support.
+    await createSupportItem(supabase, current, "EXPIRED_REQUIRES_ATTENTION");
+  }
   return current ?? attempt;
 }
 

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Booking support | Revvi</title>
+  <style>
+    :root { color-scheme: light; --ink:#18201d; --muted:#65716c; --paper:#f3f5f1; --card:#fff; --line:#d9e0da; --brand:#126a47; --brand-soft:#dff4e9; --warn:#fff2c7; --danger:#8f2f25; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--paper); color:var(--ink); font:15px/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
+    button,input,select,textarea { font:inherit; }
+    button { cursor:pointer; }
+    header { padding:24px clamp(16px,4vw,48px); background:#17342a; color:#fff; }
+    header p { margin:6px 0 0; color:#c8ddd4; }
+    h1 { margin:0; font-size:clamp(28px,4vw,44px); letter-spacing:-.04em; }
+    h2,h3 { margin:0; }
+    main { max-width:1440px; margin:auto; padding:20px clamp(12px,3vw,32px) 48px; }
+    .filters,.panel,.state { border:1px solid var(--line); border-radius:16px; background:var(--card); }
+    .filters { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)) auto; gap:12px; padding:16px; margin-bottom:16px; align-items:end; }
+    label { display:grid; gap:6px; color:var(--muted); font-size:13px; font-weight:700; }
+    input,select,textarea { width:100%; border:1px solid #bfc9c1; border-radius:9px; padding:10px 11px; background:#fff; color:var(--ink); }
+    textarea { min-height:110px; resize:vertical; }
+    .primary { border:0; border-radius:9px; padding:11px 16px; background:var(--brand); color:#fff; font-weight:800; }
+    .workspace { display:grid; grid-template-columns:minmax(300px,420px) minmax(0,1fr); gap:16px; align-items:start; }
+    .panel { overflow:hidden; }
+    .panel-heading { padding:16px 18px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:12px; align-items:center; }
+    .count { border-radius:999px; background:var(--brand-soft); color:var(--brand); padding:3px 9px; font-weight:800; }
+    #queue { max-height:70vh; overflow:auto; }
+    .queue-item { width:100%; border:0; border-bottom:1px solid var(--line); padding:16px 18px; background:#fff; color:inherit; text-align:left; display:grid; gap:8px; }
+    .queue-item:hover,.queue-item[aria-current="true"] { background:#eef6f1; }
+    .queue-top { display:flex; justify-content:space-between; gap:8px; align-items:center; }
+    .badge { display:inline-flex; border-radius:999px; padding:3px 8px; background:#edf0ed; color:#45524d; font-size:12px; font-weight:800; }
+    .badge[data-category="unknown_outcome"],.badge[data-category="reconciliation_failure"] { background:var(--warn); color:#765900; }
+    .queue-context { color:var(--muted); font-size:13px; }
+    #detail { padding:20px; min-height:420px; }
+    .detail-header { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:18px; }
+    .detail-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:16px 0; }
+    .fact { border:1px solid var(--line); border-radius:10px; padding:11px; min-width:0; }
+    .fact span { display:block; color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
+    .fact strong { display:block; margin-top:4px; overflow-wrap:anywhere; }
+    .evidence { display:grid; gap:8px; padding:0; list-style:none; }
+    .evidence li { display:grid; grid-template-columns:1fr 1fr auto; gap:8px; border-top:1px solid var(--line); padding-top:9px; }
+    .resolution { margin-top:20px; border-top:1px solid var(--line); padding-top:18px; }
+    .resolution button { margin-top:10px; }
+    .state { padding:18px; color:var(--muted); }
+    .error { color:var(--danger); background:#fff0ed; border-color:#f0c4bc; }
+    .toast { margin-bottom:14px; padding:12px 14px; border-radius:10px; background:var(--brand-soft); color:var(--brand); font-weight:800; }
+    [hidden] { display:none !important; }
+    @media (max-width:900px) { .filters { grid-template-columns:repeat(2,minmax(0,1fr)); } .workspace { grid-template-columns:1fr; } #queue { max-height:360px; } }
+    @media (max-width:560px) { header { padding:18px 15px; } main { padding:12px; } .filters { grid-template-columns:1fr; } .detail-grid { grid-template-columns:1fr 1fr; } .evidence li { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Booking support</h1>
+    <p>Exceptional Booking work, scoped to the Businesses you support.</p>
+  </header>
+  <main>
+    <form class="filters" id="filters">
+      <label>Business<input id="business-filter" name="business" placeholder="Business slug" /></label>
+      <label>Status<select id="status-filter" name="status"><option value="open">Open</option><option value="resolved">Resolved</option><option value="">All</option></select></label>
+      <label>Exception<select id="category-filter" name="category"><option value="">All categories</option><option value="ambiguous_client">Ambiguous Client</option><option value="unknown_outcome">Unknown outcome</option><option value="reconciliation_failure">Repeated reconciliation failure</option><option value="expired_attempt">Expired attempt</option></select></label>
+      <label>Correlation<input id="correlation-filter" name="correlation" placeholder="Correlation UUID" /></label>
+      <button class="primary" type="submit">Apply filters</button>
+    </form>
+    <div id="notice" class="toast" role="status" hidden></div>
+    <div class="workspace">
+      <section class="panel" aria-label="Support queue">
+        <div class="panel-heading"><h2>Queue</h2><span class="count" id="queue-count">0</span></div>
+        <div class="state" id="loading">Loading support items…</div>
+        <div class="state error" id="error" hidden></div>
+        <div class="state" id="empty" hidden>No support items match these filters.</div>
+        <div id="queue" hidden></div>
+      </section>
+      <section class="panel" aria-label="Support detail">
+        <div id="detail"><div class="state">Choose a support item to inspect its redacted correlated history.</div></div>
+      </section>
+    </div>
+  </main>
+  <script>
+    const apiBase = window.REVVI_SUPPORT_API_URL || "/functions/v1/support-operations";
+    const token = window.REVVI_STAFF_TOKEN;
+    const categoryLabels = { ambiguous_client: "Ambiguous Client", unknown_outcome: "Unknown outcome", reconciliation_failure: "Repeated reconciliation failure", expired_attempt: "Expired attempt" };
+    const elements = { filters: document.querySelector("#filters"), business: document.querySelector("#business-filter"), status: document.querySelector("#status-filter"), category: document.querySelector("#category-filter"), correlation: document.querySelector("#correlation-filter"), loading: document.querySelector("#loading"), error: document.querySelector("#error"), empty: document.querySelector("#empty"), queue: document.querySelector("#queue"), count: document.querySelector("#queue-count"), detail: document.querySelector("#detail"), notice: document.querySelector("#notice") };
+    let selectedId = null;
+
+    function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" }[character])); }
+    function state(name, message) {
+      for (const key of ["loading", "error", "empty", "queue"]) elements[key].hidden = key !== name;
+      if (message && elements[name]) elements[name].textContent = message;
+    }
+    function requestHeaders() { return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }; }
+    function formatTime(value) { if (!value) return "Not recorded"; return new Intl.DateTimeFormat(undefined, { dateStyle:"medium", timeStyle:"short" }).format(new Date(value)); }
+    function renderQueue(items) {
+      elements.count.textContent = String(items.length);
+      elements.queue.innerHTML = items.map((item) => `<button class="queue-item" type="button" data-support-item="${escapeHtml(item.id)}" aria-current="${item.id === selectedId}"><span class="queue-top"><strong>${escapeHtml(categoryLabels[item.exceptionCategory] || item.exceptionCategory)}</strong><span><span class="badge" data-category="${escapeHtml(item.exceptionCategory)}">${escapeHtml(item.supportStatus)}</span>${item.alert ? '<span class="badge" data-category="unknown_outcome">Prompt unknown alert</span>' : ""}</span></span><span>${escapeHtml(item.bookingAttempt.serviceName || "Booking attempt")}</span><span class="queue-context">${escapeHtml(item.business.displayName)} · ${escapeHtml(item.bookingAttempt.state || "No current state")} · ${escapeHtml(item.bookingAttempt.correlationId)}</span></button>`).join("");
+      for (const button of elements.queue.querySelectorAll("[data-support-item]")) button.addEventListener("click", () => loadDetail(button.dataset.supportItem));
+      state(items.length ? "queue" : "empty");
+      if (window.REVVI_TEST_RESPONSIVE) document.body.dataset.responsive = document.documentElement.scrollWidth <= window.innerWidth ? "true" : "false";
+    }
+    function fact(label, value) { return `<div class="fact"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value ?? "Not recorded")}</strong></div>`; }
+    function renderDetail(item) {
+      selectedId = item.id;
+      for (const button of elements.queue.querySelectorAll("[data-support-item]")) button.setAttribute("aria-current", String(button.dataset.supportItem === item.id));
+      const attempt = item.bookingAttempt;
+      const unknownBlocked = item.exceptionCategory === "unknown_outcome" && !item.authoritativeResultEstablished;
+      const canResolve = item.supportStatus === "open" && !unknownBlocked;
+      const evidence = item.evidence.length ? item.evidence.map((event) => `<li><strong>${escapeHtml(event.eventType)}</strong><span>${escapeHtml(event.operation)} · ${escapeHtml(event.errorCategory || "No error")}</span><span>${event.latencyMs ?? "—"} ms</span></li>`).join("") : "<li>No correlated evidence recorded.</li>";
+      const reconciliation = item.reconciliationHistory.length ? item.reconciliationHistory.map((event) => `<li><strong>${escapeHtml(event.eventType)}</strong><span>${escapeHtml(event.errorCategory || "No error")} · ${escapeHtml(formatTime(event.createdAt))}</span><span>${event.providerStatus ?? "—"}</span></li>`).join("") : "<li>No reconciliation reads recorded.</li>";
+      const references = Object.entries(item.providerReferencePresence).filter(([, present]) => present).map(([name]) => name).join(", ") || "None recorded";
+      const alert = item.alert ? `<div class="toast">Prompt unknown alert · ${escapeHtml(item.business.displayName)} · ${escapeHtml(attempt.correlationId)} · ${escapeHtml(formatTime(item.alert.createdAt))}</div>` : "";
+      elements.detail.innerHTML = `${alert}<div class="detail-header"><div><h2>${escapeHtml(categoryLabels[item.exceptionCategory] || item.exceptionCategory)}</h2><span class="queue-context">${escapeHtml(item.business.displayName)} · ${escapeHtml(item.id)}</span></div><span class="badge" data-category="${escapeHtml(item.exceptionCategory)}">${escapeHtml(item.supportStatus)}</span></div><div class="detail-grid">${fact("Current state", attempt.state)}${fact("Service", attempt.serviceName)}${fact("Location", attempt.locationName)}${fact("Booking time", formatTime(attempt.selectedStartTime))}${fact("Provider operation", item.providerOperation?.category)}${fact("Latency", item.providerOperation?.latencyMs === null || item.providerOperation?.latencyMs === undefined ? "Not recorded" : `${item.providerOperation.latencyMs} ms`)}${fact("Redacted error", item.redactedErrorCategory)}${fact("Reconciliation reads", attempt.reconciliationAttempts)}${fact("Provider references", references)}${fact("Correlation", attempt.correlationId)}</div><h3>Reconciliation history</h3><ul class="evidence">${reconciliation}</ul><h3>Redacted correlated evidence</h3><ul class="evidence">${evidence}</ul>${unknownBlocked ? '<div class="state">This unknown outcome remains retry-blocked. Resolve it only after authoritative reconciliation establishes the result.</div>' : ""}${item.supportStatus === "resolved" ? `<div class="resolution"><h3>Resolution recorded</h3><p>${escapeHtml(item.resolutionSummary)}</p><span class="queue-context">${escapeHtml(formatTime(item.resolvedAt))}</span></div>` : `<form class="resolution" id="resolution-form" ${canResolve ? "" : "hidden"}><h3>Record staff resolution</h3><label>Resolution summary<textarea id="resolution" minlength="10" maxlength="1000" required></textarea></label><button class="primary" type="submit">Record resolution</button></form>`}`;
+      const form = document.querySelector("#resolution-form");
+      if (form) form.addEventListener("submit", submitResolution);
+    }
+    async function api(url, options = {}) {
+      const response = await fetch(url, { ...options, headers: requestHeaders() });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || "Booking support could not be loaded.");
+      return body;
+    }
+    async function loadQueue() {
+      if (!token) { state("error", "Staff sign-in is required."); return; }
+      state("loading");
+      const query = new URLSearchParams();
+      for (const [name, input] of [["business", elements.business], ["status", elements.status], ["category", elements.category], ["correlation", elements.correlation]]) if (input.value) query.set(name, input.value);
+      try { const body = await api(`${apiBase}?${query}`); renderQueue(body.items); } catch (error) { state("error", error.message); }
+    }
+    async function loadDetail(itemId) {
+      try { const body = await api(`${apiBase}?item=${encodeURIComponent(itemId)}`); renderDetail(body.item); } catch (error) { elements.detail.innerHTML = `<div class="state error">${escapeHtml(error.message)}</div>`; }
+    }
+    async function submitResolution(event) {
+      event.preventDefault();
+      const resolution = document.querySelector("#resolution").value;
+      try {
+        const body = await api(apiBase, { method:"POST", body:JSON.stringify({ itemId:selectedId, action:"resolve", resolution }) });
+        renderDetail(body.item);
+        elements.notice.textContent = "Resolution recorded";
+        elements.notice.hidden = false;
+      } catch (error) { elements.notice.textContent = error.message; elements.notice.hidden = false; }
+    }
+    const params = new URLSearchParams(location.search);
+    for (const [name, input] of [["business", elements.business], ["status", elements.status], ["category", elements.category], ["correlation", elements.correlation]]) if (params.has(name)) input.value = params.get(name);
+    elements.filters.addEventListener("submit", (event) => { event.preventDefault(); loadQueue(); });
+    loadQueue();
+  </script>
+</body>
+</html>
