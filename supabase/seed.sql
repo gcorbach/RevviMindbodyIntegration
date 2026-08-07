@@ -302,6 +302,18 @@ values
     '{}'::jsonb,
     now(),
     now()
+  ),
+  (
+    '10000000-0000-0000-0000-000000000005',
+    'authenticated',
+    'authenticated',
+    'sandbox-platform-operations@example.test',
+    crypt('LocalSandbox123!', gen_salt('bf')),
+    now(),
+    '{"platform_operations":true}'::jsonb,
+    '{}'::jsonb,
+    now(),
+    now()
   )
 on conflict (id) do update set
   email = excluded.email,
@@ -316,3 +328,106 @@ values
   ('00000000-0000-0000-0000-000000000011', '10000000-0000-0000-0000-000000000002'),
   ('00000000-0000-0000-0000-000000000012', '10000000-0000-0000-0000-000000000003')
 on conflict do nothing;
+
+insert into public.booking_attempts (
+  id, business_id, memberstack_id, idempotency_key, location_id, service_id,
+  business_name, location_name, location_timezone, service_name,
+  mindbody_location_id, mindbody_session_type_id, selected_start_time,
+  selected_end_time, duration_minutes, price, state, completion_mode,
+  expires_at, correlation_id, mindbody_client_id, mindbody_appointment_id
+)
+values
+  ('19000000-0000-4000-8000-000000000011', '00000000-0000-0000-0000-000000000011', 'pilot-readiness-seed-11', 'pilot-readiness-seed-11', '00000000-0000-0000-0000-000000000021', '00000000-0000-0000-0000-000000000031', 'Revvi Sandbox Wellness', 'Sandbox Location', 'America/Los_Angeles', 'Nutrition Consultation', '1', '23', '2026-08-07T08:00:00Z', '2026-08-07T08:45:00Z', 45, 120, 'confirmed', 'free_unpaid', '2026-08-07T08:15:00Z', '19000000-0000-4100-8000-000000000011', 'seed-client-11', 'seed-booking-11'),
+  ('19000000-0000-4000-8000-000000000013', '00000000-0000-0000-0000-000000000013', 'pilot-readiness-seed-13', 'pilot-readiness-seed-13', '00000000-0000-0000-0000-000000000023', '00000000-0000-0000-0000-000000000032', 'Revvi Sandbox Checkout Disabled', 'Sandbox Checkout Disabled Location', 'America/Los_Angeles', 'Nutrition Consultation', '1', '23', '2026-08-07T08:00:00Z', '2026-08-07T08:45:00Z', 45, 120, 'confirmed', 'mindbody_checkout', '2026-08-07T08:15:00Z', '19000000-0000-4100-8000-000000000013', 'seed-client-13', 'seed-booking-13'),
+  ('19000000-0000-4000-8000-000000000014', '00000000-0000-0000-0000-000000000014', 'pilot-readiness-seed-14', 'pilot-readiness-seed-14', '00000000-0000-0000-0000-000000000024', '00000000-0000-0000-0000-000000000033', 'Revvi Sandbox Checkout', 'Sandbox Checkout Location', 'America/Los_Angeles', 'Nutrition Consultation', '1', '23', '2026-08-07T08:00:00Z', '2026-08-07T08:45:00Z', 45, 120, 'confirmed', 'mindbody_checkout', '2026-08-07T08:15:00Z', '19000000-0000-4100-8000-000000000014', 'seed-client-14', 'seed-booking-14')
+on conflict (id) do nothing;
+
+insert into public.booking_attempt_events (
+  business_id, booking_attempt_id, correlation_id, event_type, operation
+)
+select business_id, booking_attempt_id, correlation_id, event_type, operation
+from (values
+  ('00000000-0000-0000-0000-000000000011'::uuid, '19000000-0000-4000-8000-000000000011'::uuid, '19000000-0000-4100-8000-000000000011'::uuid),
+  ('00000000-0000-0000-0000-000000000013'::uuid, '19000000-0000-4000-8000-000000000013'::uuid, '19000000-0000-4100-8000-000000000013'::uuid),
+  ('00000000-0000-0000-0000-000000000014'::uuid, '19000000-0000-4000-8000-000000000014'::uuid, '19000000-0000-4100-8000-000000000014'::uuid)
+) attempt(business_id, booking_attempt_id, correlation_id)
+cross join (values
+  ('attempt_created', 'booking_attempt'),
+  ('provider_revalidation_succeeded', 'booking_facts_revalidation'),
+  ('provider_write_started', 'appointment_create'),
+  ('attempt_confirmed', 'appointment_create')
+) event(event_type, operation)
+where not exists (
+  select 1 from public.booking_attempt_events existing
+  where existing.booking_attempt_id = attempt.booking_attempt_id
+    and existing.event_type = event.event_type
+);
+
+update public.business_pilot_readiness readiness
+set
+  status = 'active',
+  checkout_mode = case when business.completion_mode = 'free_unpaid' then 'approved_non_paid' else 'supported_checkout' end,
+  transactional_message_behavior = 'Sandbox transactional-message behaviour recorded for the controlled pilot.',
+  accepted_limitations = '["Sandbox evidence does not prove production notification branding."]'::jsonb,
+  site_activation_fingerprint = encode(extensions.digest(provider.mindbody_site_id, 'sha256'), 'hex'),
+  responsible_staff_actor = '10000000-0000-0000-0000-000000000005',
+  activated_at = now()
+from public.businesses business
+join public.business_provider_config provider on provider.business_id = business.id
+where readiness.business_id = business.id
+  and business.id in (
+    '00000000-0000-0000-0000-000000000011',
+    '00000000-0000-0000-0000-000000000013',
+    '00000000-0000-0000-0000-000000000014'
+  );
+
+insert into public.business_pilot_readiness_checks (
+  business_id, check_name, passed, verified_at, evidence_ref, details, verified_by
+)
+select
+  business_id,
+  check_name,
+  true,
+  now(),
+  'seed/issue-19/' || check_name,
+  case when check_name = 'controlled_booking'
+    then jsonb_build_object('bookingAttemptId', case business_id
+      when '00000000-0000-0000-0000-000000000011' then '19000000-0000-4000-8000-000000000011'
+      when '00000000-0000-0000-0000-000000000013' then '19000000-0000-4000-8000-000000000013'
+      else '19000000-0000-4000-8000-000000000014' end)
+    else jsonb_build_object('verification', 'Seeded sandbox pilot evidence.') end,
+  '10000000-0000-0000-0000-000000000005'
+from unnest(array[
+  '00000000-0000-0000-0000-000000000011'::uuid,
+  '00000000-0000-0000-0000-000000000013'::uuid,
+  '00000000-0000-0000-0000-000000000014'::uuid
+]) business_id
+cross join unnest(array[
+  'site_activation', 'sandbox_connectivity', 'approved_locations', 'approved_services',
+  'live_availability', 'client_mapping', 'branding', 'support_contact',
+  'checkout_or_non_paid', 'transactional_messages', 'tenant_isolation',
+  'booking_lifecycle', 'controlled_booking'
+]) check_name
+on conflict (business_id, check_name) do update set
+  passed = excluded.passed,
+  verified_at = excluded.verified_at,
+  evidence_ref = excluded.evidence_ref,
+  details = excluded.details,
+  verified_by = excluded.verified_by;
+
+insert into public.business_pilot_readiness_actions (
+  business_id, actor_user_id, action, from_status, to_status, reason, snapshot
+)
+select
+  business_id,
+  '10000000-0000-0000-0000-000000000005',
+  'activated',
+  'ready',
+  'active',
+  'seeded_sandbox_pilot',
+  jsonb_build_object('source', 'supabase seed')
+from unnest(array[
+  '00000000-0000-0000-0000-000000000011'::uuid,
+  '00000000-0000-0000-0000-000000000013'::uuid,
+  '00000000-0000-0000-0000-000000000014'::uuid
+]) business_id;

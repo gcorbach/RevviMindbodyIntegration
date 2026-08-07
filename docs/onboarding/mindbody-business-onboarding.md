@@ -42,7 +42,7 @@ Revvi uses one server-side Mindbody application integration across many Business
 6. **Revvi validates the connection.**
    - From a server-side Edge Function, call Mindbody using Revvi's API key and the authorised Site ID.
    - Confirm the Site, Locations, session types, availability, and payment types expected for the Business.
-   - Confirm the customer-booking and payment flow that Mindbody supports for this Business. Do not rely on sandbox behaviour alone.
+   - Confirm the customer-booking and payment flow that Mindbody supports for this Business. Sandbox evidence is sufficient for the pre-approval pilot, but must be repeated against the production Business before production activation.
 
 7. **Revvi validates customer communications.**
    - Configure the Business's Mindbody confirmation email/SMS settings with Revvi-approved branding.
@@ -54,7 +54,11 @@ Revvi uses one server-side Mindbody application integration across many Business
 
 ## Sandbox versus production
 
-The Mindbody sandbox is a test Site provided through the developer account. It is suitable for validating API mechanics, but it does not authorise Revvi to access a real Business and does not prove that a production Business has the required payment configuration or notification branding.
+The current Business-to-Business pilot runs against the Mindbody sandbox because Mindbody requires a working sandbox implementation before approval. For this pilot, the sandbox is treated as the Business's tenant-scoped provider environment: all readiness, isolation, lifecycle, controlled-Booking, audit, activation, and rollback gates apply exactly as they will for a production Business.
+
+Sandbox approval evidence does not authorise a production Site and does not prove production payment configuration or notification branding. After Mindbody approves the implementation, production activation must repeat Site Activation, connectivity, catalogue, availability, payment, messaging, branding, controlled-Booking, and isolation verification against the real Business. A sandbox readiness record must never be relabelled as production evidence.
+
+The controlled sandbox pilot procedure is defined in [Sandbox Business pilot operations](../operations/sandbox-business-pilot.md).
 
 ## Current validation gates
 
