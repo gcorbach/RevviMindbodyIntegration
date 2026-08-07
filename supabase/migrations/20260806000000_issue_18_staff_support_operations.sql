@@ -18,10 +18,37 @@ $$;
 alter table public.booking_support_items
   add column exception_category text,
   add column resolution_summary text,
+  add column resolution_source text,
   add column resolved_by uuid references auth.users(id);
 
 update public.booking_support_items
 set exception_category = public.booking_support_exception_category(reason);
+
+-- The previous schema could record only that an item was resolved and when.
+-- Preserve those rows without attributing them to a staff member who did not
+-- perform an audited action under this schema.
+update public.booking_support_items
+set
+  resolution_summary = 'Migrated legacy resolution recorded before staff action auditing.',
+  resolution_source = 'legacy'
+where status = 'resolved';
+
+alter table public.booking_attempts
+  add constraint booking_attempts_business_id_id_key unique (business_id, id);
+
+alter table public.booking_attempt_events
+  drop constraint booking_attempt_events_booking_attempt_id_fkey,
+  add constraint booking_attempt_events_business_attempt_fkey
+    foreign key (business_id, booking_attempt_id)
+    references public.booking_attempts (business_id, id)
+    on delete cascade;
+
+alter table public.booking_support_items
+  drop constraint booking_support_items_booking_attempt_id_fkey,
+  add constraint booking_support_items_business_id_id_key unique (business_id, id),
+  add constraint booking_support_items_business_attempt_fkey
+    foreign key (business_id, booking_attempt_id)
+    references public.booking_attempts (business_id, id);
 
 alter table public.booking_support_items
   alter column exception_category set not null,
@@ -29,9 +56,17 @@ alter table public.booking_support_items
     check (exception_category in ('ambiguous_client', 'unknown_outcome', 'reconciliation_failure', 'expired_attempt')),
   add constraint booking_support_items_resolution_check
     check (
-      (status = 'open' and resolved_at is null and resolved_by is null and resolution_summary is null)
+      (status = 'open' and resolved_at is null and resolved_by is null and resolution_summary is null and resolution_source is null)
       or
-      (status = 'resolved' and resolved_at is not null and resolved_by is not null and length(trim(resolution_summary)) between 10 and 1000)
+      (
+        status = 'resolved'
+        and resolved_at is not null
+        and length(trim(resolution_summary)) between 10 and 1000
+        and (
+          (resolution_source = 'legacy' and resolved_by is null)
+          or (resolution_source = 'staff_action' and resolved_by is not null)
+        )
+      )
     );
 
 create or replace function public.prepare_booking_support_item()
@@ -42,6 +77,9 @@ as $$
 begin
   if tg_op = 'INSERT' then
     new.exception_category = public.booking_support_exception_category(new.reason);
+    if new.resolution_source = 'legacy' then
+      raise exception 'legacy resolution provenance is migration-only';
+    end if;
     return new;
   end if;
 
@@ -50,6 +88,7 @@ begin
     or old.correlation_id is distinct from new.correlation_id
     or old.reason is distinct from new.reason
     or old.exception_category is distinct from new.exception_category
+    or (old.status = 'resolved' and old.resolution_source is distinct from new.resolution_source)
     or old.created_at is distinct from new.created_at
   then
     raise exception 'booking support item facts are immutable';
@@ -70,13 +109,17 @@ for each row execute function public.prepare_booking_support_item();
 create table public.booking_support_actions (
   id bigint generated always as identity primary key,
   business_id uuid not null references public.businesses(id) on delete cascade,
-  booking_support_item_id uuid not null references public.booking_support_items(id) on delete cascade,
-  booking_attempt_id uuid references public.booking_attempts(id) on delete set null,
+  booking_support_item_id uuid not null,
+  booking_attempt_id uuid,
   correlation_id uuid not null,
   actor_user_id uuid not null references auth.users(id),
   action text not null check (action = 'resolve'),
   resolution text not null check (length(trim(resolution)) between 10 and 1000),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  foreign key (business_id, booking_support_item_id)
+    references public.booking_support_items (business_id, id),
+  foreign key (business_id, booking_attempt_id)
+    references public.booking_attempts (business_id, id)
 );
 
 create index booking_support_actions_item_idx
@@ -99,13 +142,17 @@ for each row execute function public.prevent_booking_support_action_mutation();
 create table public.booking_support_alerts (
   id bigint generated always as identity primary key,
   business_id uuid not null references public.businesses(id) on delete cascade,
-  booking_support_item_id uuid not null references public.booking_support_items(id) on delete cascade,
-  booking_attempt_id uuid references public.booking_attempts(id) on delete set null,
+  booking_support_item_id uuid not null,
+  booking_attempt_id uuid,
   correlation_id uuid not null,
   exception_category text not null check (exception_category = 'unknown_outcome'),
   status text not null default 'open' check (status in ('open', 'acknowledged')),
   created_at timestamptz not null default now(),
-  unique (booking_support_item_id)
+  unique (booking_support_item_id),
+  foreign key (business_id, booking_support_item_id)
+    references public.booking_support_items (business_id, id),
+  foreign key (business_id, booking_attempt_id)
+    references public.booking_attempts (business_id, id)
 );
 
 create index booking_support_alerts_business_idx
@@ -248,6 +295,7 @@ begin
       select 1
       from public.booking_attempt_events
       where booking_attempt_id = support_item.booking_attempt_id
+        and business_id = support_item.business_id
         and (
           (event_type = 'reconciliation_confirmed' and error_category = 'authoritative_success')
           or (event_type = 'reconciliation_absent' and error_category = 'authoritative_absence')
@@ -281,6 +329,7 @@ begin
     status = 'resolved',
     resolved_at = now(),
     resolved_by = auth.uid(),
+    resolution_source = 'staff_action',
     resolution_summary = trim(candidate_resolution)
   where id = support_item.id
   returning * into resolved_item;

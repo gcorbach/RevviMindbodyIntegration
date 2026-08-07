@@ -22,6 +22,7 @@ interface BusinessRow { id: string; slug: string; display_name: string }
 
 interface BookingAttemptRow {
   id: string;
+  business_id: string;
   correlation_id: string;
   business_name: string;
   location_name: string;
@@ -42,6 +43,7 @@ interface BookingAttemptRow {
 }
 
 interface OperationalEventRow {
+  business_id: string;
   booking_attempt_id: string;
   event_type: string;
   operation: string;
@@ -51,7 +53,7 @@ interface OperationalEventRow {
   created_at: string;
 }
 
-interface SupportAlertRow { booking_support_item_id: string; status: string; created_at: string }
+interface SupportAlertRow { business_id: string; booking_support_item_id: string; status: string; created_at: string }
 
 interface LoadSupportItemsOptions {
   supabase: DatabaseClient;
@@ -109,6 +111,10 @@ function toRedactedOperationalEvent(event: OperationalEventRow) {
   };
 }
 
+function tenantRecordKey(businessId: string, recordId: string | null) {
+  return `${businessId}:${recordId ?? ""}`;
+}
+
 async function loadSupportItems({ supabase, businessIds, itemId, status, category, correlation }: LoadSupportItemsOptions) {
   let query = supabase
     .from("booking_support_items")
@@ -129,12 +135,12 @@ async function loadSupportItems({ supabase, businessIds, itemId, status, categor
   const [{ data: businesses, error: businessesError }, attemptsResult, eventsResult, alertsResult] = await Promise.all([
     supabase.from("businesses").select("id,slug,display_name").in("id", itemBusinessIds),
     attemptIds.length
-      ? supabase.from("booking_attempts").select("id,correlation_id,business_name,location_name,location_timezone,service_name,selected_start_time,selected_end_time,duration_minutes,price,state,completion_mode,reconciliation_attempts,reconciliation_last_attempted_at,mindbody_client_id,mindbody_appointment_id,mindbody_checkout_sale_id,mindbody_checkout_transaction_ids").in("id", attemptIds)
+      ? supabase.from("booking_attempts").select("id,business_id,correlation_id,business_name,location_name,location_timezone,service_name,selected_start_time,selected_end_time,duration_minutes,price,state,completion_mode,reconciliation_attempts,reconciliation_last_attempted_at,mindbody_client_id,mindbody_appointment_id,mindbody_checkout_sale_id,mindbody_checkout_transaction_ids").in("business_id", itemBusinessIds).in("id", attemptIds)
       : Promise.resolve({ data: [], error: null }),
     attemptIds.length
-      ? supabase.from("booking_attempt_events").select("booking_attempt_id,event_type,operation,provider_status,error_category,latency_ms,created_at").in("booking_attempt_id", attemptIds).order("created_at", { ascending: true })
+      ? supabase.from("booking_attempt_events").select("business_id,booking_attempt_id,event_type,operation,provider_status,error_category,latency_ms,created_at").in("business_id", itemBusinessIds).in("booking_attempt_id", attemptIds).order("created_at", { ascending: true })
       : Promise.resolve({ data: [], error: null }),
-    supabase.from("booking_support_alerts").select("booking_support_item_id,status,created_at").in("booking_support_item_id", items.map((item) => item.id)),
+    supabase.from("booking_support_alerts").select("business_id,booking_support_item_id,status,created_at").in("business_id", itemBusinessIds).in("booking_support_item_id", items.map((item) => item.id)),
   ]);
   if (businessesError || attemptsResult.error || eventsResult.error || alertsResult.error) {
     throw businessesError ?? attemptsResult.error ?? eventsResult.error ?? alertsResult.error;
@@ -145,21 +151,22 @@ async function loadSupportItems({ supabase, businessIds, itemId, status, categor
   const eventRows = (eventsResult.data ?? []) as OperationalEventRow[];
   const alertRows = (alertsResult.data ?? []) as SupportAlertRow[];
   const businessById = new Map(businessRows.map((business) => [business.id, business]));
-  const attemptById = new Map(attemptRows.map((attempt) => [attempt.id, attempt]));
+  const attemptById = new Map(attemptRows.map((attempt) => [tenantRecordKey(attempt.business_id, attempt.id), attempt]));
   const eventsByAttempt = new Map<string, OperationalEventRow[]>();
   for (const event of eventRows) {
-    const events = eventsByAttempt.get(event.booking_attempt_id) ?? [];
+    const key = tenantRecordKey(event.business_id, event.booking_attempt_id);
+    const events = eventsByAttempt.get(key) ?? [];
     events.push(event);
-    eventsByAttempt.set(event.booking_attempt_id, events);
+    eventsByAttempt.set(key, events);
   }
-  const alertByItem = new Map(alertRows.map((alert) => [alert.booking_support_item_id, alert]));
+  const alertByItem = new Map(alertRows.map((alert) => [tenantRecordKey(alert.business_id, alert.booking_support_item_id), alert]));
 
   return items.map((item) => {
     const business = businessById.get(item.business_id);
-    const attempt = attemptById.get(item.booking_attempt_id);
-    const events = eventsByAttempt.get(item.booking_attempt_id) ?? [];
+    const attempt = attemptById.get(tenantRecordKey(item.business_id, item.booking_attempt_id));
+    const events = eventsByAttempt.get(tenantRecordKey(item.business_id, item.booking_attempt_id)) ?? [];
     const latest = latestOperationalEvent(events);
-    const alert = alertByItem.get(item.id);
+    const alert = alertByItem.get(tenantRecordKey(item.business_id, item.id));
     const authoritativeResultEstablished = events.some((event) =>
       (event.event_type === "reconciliation_confirmed" && event.error_category === "authoritative_success")
       || (event.event_type === "reconciliation_absent" && event.error_category === "authoritative_absence")

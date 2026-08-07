@@ -315,6 +315,43 @@ test("HTTP worker-style retry replays an unknown outcome without a second provid
   } finally { await scenario.stop(); }
 });
 
+test("HTTP elapsed unknown outcome remains retry-blocked for a fresh idempotency key", { skip: !runHttpTests }, async () => {
+  const scenario = await startBookingScenario({
+    memberstackId: "issue-18-expired-unknown-retry",
+    clientMode: "existing",
+    extraEnvironment: [
+      "BOOKING_ATTEMPT_WINDOW_MS=1000",
+      "MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_DELAY_MS=1250",
+      "MINDBODY_TEST_DOUBLE_APPOINTMENT_CREATE_FAILURE=true",
+      "MINDBODY_TEST_DOUBLE_UNIQUE_CLIENT=true",
+    ],
+  });
+  try {
+    scenario.request.startTime = nextTestDoubleSlot();
+    const first = await fetch(scenario.functionUrl, { method: "POST", headers: scenario.headers, body: JSON.stringify(scenario.request) });
+    const firstBody = await first.json();
+    assert.equal(first.status, 502, JSON.stringify(firstBody));
+    assert.equal(firstBody.bookingAttempt.state, "unknown");
+
+    const retry = await fetch(scenario.functionUrl, {
+      method: "POST",
+      headers: scenario.headers,
+      body: JSON.stringify({ ...scenario.request, idempotencyKey: `${scenario.request.idempotencyKey}-fresh` }),
+    });
+    const retryBody = await retry.json();
+    assert.equal(retry.status, 202, JSON.stringify(retryBody));
+    assert.equal(retryBody.bookingAttempt.id, firstBody.bookingAttempt.id);
+    assert.equal(retryBody.bookingAttempt.state, "unknown");
+
+    const events = await fetch(`${apiUrl}/rest/v1/booking_attempt_events?select=event_type,operation&booking_attempt_id=eq.${firstBody.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(events.status, 200);
+    assert.equal((await events.json()).filter((event) => event.event_type === "provider_write_started" && event.operation === "appointment_create").length, 1);
+    const support = await fetch(`${apiUrl}/rest/v1/booking_support_items?select=reason&booking_attempt_id=eq.${firstBody.bookingAttempt.id}`, { headers: scenario.adminHeaders });
+    assert.equal(support.status, 200);
+    assert.deepEqual((await support.json()).map((item) => item.reason).sort(), ["EXPIRED_REQUIRES_ATTENTION", "provider_unknown"].sort());
+  } finally { await scenario.stop(); }
+});
+
 test("HTTP replay reconciles an unknown Booking attempt to authoritative success without another write", { skip: !runHttpTests }, async () => {
   const scenario = await startBookingScenario({
     memberstackId: "issue-16-authoritative-success",

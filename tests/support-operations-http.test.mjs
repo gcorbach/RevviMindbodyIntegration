@@ -57,6 +57,13 @@ function authHeaders(token) {
   return { apikey: anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
+function runPostgres(sql) {
+  const result = spawnSync("docker", [
+    "exec", "supabase_db_revvi-booking", "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", sql,
+  ], { encoding: "utf8", windowsHide: true });
+  if (result.status !== 0) throw new Error(result.stderr || result.stdout || "Postgres command failed.");
+}
+
 function attemptFixture({ id, businessId, memberstackId, state, correlationId, reconciliationAttempts = 0 }) {
   const businessOne = businessId === "00000000-0000-0000-0000-000000000011";
   return {
@@ -115,7 +122,8 @@ test.before(async () => {
   };
   const correlations = Object.fromEntries(Object.entries(ids).map(([key, value], index) => [key, value.replace(`400${index}`, `410${index}`)]));
   const supportIds = Object.fromEntries(Object.entries(ids).map(([key, value], index) => [key, value.replace(`400${index}`, `420${index}`)]));
-  Object.assign(scenario, { ids, correlations, supportIds });
+  const mismatchedSupportId = `18000000-0000-4205-8000-${runId}`;
+  Object.assign(scenario, { ids, correlations, supportIds, mismatchedSupportId });
 
   const attempts = [
     attemptFixture({ id: ids.ambiguous, businessId: "00000000-0000-0000-0000-000000000011", memberstackId: `issue-18-ambiguous-${runId}`, state: "failed", correlationId: correlations.ambiguous }),
@@ -126,6 +134,19 @@ test.before(async () => {
   ];
   const attemptResponse = await fetch(`${apiUrl}/rest/v1/booking_attempts`, { method: "POST", headers: adminHeaders, body: JSON.stringify(attempts) });
   assert.equal(attemptResponse.status, 201, await attemptResponse.clone().text());
+
+  const mismatchedItemResponse = await fetch(`${apiUrl}/rest/v1/booking_support_items`, {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      id: mismatchedSupportId,
+      business_id: attempts[0].business_id,
+      booking_attempt_id: ids.secondary,
+      correlation_id: correlations.secondary,
+      reason: "CLIENT_MAPPING_CONFLICT",
+    }),
+  });
+  assert.equal(mismatchedItemResponse.status, 409, await mismatchedItemResponse.clone().text());
 
   const items = [
     { id: supportIds.ambiguous, business_id: attempts[0].business_id, booking_attempt_id: ids.ambiguous, correlation_id: correlations.ambiguous, reason: "CLIENT_MATCH_AMBIGUOUS" },
@@ -160,11 +181,7 @@ test.before(async () => {
     createUser(adminHeaders, { email: unassignedEmail }),
   ]);
   scenario.userIds = [platformUser.id, customerUser.id, staffUser.id, unassignedUser.id];
-  const staffAccess = spawnSync("docker", [
-    "exec", "supabase_db_revvi-booking", "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c",
-    `insert into public.business_staff_access (business_id, user_id) values ('00000000-0000-0000-0000-000000000011', '${staffUser.id}')`,
-  ], { encoding: "utf8", windowsHide: true });
-  assert.equal(staffAccess.status, 0, staffAccess.stderr);
+  runPostgres(`insert into public.business_staff_access (business_id, user_id) values ('00000000-0000-0000-0000-000000000011', '${staffUser.id}')`);
 
   Object.assign(scenario, {
     tokens: {
@@ -178,12 +195,35 @@ test.before(async () => {
 
 test.after(async () => {
   if (!scenario) return;
-  if (scenario.ids) await fetch(`${apiUrl}/rest/v1/booking_attempts?id=in.(${Object.values(scenario.ids).join(",")})`, { method: "DELETE", headers: scenario.adminHeaders });
-  for (const userId of scenario.userIds ?? []) await fetch(`${apiUrl}/auth/v1/admin/users/${userId}`, { method: "DELETE", headers: scenario.adminHeaders });
-  if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(scenario.functionProcess.pid), "/t", "/f"], { stdio: "ignore" });
-  else if (scenario.functionProcess.exitCode === null && scenario.functionProcess.signalCode === null) process.kill(-scenario.functionProcess.pid);
-  spawnSync("docker", ["rm", "-f", "supabase_edge_runtime_revvi-booking"], { stdio: "ignore" });
-  rmSync(scenario.temp, { recursive: true, force: true });
+  let cleanupError;
+  try {
+    const attemptIds = Object.values(scenario.ids).map((id) => `'${id}'`).join(",");
+    const supportIds = [...Object.values(scenario.supportIds), scenario.mismatchedSupportId].map((id) => `'${id}'`).join(",");
+    const userIds = (scenario.userIds ?? []).map((id) => `'${id}'`).join(",");
+    runPostgres(`
+      begin;
+      set local session_replication_role = replica;
+      delete from public.booking_support_alerts where booking_support_item_id in (${supportIds});
+      delete from public.booking_support_actions where booking_support_item_id in (${supportIds});
+      delete from public.booking_support_items where id in (${supportIds});
+      delete from public.booking_attempt_events where booking_attempt_id in (${attemptIds});
+      delete from public.booking_attempts where id in (${attemptIds});
+      delete from public.business_staff_access where user_id in (${userIds});
+      commit;
+    `);
+    for (const userId of scenario.userIds ?? []) {
+      const response = await fetch(`${apiUrl}/auth/v1/admin/users/${userId}`, { method: "DELETE", headers: scenario.adminHeaders });
+      assert.ok([200, 204].includes(response.status), await response.text());
+    }
+  } catch (error) {
+    cleanupError = error;
+  } finally {
+    if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(scenario.functionProcess.pid), "/t", "/f"], { stdio: "ignore" });
+    else if (scenario.functionProcess.exitCode === null && scenario.functionProcess.signalCode === null) process.kill(-scenario.functionProcess.pid);
+    spawnSync("docker", ["rm", "-f", "supabase_edge_runtime_revvi-booking"], { stdio: "ignore" });
+    rmSync(scenario.temp, { recursive: true, force: true });
+  }
+  if (cleanupError) throw cleanupError;
 });
 
 test("staff support HTTP authorizes only tenant staff or platform operations", { skip: !runHttpTests }, async () => {

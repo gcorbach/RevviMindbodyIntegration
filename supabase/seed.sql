@@ -206,7 +206,8 @@ values
   ('issue-17-checkout-sca', 'sandbox_allowlist'),
   ('issue-17-checkout-callback', 'sandbox_allowlist'),
   ('issue-17-checkout-failed', 'sandbox_allowlist'),
-  ('issue-17-checkout-unknown', 'sandbox_allowlist')
+  ('issue-17-checkout-unknown', 'sandbox_allowlist'),
+  ('issue-18-expired-unknown-retry', 'sandbox_allowlist')
 on conflict (memberstack_id) do update set
   source = excluded.source,
   verified_at = now();
@@ -237,7 +238,8 @@ values
   ('00000000-0000-0000-0000-000000000014', 'issue-17-checkout-sca'),
   ('00000000-0000-0000-0000-000000000014', 'issue-17-checkout-callback'),
   ('00000000-0000-0000-0000-000000000014', 'issue-17-checkout-failed'),
-  ('00000000-0000-0000-0000-000000000014', 'issue-17-checkout-unknown')
+  ('00000000-0000-0000-0000-000000000014', 'issue-17-checkout-unknown'),
+  ('00000000-0000-0000-0000-000000000011', 'issue-18-expired-unknown-retry')
 on conflict do nothing;
 
 insert into auth.users (
