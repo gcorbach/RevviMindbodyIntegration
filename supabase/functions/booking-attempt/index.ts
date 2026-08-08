@@ -776,6 +776,9 @@ Deno.serve(async (request) => {
   if (!["free_unpaid", "mindbody_checkout"].includes(business.completion_mode)) return json({ code: "COMPLETION_UNAVAILABLE", error: "Completion is not available for this Business." }, 409, origin, requestId);
   if (business.status !== "active") return json({ code: "BUSINESS_UNAVAILABLE", error: "This Business is not available for Booking." }, 409, origin, requestId);
   if (!business.booking_enabled) return json({ code: "BUSINESS_UNAVAILABLE", error: "This Business is not available for Booking." }, 409, origin, requestId);
+  const { data: pilotReadiness, error: pilotReadinessError } = await supabase.from("business_pilot_readiness").select("status, environment").eq("business_id", business.id).maybeSingle();
+  if (pilotReadinessError) return json({ code: "DATABASE_ERROR", error: "Business pilot readiness could not be verified." }, 500, origin, requestId);
+  if (!pilotReadiness || pilotReadiness.status !== "active" || pilotReadiness.environment !== "sandbox" || business.provider_environment !== "sandbox") return json({ code: "BUSINESS_UNAVAILABLE", error: "This Business is not available for Booking." }, 409, origin, requestId);
 
   const { data: access, error: accessError } = await supabase.from("business_customer_access").select("business_id").eq("business_id", business.id).eq("memberstack_id", customerMemberstackId).maybeSingle();
   if (accessError) return json({ code: "DATABASE_ERROR", error: "Business context could not be verified." }, 500, origin, requestId);
