@@ -18,7 +18,8 @@ async function waitForFunction(url, functionProcess, diagnostics) {
   for (let attempt = 0; attempt < 240; attempt += 1) {
     if (functionProcess.exitCode !== null) throw new Error(`business-readiness function exited with ${functionProcess.exitCode}: ${diagnostics.join("")}`);
     const probe = spawnSync(process.platform === "win32" ? "curl.exe" : "curl", ["--silent", "--output", process.platform === "win32" ? "NUL" : "/dev/null", "--write-out", "%{http_code}", "--max-time", "2", "--header", `apikey: ${anonKey}`, url], { encoding: "utf8", windowsHide: true });
-    if (Number(probe.stdout?.trim()) > 0) return;
+    const status = Number(probe.stdout?.trim());
+    if (status > 0 && ![502, 503, 504].includes(status)) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`business-readiness function did not start: ${diagnostics.join("")}`);
@@ -46,13 +47,21 @@ async function readinessAction(body) {
   });
 }
 
-const remainingChecks = [
-  "sandbox_connectivity", "approved_locations", "approved_services", "live_availability",
-  "client_mapping", "branding", "support_contact", "checkout_or_non_paid",
-  "transactional_messages", "tenant_isolation", "booking_lifecycle", "controlled_booking",
-];
+let readinessChecks = [];
+let remainingChecks = [];
 
 async function recordPassingCheck(check, verifiedAt = new Date().toISOString()) {
+  const automatedTestRun = ["tenant_isolation", "booking_lifecycle"].includes(check)
+    ? {
+        automatedTestRun: {
+          suite: check,
+          runId: `issue-19-${check}-${Date.now()}`,
+          result: "passed",
+          completedAt: verifiedAt,
+          artifactDigest: `sha256:${(check === "tenant_isolation" ? "1" : "2").repeat(64)}`,
+        },
+      }
+    : null;
   const response = await readinessAction({
     action: "record_check",
     check,
@@ -61,7 +70,7 @@ async function recordPassingCheck(check, verifiedAt = new Date().toISOString()) 
     evidenceRef: `issue-19/${check}`,
     details: check === "controlled_booking"
       ? { bookingAttemptId: "19000000-0000-4001-8000-000000000019" }
-      : { verification: `${check} passed against the Mindbody sandbox.` },
+      : automatedTestRun ?? { verification: `${check} passed against the Mindbody sandbox.` },
     ...(check === "checkout_or_non_paid" ? { checkoutMode: "approved_non_paid", acceptedLimitations: ["Sandbox pilot uses the explicitly approved non-paid mode."] } : {}),
     ...(check === "transactional_messages" ? { transactionalMessageBehavior: "Mindbody sandbox messages are recorded but not treated as proof of production branding.", acceptedLimitations: ["Production notification branding remains subject to Mindbody approval."] } : {}),
   });
@@ -69,9 +78,20 @@ async function recordPassingCheck(check, verifiedAt = new Date().toISOString()) 
   return response.json();
 }
 
+async function recordEveryPassingCheck() {
+  for (const check of readinessChecks) await recordPassingCheck(check);
+}
+
 function runPostgres(sql) {
   const result = spawnSync("docker", ["exec", "supabase_db_revvi-booking", "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", sql], { encoding: "utf8", windowsHide: true });
   if (result.status !== 0) throw new Error(result.stderr || result.stdout || "Postgres command failed.");
+  return result.stdout;
+}
+
+function queryPostgresScalar(sql) {
+  const result = spawnSync("docker", ["exec", "supabase_db_revvi-booking", "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-t", "-A", "-c", sql], { encoding: "utf8", windowsHide: true });
+  if (result.status !== 0) throw new Error(result.stderr || result.stdout || "Postgres query failed.");
+  return result.stdout.trim();
 }
 
 let scenario;
@@ -159,6 +179,8 @@ test.before(async () => {
       ('00000000-0000-0000-0000-000000000012', '19000000-0000-4001-8000-000000000019', '19000000-0000-4002-8000-000000000019', 'provider_write_started', 'appointment_create'),
       ('00000000-0000-0000-0000-000000000012', '19000000-0000-4001-8000-000000000019', '19000000-0000-4002-8000-000000000019', 'attempt_confirmed', 'appointment_create');
   `);
+  readinessChecks = JSON.parse(queryPostgresScalar("select json_agg(check_name::text) from unnest(enum_range(null::public.business_pilot_readiness_check)) check_name"));
+  remainingChecks = readinessChecks.filter((check) => check !== "site_activation");
   const platformToken = await signIn(platformEmail);
   const tenantStaffToken = await signIn(tenantStaffEmail);
   const customerToken = await signIn(customerEmail);
@@ -235,12 +257,7 @@ test("sandbox pilot activation is blocked until every readiness gate has evidenc
   assert.equal(response.status, 409, await response.clone().text());
   const body = await response.json();
   assert.equal(body.code, "READINESS_GATES_INCOMPLETE");
-  assert.deepEqual(new Set(body.missingChecks), new Set([
-    "site_activation", "sandbox_connectivity", "approved_locations", "approved_services",
-    "live_availability", "client_mapping", "branding", "support_contact",
-    "checkout_or_non_paid", "transactional_messages", "tenant_isolation",
-    "booking_lifecycle", "controlled_booking",
-  ]));
+  assert.deepEqual(new Set(body.missingChecks), new Set(readinessChecks));
 });
 
 test("platform operations can record tenant-scoped sandbox Site Activation evidence", { skip: !runHttpTests }, async () => {
@@ -277,11 +294,35 @@ test("passing checkout and transactional-message evidence requires its approval 
   assert.equal((await messages.json()).code, "INVALID_READINESS_EVIDENCE");
 });
 
+test("future timestamps and manual placeholders cannot satisfy readiness gates", { skip: !runHttpTests }, async () => {
+  const futureVerification = await readinessAction({
+    action: "record_check",
+    check: "sandbox_connectivity",
+    passed: true,
+    verifiedAt: new Date(Date.now() + 60_000).toISOString(),
+    evidenceRef: "issue-19/future-verification",
+    details: { verification: "This evidence must not be accepted before it exists." },
+  });
+  assert.equal(futureVerification.status, 400, await futureVerification.clone().text());
+  assert.equal((await futureVerification.json()).code, "INVALID_READINESS_EVIDENCE");
+
+  const manualIsolationClaim = await readinessAction({
+    action: "record_check",
+    check: "tenant_isolation",
+    passed: true,
+    verifiedAt: new Date().toISOString(),
+    evidenceRef: "issue-19/manual-placeholder",
+    details: { verification: "An operator says the suite passed." },
+  });
+  assert.equal(manualIsolationClaim.status, 400, await manualIsolationClaim.clone().text());
+  assert.equal((await manualIsolationClaim.json()).code, "INVALID_READINESS_EVIDENCE");
+});
+
 test("one Business becomes active only after every sandbox pilot check passes", { skip: !runHttpTests }, async () => {
   let body;
   for (const check of remainingChecks) body = await recordPassingCheck(check);
   assert.equal(body.readiness.status, "ready");
-  assert.equal(body.readiness.checks.length, 13);
+  assert.equal(body.readiness.checks.length, readinessChecks.length);
   assert.equal(body.readiness.transactionalMessageBehavior, "Mindbody sandbox messages are recorded but not treated as proof of production branding.");
   assert.deepEqual(body.readiness.acceptedLimitations, [
     "Sandbox pilot uses the explicitly approved non-paid mode.",
@@ -299,6 +340,35 @@ test("one Business becomes active only after every sandbox pilot check passes", 
   const independent = await fetch(`${scenario.functionUrl}?business=sandbox-wellness`, { headers: authHeaders(scenario.tokens.platform) });
   assert.equal(independent.status, 200, await independent.clone().text());
   assert.equal((await independent.json()).readiness.status, "active");
+});
+
+test("material Business and catalogue drift automatically revoke the active pilot", { skip: !runHttpTests }, async () => {
+  runPostgres("update public.businesses set support_email = null where id = '00000000-0000-0000-0000-000000000012'");
+  let response = await fetch(`${scenario.functionUrl}?business=sandbox-secondary`, { headers: authHeaders(scenario.tokens.platform) });
+  assert.equal(response.status, 200, await response.clone().text());
+  let body = await response.json();
+  assert.equal(body.readiness.status, "disabled");
+  assert.equal(body.business.bookingEnabled, false);
+  assert.equal(body.readiness.deactivationReason, "business_readiness_configuration_changed");
+  assert.equal(body.readiness.actions.at(-1).action, "readiness_configuration_changed");
+
+  runPostgres("update public.businesses set support_email = 'support@example.test' where id = '00000000-0000-0000-0000-000000000012'");
+  await recordEveryPassingCheck();
+  response = await readinessAction({ action: "activate" });
+  assert.equal(response.status, 200, await response.clone().text());
+
+  runPostgres("update public.business_services set enabled = false where id = '19000000-0000-4000-8000-000000000019'");
+  response = await fetch(`${scenario.functionUrl}?business=sandbox-secondary`, { headers: authHeaders(scenario.tokens.platform) });
+  assert.equal(response.status, 200, await response.clone().text());
+  body = await response.json();
+  assert.equal(body.readiness.status, "disabled");
+  assert.equal(body.business.bookingEnabled, false);
+  assert.equal(body.readiness.deactivationReason, "business_services_changed");
+
+  runPostgres("update public.business_services set enabled = true where id = '19000000-0000-4000-8000-000000000019'");
+  await recordEveryPassingCheck();
+  response = await readinessAction({ action: "activate" });
+  assert.equal(response.status, 200, await response.clone().text());
 });
 
 test("an incident disables new Booking attempts, preserves history, and requires re-verification", { skip: !runHttpTests }, async () => {
@@ -327,12 +397,22 @@ test("an incident disables new Booking attempts, preserves history, and requires
 
   const reenable = await readinessAction({ action: "activate" });
   assert.equal(reenable.status, 409, await reenable.clone().text());
-  assert.equal((await reenable.json()).missingChecks.length, 13);
+  assert.equal((await reenable.json()).missingChecks.length, readinessChecks.length);
+
+  const staleEvidence = await readinessAction({
+    action: "record_check",
+    check: "sandbox_connectivity",
+    passed: true,
+    verifiedAt: new Date(new Date(disabledBody.readiness.deactivatedAt).getTime() - 1_000).toISOString(),
+    evidenceRef: "issue-19/stale-after-incident",
+    details: { verification: "Evidence predates the incident." },
+  });
+  assert.equal(staleEvidence.status, 400, await staleEvidence.clone().text());
+  assert.equal((await staleEvidence.json()).code, "INVALID_READINESS_EVIDENCE");
 });
 
 test("a changed Mindbody sandbox Site Activation automatically revokes the tenant pilot", { skip: !runHttpTests }, async () => {
-  await recordPassingCheck("site_activation");
-  for (const check of remainingChecks) await recordPassingCheck(check);
+  await recordEveryPassingCheck();
   const reactivated = await readinessAction({ action: "activate" });
   assert.equal(reactivated.status, 200, await reactivated.clone().text());
 
@@ -349,8 +429,7 @@ test("a changed Mindbody sandbox Site Activation automatically revokes the tenan
 });
 
 test("a failed tenant-isolation re-check disables only that Business and all gates must be re-verified", { skip: !runHttpTests }, async () => {
-  await recordPassingCheck("site_activation");
-  for (const check of remainingChecks) await recordPassingCheck(check);
+  await recordEveryPassingCheck();
   const activated = await readinessAction({ action: "activate" });
   assert.equal(activated.status, 200, await activated.clone().text());
 
@@ -370,7 +449,7 @@ test("a failed tenant-isolation re-check disables only that Business and all gat
 
   const immediateOverride = await readinessAction({ action: "activate" });
   assert.equal(immediateOverride.status, 409, await immediateOverride.clone().text());
-  assert.equal((await immediateOverride.json()).missingChecks.length, 13);
+  assert.equal((await immediateOverride.json()).missingChecks.length, readinessChecks.length);
 
   const independent = await fetch(`${scenario.functionUrl}?business=sandbox-wellness`, { headers: authHeaders(scenario.tokens.platform) });
   assert.equal(independent.status, 200);
@@ -378,8 +457,7 @@ test("a failed tenant-isolation re-check disables only that Business and all gat
 });
 
 test("unresolved Booking outcomes block reactivation until authoritative evidence resolves them", { skip: !runHttpTests }, async () => {
-  await recordPassingCheck("site_activation");
-  for (const check of remainingChecks) await recordPassingCheck(check);
+  await recordEveryPassingCheck();
   runPostgres(`
     insert into public.booking_attempts (
       id, business_id, memberstack_id, idempotency_key, location_id, service_id,

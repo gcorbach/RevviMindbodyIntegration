@@ -42,7 +42,7 @@ Revvi uses one server-side Mindbody application integration across many Business
 6. **Revvi validates the connection.**
    - From a server-side Edge Function, call Mindbody using Revvi's API key and the authorised Site ID.
    - Confirm the Site, Locations, session types, availability, and payment types expected for the Business.
-   - Confirm the customer-booking and payment flow that Mindbody supports for this Business. Sandbox evidence is sufficient for the pre-approval pilot, but must be repeated against the production Business before production activation.
+   - Confirm the Booking and payment flow that Mindbody supports for a Revvi Customer of this Business. Sandbox evidence is sufficient for the pre-approval pilot, but must be repeated against the production Business before production activation.
 
 7. **Revvi validates customer communications.**
    - Configure the Business's Mindbody confirmation email/SMS settings with Revvi-approved branding.

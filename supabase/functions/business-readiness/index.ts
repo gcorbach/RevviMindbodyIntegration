@@ -107,14 +107,16 @@ Deno.serve(async (request) => {
       }
       ({ error } = await authClient.rpc("record_business_pilot_readiness_check", {
         candidate_business_id: business.id,
-        candidate_check_name: body.check,
-        candidate_passed: body.passed,
-        candidate_verified_at: body.verifiedAt,
-        candidate_evidence_ref: body.evidenceRef,
-        candidate_details: body.details,
-        candidate_checkout_mode: body.checkoutMode ?? null,
-        candidate_transactional_message_behavior: body.transactionalMessageBehavior ?? null,
-        candidate_accepted_limitations: body.acceptedLimitations ?? null,
+        candidate_evidence: {
+          check: body.check,
+          passed: body.passed,
+          verifiedAt: body.verifiedAt,
+          evidenceRef: body.evidenceRef,
+          details: body.details,
+          checkoutMode: body.checkoutMode ?? null,
+          transactionalMessageBehavior: body.transactionalMessageBehavior ?? null,
+          acceptedLimitations: body.acceptedLimitations ?? null,
+        },
       }));
     } else if (body?.action === "deactivate") {
       if (typeof body.reason !== "string") return json({ code: "DEACTIVATION_REASON_REQUIRED", error: "A recorded deactivation reason is required." }, 400, origin, requestId);

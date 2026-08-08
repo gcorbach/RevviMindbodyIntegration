@@ -389,12 +389,21 @@ select
   check_name,
   true,
   now(),
-  'seed/issue-19/' || check_name,
+  'seed/issue-19/' || check_name::text,
   case when check_name = 'controlled_booking'
     then jsonb_build_object('bookingAttemptId', case business_id
       when '00000000-0000-0000-0000-000000000011' then '19000000-0000-4000-8000-000000000011'
       when '00000000-0000-0000-0000-000000000013' then '19000000-0000-4000-8000-000000000013'
       else '19000000-0000-4000-8000-000000000014' end)
+    when check_name in ('tenant_isolation', 'booking_lifecycle') then jsonb_build_object(
+      'automatedTestRun', jsonb_build_object(
+        'suite', check_name::text,
+        'runId', 'seed-issue-19-' || check_name::text,
+        'result', 'passed',
+        'completedAt', now(),
+        'artifactDigest', 'sha256:0000000000000000000000000000000000000000000000000000000000000019'
+      )
+    )
     else jsonb_build_object('verification', 'Seeded sandbox pilot evidence.') end,
   '10000000-0000-0000-0000-000000000005'
 from unnest(array[
@@ -402,15 +411,11 @@ from unnest(array[
   '00000000-0000-0000-0000-000000000013'::uuid,
   '00000000-0000-0000-0000-000000000014'::uuid
 ]) business_id
-cross join unnest(array[
-  'site_activation', 'sandbox_connectivity', 'approved_locations', 'approved_services',
-  'live_availability', 'client_mapping', 'branding', 'support_contact',
-  'checkout_or_non_paid', 'transactional_messages', 'tenant_isolation',
-  'booking_lifecycle', 'controlled_booking'
-]) check_name
+cross join unnest(enum_range(null::public.business_pilot_readiness_check)) check_name
 on conflict (business_id, check_name) do update set
   passed = excluded.passed,
   verified_at = excluded.verified_at,
+  recorded_at = now(),
   evidence_ref = excluded.evidence_ref,
   details = excluded.details,
   verified_by = excluded.verified_by;
