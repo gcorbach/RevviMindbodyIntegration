@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Booking support | Revvi</title>
+  <title>Local Appointment prototype: booking support | Revvi</title>
   <style>
     :root { color-scheme: light; --ink:#18201d; --muted:#65716c; --paper:#f3f5f1; --card:#fff; --line:#d9e0da; --brand:#126a47; --brand-soft:#dff4e9; --warn:#fff2c7; --danger:#8f2f25; }
     * { box-sizing: border-box; }
@@ -11,6 +11,7 @@
     button,input,select,textarea { font:inherit; }
     button { cursor:pointer; }
     header { padding:24px clamp(16px,4vw,48px); background:#17342a; color:#fff; }
+    .prototype-banner { background:var(--warn); color:var(--ink); font-weight:800; padding:10px clamp(16px,4vw,48px); }
     header p { margin:6px 0 0; color:#c8ddd4; }
     h1 { margin:0; font-size:clamp(28px,4vw,44px); letter-spacing:-.04em; }
     h2,h3 { margin:0; }
@@ -51,8 +52,9 @@
   </style>
 </head>
 <body>
+  <div class="prototype-banner">Local Appointment prototype â€” not production Class Booking</div>
   <header>
-    <h1>Booking support</h1>
+    <h1>Appointment prototype support</h1>
     <p>Exceptional Booking work, scoped to the Businesses you support.</p>
   </header>
   <main>
@@ -78,7 +80,7 @@
     </div>
   </main>
   <script>
-    const apiBase = window.REVVI_SUPPORT_API_URL || "/functions/v1/support-operations";
+    const apiBase = window.REVVI_SUPPORT_API_URL || "/functions/v1/prototype-appointment-support";
     const token = window.REVVI_STAFF_TOKEN;
     const categoryLabels = { ambiguous_client: "Ambiguous Client", unknown_outcome: "Unknown outcome", reconciliation_failure: "Repeated reconciliation failure", expired_attempt: "Expired attempt" };
     const elements = { filters: document.querySelector("#filters"), business: document.querySelector("#business-filter"), status: document.querySelector("#status-filter"), category: document.querySelector("#category-filter"), correlation: document.querySelector("#correlation-filter"), loading: document.querySelector("#loading"), error: document.querySelector("#error"), empty: document.querySelector("#empty"), queue: document.querySelector("#queue"), count: document.querySelector("#queue-count"), detail: document.querySelector("#detail"), notice: document.querySelector("#notice") };

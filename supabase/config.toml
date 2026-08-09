@@ -4,16 +4,42 @@
 # working directory name when running `supabase init`.
 project_id = "revvi-booking"
 
-# Local-only diagnostic: it is deliberately disabled when deployed by its own runtime guard.
-[functions.mindbody-sandbox-check]
+# Retained Appointment prototype routes. Every route also has a runtime guard that
+# rejects deployed execution and requires REVVI_APPOINTMENT_PROTOTYPE_ENABLED=true.
+[functions.prototype-appointment-sandbox-check]
+enabled = false
 verify_jwt = false
 
-# Local-only sandbox fixture creator: it is disabled when deployed by its runtime guard.
-[functions.mindbody-sandbox-create-client]
+[functions.prototype-appointment-sandbox-create-client]
+enabled = false
 verify_jwt = false
 
-# Local-only sandbox booking fixture: it is disabled when deployed by its runtime guard.
-[functions.mindbody-sandbox-create-appointment]
+[functions.prototype-appointment-sandbox-create]
+enabled = false
+verify_jwt = false
+
+[functions.prototype-appointment-catalogue]
+enabled = false
+verify_jwt = false
+
+[functions.prototype-appointment-availability]
+enabled = false
+verify_jwt = false
+
+[functions.prototype-appointment-attempt]
+enabled = false
+verify_jwt = false
+
+[functions.prototype-appointment-callback]
+enabled = false
+verify_jwt = false
+
+[functions.prototype-appointment-readiness]
+enabled = false
+verify_jwt = false
+
+[functions.prototype-appointment-support]
+enabled = false
 verify_jwt = false
 
 [api]

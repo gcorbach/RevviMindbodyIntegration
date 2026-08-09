@@ -329,6 +329,8 @@ values
   ('00000000-0000-0000-0000-000000000012', '10000000-0000-0000-0000-000000000003')
 on conflict do nothing;
 
+-- Retained Appointment prototype fixtures. These rows exercise the historical
+-- sandbox flow only and are never production Class readiness evidence.
 insert into public.booking_attempts (
   id, business_id, memberstack_id, idempotency_key, location_id, service_id,
   business_name, location_name, location_timezone, service_name,
@@ -365,13 +367,15 @@ where not exists (
 
 update public.business_pilot_readiness readiness
 set
-  status = 'active',
+  status = 'disabled',
   checkout_mode = case when business.completion_mode = 'free_unpaid' then 'approved_non_paid' else 'supported_checkout' end,
   transactional_message_behavior = 'Sandbox transactional-message behaviour recorded for the controlled pilot.',
-  accepted_limitations = '["Sandbox evidence does not prove production notification branding."]'::jsonb,
+  accepted_limitations = '["Appointment prototype evidence cannot activate production Class Booking."]'::jsonb,
   site_activation_fingerprint = encode(extensions.digest(provider.mindbody_site_id, 'sha256'), 'hex'),
   responsible_staff_actor = '10000000-0000-0000-0000-000000000005',
-  activated_at = now()
+  activated_at = null,
+  deactivated_at = now(),
+  deactivation_reason = 'appointment_prototype_only'
 from public.businesses business
 join public.business_provider_config provider on provider.business_id = business.id
 where readiness.business_id = business.id
@@ -387,9 +391,9 @@ insert into public.business_pilot_readiness_checks (
 select
   business_id,
   check_name,
-  true,
+  false,
   now(),
-  'seed/issue-19/' || check_name::text,
+  'prototype/appointment/issue-19/' || check_name::text,
   case when check_name = 'controlled_booking'
     then jsonb_build_object('bookingAttemptId', case business_id
       when '00000000-0000-0000-0000-000000000011' then '19000000-0000-4000-8000-000000000011'
@@ -404,7 +408,7 @@ select
         'artifactDigest', 'sha256:0000000000000000000000000000000000000000000000000000000000000019'
       )
     )
-    else jsonb_build_object('verification', 'Seeded sandbox pilot evidence.') end,
+    else jsonb_build_object('verification', 'Retained Appointment prototype fixture; not Class readiness evidence.') end,
   '10000000-0000-0000-0000-000000000005'
 from unnest(array[
   '00000000-0000-0000-0000-000000000011'::uuid,
@@ -426,11 +430,11 @@ insert into public.business_pilot_readiness_actions (
 select
   business_id,
   '10000000-0000-0000-0000-000000000005',
-  'activated',
-  'ready',
-  'active',
-  'seeded_sandbox_pilot',
-  jsonb_build_object('source', 'supabase seed')
+  'deactivated',
+  'draft',
+  'disabled',
+  'appointment_prototype_only',
+  jsonb_build_object('source', 'supabase seed', 'prototype', 'appointment')
 from unnest(array[
   '00000000-0000-0000-0000-000000000011'::uuid,
   '00000000-0000-0000-0000-000000000013'::uuid,

@@ -35,7 +35,7 @@ Evidence references should point to durable, access-controlled test output or ap
 2. Confirm all thirteen checks are passing and were verified after the most recent deactivation.
 3. Confirm the checkout/non-paid decision matches the configured completion mode, transactional-message behaviour is recorded, and the configured support contact is present.
 4. Confirm there are no unresolved unknown Booking outcomes or open unknown-outcome support items.
-5. Activate only the selected Business through the `business-readiness` staff API. Do not edit `booking_enabled` directly.
+5. Exercise the retained local Appointment prototype only through the `prototype-appointment-readiness` staff API. It is not a production Class readiness gate.
 6. Re-read the readiness record and verify `status=active`, the tenant flag is enabled, the responsible actor and activation action are recorded, and other Businesses are unchanged.
 7. Perform one final smoke check as a Revvi Customer for that Business without reusing the controlled Booking's idempotency key.
 

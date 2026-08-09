@@ -6,9 +6,10 @@
   "packageManager": "pnpm@10.7.0",
   "scripts": {
     "supabase": "supabase",
-    "prototype:booking": "node docs/prototypes/serve-booking-prototype.mjs",
-    "test": "node --test --test-concurrency=1 tests/**/*.test.mjs",
-    "test:acceptance": "node tests/run-acceptance.mjs"
+    "prototype:appointment": "node docs/prototypes/serve-booking-prototype.mjs",
+    "prototype:appointment:functions": "node tools/serve-appointment-prototype-functions.mjs",
+    "test": "node --test --test-concurrency=1 tests/production/**/*.test.mjs",
+    "test:prototype:appointment": "node tests/run-appointment-prototype.mjs"
   },
   "devDependencies": {
     "supabase": "^2.109.1"
