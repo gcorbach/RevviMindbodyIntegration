@@ -129,6 +129,9 @@ test("current eligibility comes from the Admin member record by verified ID", as
       return new Response(JSON.stringify({
         data: {
           id: "member-a",
+          auth: { email: "member@example.com" },
+          verified: true,
+          customFields: { "first-name": "Ava", "last-name": "Ndlovu" },
           planConnections: [
             { id: "connection-a", planId: "plan-revvi", active: true, status: "trialing" },
             { id: "connection-b", planId: "expired-plan", active: false, status: "CANCELED" },
@@ -145,6 +148,7 @@ test("current eligibility comes from the Admin member record by verified ID", as
 
   assert.deepEqual(await client.getCurrentMember("member-a"), {
     memberId: "member-a",
+    identity: { email: "member@example.com", firstName: "Ava", lastName: "Ndlovu", emailVerified: true },
     planConnections: [
       { id: "connection-a", planId: "plan-revvi", active: true, status: "trialing" },
       { id: "connection-b", planId: "expired-plan", active: false, status: "CANCELED" },

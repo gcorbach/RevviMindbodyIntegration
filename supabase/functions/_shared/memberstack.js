@@ -258,8 +258,18 @@ export function createMemberstackAdminClient({
           status: connection.status,
         };
       });
+      const email = typeof member.auth?.email === "string" ? member.auth.email.trim().toLowerCase() : "";
+      const firstName = typeof member.customFields?.["first-name"] === "string"
+        ? member.customFields["first-name"].trim()
+        : "";
+      const lastName = typeof member.customFields?.["last-name"] === "string"
+        ? member.customFields["last-name"].trim()
+        : "";
       return {
         memberId,
+        ...(email && firstName && lastName ? {
+          identity: { email, firstName, lastName, emailVerified: member.verified === true },
+        } : {}),
         planConnections,
         verifiedAt: now().toISOString(),
       };
