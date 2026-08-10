@@ -1,0 +1,70 @@
+<link rel="stylesheet" href="/assets/revvi-booking.css">
+
+<div
+  data-revvi-booking
+  data-business-slug="WEBFLOW_BUSINESS_SLUG"
+  data-location-id="SUPABASE_BUSINESS_LOCATION_UUID"
+  data-offer-id="SUPABASE_OFFER_UUID"
+  data-location-name="WEBFLOW_LOCATION_NAME"
+  data-location-timezone="IANA_LOCATION_TIMEZONE"
+  data-offer-name="WEBFLOW_OFFER_NAME"
+  data-availability-endpoint="SUPABASE_FUNCTIONS_URL/offer-class-availability"
+  data-quote-endpoint="SUPABASE_FUNCTIONS_URL/booking-quote"
+  data-booking-endpoint="SUPABASE_FUNCTIONS_URL/create-booking"
+>
+  <header data-booking-context>
+    <span data-booking-offer></span>
+    <span data-booking-location></span>
+    <label>
+      From
+      <input type="date" data-booking-date>
+    </label>
+    <span data-booking-selection hidden></span>
+    <span data-booking-freshness hidden></span>
+  </header>
+
+  <p data-booking-loading hidden></p>
+  <p data-booking-ineligible hidden></p>
+  <p data-booking-error hidden></p>
+  <p data-booking-empty hidden>No upcoming Class times are available.</p>
+  <section data-booking-stale hidden>
+    <p data-booking-stale-message></p>
+    <button type="button" data-booking-refresh>Refresh Class times</button>
+  </section>
+  <section data-booking-occurrences></section>
+
+  <section data-booking-quote hidden>
+    <h2>Confirm your Class</h2>
+    <span data-quote-class></span>
+    <span data-quote-time></span>
+    <span data-quote-location></span>
+    <span data-quote-price></span>
+    <span data-quote-expiry></span>
+    <p data-quote-policy></p>
+    <button type="button" data-quote-confirm>Confirm Booking</button>
+    <button type="button" data-quote-back>Back to times</button>
+  </section>
+
+  <p data-booking-submitting hidden>Submitting your Booking…</p>
+  <section data-booking-payment-action hidden>
+    <p>Mindbody requires one secure payment step before it can confirm this Booking.</p>
+    <a data-booking-payment-link rel="noopener noreferrer">Continue secure payment</a>
+  </section>
+  <p data-booking-reconciliation hidden></p>
+  <section data-booking-confirmation hidden></section>
+
+  <template data-booking-occurrence-template>
+    <article data-booking-occurrence>
+      <h3 data-occurrence-name></h3>
+      <span data-occurrence-time></span>
+      <span data-occurrence-staff></span>
+      <span data-occurrence-location></span>
+      <span data-occurrence-price></span>
+      <span data-occurrence-capacity></span>
+      <span data-occurrence-status></span>
+      <button type="button" data-occurrence-book>Book</button>
+    </article>
+  </template>
+</div>
+
+<script src="/assets/revvi-booking.js" defer></script>

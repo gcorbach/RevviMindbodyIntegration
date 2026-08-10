@@ -5,6 +5,8 @@
   "type": "module",
   "packageManager": "pnpm@10.7.0",
   "scripts": {
+    "build:webflow": "node tools/build-webflow-widget.mjs",
+    "pretest": "pnpm build:webflow",
     "supabase": "supabase",
     "prototype:appointment": "node docs/prototypes/serve-booking-prototype.mjs",
     "prototype:appointment:functions": "node tools/serve-appointment-prototype-functions.mjs",
@@ -13,6 +15,7 @@
   },
   "devDependencies": {
     "@memberstack/admin": "1.6.0",
+    "esbuild": "^0.28.2",
     "supabase": "^2.109.1"
   }
 }
