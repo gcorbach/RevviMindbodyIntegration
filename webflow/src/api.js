@@ -65,6 +65,7 @@ export function createBookingWidgetApi({
   availabilityEndpoint = "/functions/v1/offer-class-availability",
   quoteEndpoint = "/functions/v1/booking-quote",
   bookingEndpoint = "/functions/v1/create-booking",
+  paymentCompletionEndpoint = "/functions/v1/complete-paid-booking",
   upcomingEndpoint = "/functions/v1/upcoming-bookings",
   cancellationEndpoint = "/functions/v1/cancel-booking",
 } = {}) {
@@ -92,6 +93,12 @@ export function createBookingWidgetApi({
       bookingEndpoint,
       authorization,
       { quoteId, idempotencyKey },
+    ),
+    completePaidBooking: (authorization, bookingId) => postJson(
+      fetcher,
+      paymentCompletionEndpoint,
+      authorization,
+      { bookingId },
     ),
     upcomingBookings: (authorization, limit = 20) => postJson(
       fetcher,

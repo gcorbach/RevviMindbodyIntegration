@@ -75,6 +75,17 @@ function hasConfirmationEvidence(result, quote) {
   if (quote?.fulfilmentMode === "approved_unpaid") {
     return Boolean(result?.visitId || result?.rosterBookingId);
   }
+  if (quote?.fulfilmentMode === "purchase_pricing_option") {
+    return Boolean(
+      (result?.visitId || result?.rosterBookingId)
+      && result?.clientServiceId
+      && result?.atomicCheckoutConfirmed === true
+      && result?.saleId
+      && result?.cartId
+      && result?.transactionId
+      && result?.paymentId,
+    );
+  }
   return Boolean(result?.visitId
     || result?.rosterBookingId
     || (result?.atomicCheckoutConfirmed === true && result?.saleId && result?.transactionId));
@@ -95,7 +106,8 @@ function modeEvidenceMatches(result, quote) {
   }
   if (quote?.fulfilmentMode === "purchase_pricing_option") {
     return result?.serviceProductId != null
-      && String(result.serviceProductId) === String(quote.providerServiceProductId);
+      && String(result.serviceProductId) === String(quote.providerServiceProductId)
+      && result?.clientServiceId != null;
   }
   return true;
 }
@@ -149,6 +161,7 @@ async function persistOutcome(claim, outcome, result, input, dependencies) {
     providerRequestId: result?.providerRequestId ?? null,
     providerReferences: providerReferences(result),
     requiredAction: outcome.status === "requires_action" ? result.requiredAction : null,
+    paymentAction: outcome.status === "requires_action" ? result.paymentAction : null,
     errorCode: result?.errorCode ?? null,
     errorMessage: result?.errorMessage ?? null,
     releaseWriteLock: !new Set(["unknown", "requires_action"]).has(outcome.status),
@@ -179,6 +192,9 @@ export async function createClassBooking(input, dependencies) {
   const now = dependencies.now();
   validateBinding(input, now);
   const revalidated = await dependencies.revalidateQuote({ quote: input.quote, context: input.context });
+  if (typeof dependencies.validateWriteConfiguration === "function") {
+    await dependencies.validateWriteConfiguration({ quote: input.quote, context: input.context });
+  }
   if (typeof dependencies.authorizeWrite === "function") await dependencies.authorizeWrite();
   const requestFingerprint = await sha256(JSON.stringify({
     quoteFingerprint: input.quote.quoteFingerprint,
@@ -197,11 +213,11 @@ export async function createClassBooking(input, dependencies) {
   });
   if (!claim?.shouldWrite) return publicResult(claim);
 
-  const provider = typeof dependencies.createProvider === "function"
-    ? dependencies.createProvider({ booking: claim.booking, attempt: claim.attempt })
-    : dependencies.provider;
   let result;
   try {
+    const provider = typeof dependencies.createProvider === "function"
+      ? await dependencies.createProvider({ booking: claim.booking, attempt: claim.attempt })
+      : dependencies.provider;
     result = await provider.createBooking({
       mode: input.quote.fulfilmentMode,
       siteId: input.quote.providerSiteId,
@@ -211,6 +227,8 @@ export async function createClassBooking(input, dependencies) {
       uniqueClientId: input.quote.providerClientUniqueId,
       clientServiceId: input.quote.providerClientServiceId,
       serviceProductId: input.quote.providerServiceProductId,
+      priceAmount: input.quote.grandTotal,
+      currency: input.quote.currency,
       idempotencyKey,
     });
   } catch (error) {
@@ -221,6 +239,35 @@ export async function createClassBooking(input, dependencies) {
       errorCode: error?.providerErrorCode ?? error?.code ?? (rejected ? "PROVIDER_REJECTED" : "PROVIDER_OUTCOME_UNKNOWN"),
       errorMessage: rejected ? "Mindbody rejected the Class Booking." : "Mindbody may have accepted the Class Booking.",
     };
+  }
+  if (result?.status === "requires_action") {
+    try {
+      if (!result.providerAccessToken
+        || result.paymentRoute !== "mindbody_alternative_payment"
+        || typeof dependencies.sealPaymentAction !== "function") {
+        throw new Error("The provider payment action is incomplete.");
+      }
+      const actionContext = {
+        businessId: input.quote.businessId,
+        bookingId: claim.booking.id,
+        attemptId: claim.attempt.id,
+        route: result.paymentRoute,
+      };
+      const sealed = await dependencies.sealPaymentAction(result.providerAccessToken, actionContext);
+      result = {
+        ...result,
+        providerAccessToken: undefined,
+        paymentAction: { ...sealed, ...actionContext },
+      };
+    } catch {
+      result = {
+        status: "unknown",
+        certainty: "unknown",
+        serviceProductId: input.quote.providerServiceProductId,
+        errorCode: "PAYMENT_ACTION_PERSISTENCE_UNAVAILABLE",
+        errorMessage: "Mindbody may be waiting for Revvi Customer payment action.",
+      };
+    }
   }
   return persistOutcome(claim, normalizeProviderOutcome(result, input.quote), result, input, dependencies);
 }

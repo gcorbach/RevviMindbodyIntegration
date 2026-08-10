@@ -302,3 +302,48 @@ test("the lifecycle worker re-reads and records the exact entitlement after canc
   assert.deepEqual(calls, ["confirmed", "completed"]);
   assert.equal(result.reconciliations[0].status, "completed");
 });
+
+test("paid lifecycle reconciliation is pinned to the stored Sale and Transaction", async () => {
+  const work = {
+    id: "queue-paid-40", businessId: "business-40", bookingId,
+    purpose: "booking", source: "poll", attemptCount: 1,
+  };
+  const context = {
+    work,
+    booking: {
+      id: bookingId, businessId: "business-40", integrationId: "integration-40",
+      status: "unknown", fulfilmentMode: "purchase_pricing_option",
+      classId: "771", clientId: "rss-40", serviceProductId: "product-40",
+      saleId: "sale-40", cartId: "cart-40",
+      transactionId: "transaction-40", paymentId: "payment-40",
+    },
+    attempt: { id: "attempt-40", type: "purchase_booking" },
+  };
+  const calls = [];
+  const result = await runClassLifecycleWorker({
+    catalogue: {
+      claimWebhookBatch: async () => [],
+      claimLifecycleBatch: async () => [work],
+      resolveLifecycleContext: async () => context,
+      completeBookingReconciliation: async (_context, observation) => calls.push(observation.status),
+      finishLifecycle: async (facts) => calls.push(facts.status),
+    },
+    createProvider: async () => ({
+      reconcileBooking: async (input) => {
+        assert.equal(input.saleId, "sale-40");
+        assert.equal(input.cartId, "cart-40");
+        assert.equal(input.transactionId, "transaction-40");
+        assert.equal(input.paymentId, "payment-40");
+        return {
+          status: "confirmed", certainty: "provider_confirmed",
+          visitId: "visit-40", clientServiceId: "client-service-40",
+          serviceProductId: "product-40", saleId: "sale-40", cartId: "cart-40",
+          transactionId: "transaction-40", paymentId: "payment-40",
+          atomicCheckoutConfirmed: true,
+        };
+      },
+    }),
+  });
+  assert.deepEqual(calls, ["confirmed", "completed"]);
+  assert.equal(result.reconciliations[0].status, "completed");
+});

@@ -38,7 +38,8 @@ function widgetMarkup(scenario = "available") {
     .replace("WEBFLOW_OFFER_NAME", "Revvi Yoga Access")
     .replace("SUPABASE_FUNCTIONS_URL/offer-class-availability", `/functions/v1/offer-class-availability${scenarioQuery}`)
     .replace("SUPABASE_FUNCTIONS_URL/booking-quote", `/functions/v1/booking-quote${scenarioQuery}`)
-    .replace("SUPABASE_FUNCTIONS_URL/create-booking", `/functions/v1/create-booking${scenarioQuery}`);
+    .replace("SUPABASE_FUNCTIONS_URL/create-booking", `/functions/v1/create-booking${scenarioQuery}`)
+    .replace("SUPABASE_FUNCTIONS_URL/complete-paid-booking", "/functions/v1/complete-paid-booking");
 }
 
 function availabilityBody() {
@@ -253,6 +254,49 @@ test("the Webflow widget shows approved Class times responsively and suppresses 
     assert.match(bookingBodies[1].idempotencyKey, /^[0-9a-f-]{36}$/i);
     assert.notEqual(bookingBodies[0].idempotencyKey, bookingBodies[1].idempotencyKey);
     assert.deepEqual([...new Set(authorizationHeaders)], ["Bearer memberstack.jwt.signature"]);
+  } finally {
+    server.closeAllConnections(); server.close();
+  }
+});
+
+test("a Mindbody payment return completes once through the authenticated Revvi endpoint", { skip: !chromePath }, async () => {
+  const widget = readFileSync(new URL("../../webflow/dist/revvi-booking.js", import.meta.url), "utf8");
+  const stylesheet = readFileSync(new URL("../../webflow/dist/revvi-booking.css", import.meta.url), "utf8");
+  const returnedBookingId = "40000000-0000-4000-8000-000000000071";
+  let completionCalls = 0;
+  let availabilityCalls = 0;
+  const server = createServer(async (request, response) => {
+    if (request.url === "/revvi-booking.js") { response.writeHead(200, { "content-type": "text/javascript" }); response.end(widget); return; }
+    if (request.url === "/revvi-booking.css") { response.writeHead(200, { "content-type": "text/css" }); response.end(stylesheet); return; }
+    if (request.url === "/functions/v1/complete-paid-booking") {
+      completionCalls += 1;
+      assert.equal(request.headers.authorization, "Bearer memberstack.jwt.signature");
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString("utf8")), { bookingId: returnedBookingId });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, data: { booking: {
+        id: returnedBookingId, status: "confirmed", paymentStatus: "paid",
+        className: "Yoga Flow", startAt: "2026-08-12T16:00:00.000Z", locationName: "Rosebank Studio",
+      } } }));
+      return;
+    }
+    if (request.url?.startsWith("/functions/v1/offer-class-availability")) {
+      availabilityCalls += 1;
+      response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(availabilityBody())); return;
+    }
+    response.writeHead(200, { "content-type": "text/html" }); response.end(page());
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const result = await launchChrome(
+      `http://127.0.0.1:${server.address().port}/payment-return?booking=${returnedBookingId}`,
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /data-booking-state="success"/);
+    assert.match(result.stdout, /Booking confirmed: Yoga Flow/);
+    assert.equal(completionCalls, 1);
+    assert.equal(availabilityCalls, 0);
   } finally {
     server.closeAllConnections(); server.close();
   }

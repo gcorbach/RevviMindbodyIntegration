@@ -26,6 +26,17 @@ export function createClassBookingQuoteCatalogue(supabase) {
         throw new BookingQuoteError("QUOTE_CONTEXT_NOT_FOUND", "This Offer has no approved booking quote configuration.", 404);
       }
       const row = data[0];
+      let paidRoute = null;
+      if (row.fulfilment_mode === "purchase_pricing_option") {
+        const { data: paidMapping, error: paidMappingError } = await supabase
+          .from("class_offer_provider_mappings")
+          .select("paid_pricing_option_enabled,paid_payment_route,paid_payment_method_id,paid_checkout_location_id")
+          .eq("id", row.mapping_id)
+          .eq("mapping_version", row.mapping_version)
+          .maybeSingle();
+        if (paidMappingError || !paidMapping) throw unavailable("The approved paid checkout route could not be loaded.");
+        paidRoute = paidMapping;
+      }
       return {
         business: { id: row.business_id },
         location: {
@@ -51,7 +62,15 @@ export function createClassBookingQuoteCatalogue(supabase) {
           id: row.mapping_id,
           version: Number(row.mapping_version),
           providerServiceProductId: row.provider_service_product_id,
-          modeEvidenceVerified: row.mode_evidence_verified,
+          modeEvidenceVerified: row.mode_evidence_verified
+            && (paidRoute == null || paidRoute.paid_pricing_option_enabled === true),
+          paidPaymentRoute: paidRoute?.paid_payment_route ?? null,
+          paidPaymentMethodId: paidRoute?.paid_payment_method_id == null
+            ? null
+            : Number(paidRoute.paid_payment_method_id),
+          paidCheckoutLocationId: paidRoute?.paid_checkout_location_id == null
+            ? null
+            : Number(paidRoute.paid_checkout_location_id),
         },
         customerProviderProfile: row.provider_client_id ? {
           id: row.customer_provider_profile_id,

@@ -58,6 +58,25 @@ values
 
 update public.class_offer_provider_mappings set status = 'active'
 where id in ('33000000-0000-4000-8000-000000000041', '33000000-0000-4000-8000-000000000042');
+update public.class_offer_provider_mappings
+set paid_payment_route = 'mindbody_alternative_payment',
+    paid_payment_method_id = 801,
+    paid_checkout_location_id = 98
+where id = '33000000-0000-4000-8000-000000000041';
+insert into public.class_paid_pricing_option_evidence (
+  business_id, mapping_id, mapping_version, evidence_kind, evidence_environment,
+  payment_route, payment_method_id, checkout_location_id, evidence_digest, verified_at
+)
+select mapping.business_id, mapping.id, mapping.mapping_version, evidence.kind, 'sandbox',
+  mapping.paid_payment_route, mapping.paid_payment_method_id, mapping.paid_checkout_location_id,
+  encode(extensions.digest(mapping.id::text || evidence.kind::text, 'sha256'), 'hex'), now()
+from public.class_offer_provider_mappings mapping
+cross join unnest(enum_range(null::public.class_paid_pricing_option_evidence_kind)) evidence(kind)
+where mapping.id = '33000000-0000-4000-8000-000000000041';
+update public.class_offer_provider_mappings
+set paid_pricing_option_enabled = true,
+    mode_verified_at = now(), mode_evidence_digest = repeat('9', 64)
+where id = '33000000-0000-4000-8000-000000000041';
 update public.class_revvi_offers set status = 'active'
 where id = '33000000-0000-4000-8000-000000000031';
 

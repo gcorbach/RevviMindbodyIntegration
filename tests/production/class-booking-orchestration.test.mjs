@@ -82,7 +82,12 @@ function dependencies(overrides = {}) {
       completeAttempt: async (facts) => {
         calls.completions.push(facts);
         return {
-          booking: { ...claimed.booking, status: facts.status, ...facts.providerReferences },
+          booking: {
+            ...claimed.booking,
+            status: facts.status,
+            ...facts.providerReferences,
+            ...(facts.requiredAction ? { redirectUrl: facts.requiredAction.url } : {}),
+          },
           attempt: { ...claimed.attempt, status: facts.attemptStatus },
         };
       },
@@ -116,6 +121,12 @@ function dependencies(overrides = {}) {
     },
     revalidateQuote: async () => ({ occurrence }),
     authorizeWrite: async () => { calls.authorizations += 1; },
+    sealPaymentAction: async (_token, actionContext) => ({
+      ciphertext: "sealed-token",
+      nonce: "sealed-nonce",
+      keyVersion: "payment-action-v1",
+      ...actionContext,
+    }),
     calls,
     ...overrides,
   };
@@ -199,13 +210,52 @@ test("an explicit provider rejection is failed and never reported as success", a
 
 test("requires-action is normalized without releasing the Customer/Class write lock", async () => {
   const deps = dependencies();
+  const paidQuote = {
+    ...quote,
+    fulfilmentMode: "purchase_pricing_option",
+    providerClientServiceId: null,
+    providerServiceProductId: "product-a",
+    subtotal: 120,
+    discountTotal: 20,
+    taxTotal: 15,
+    grandTotal: 115,
+  };
+  const paidContext = {
+    ...context,
+    offer: { ...context.offer, fulfilmentMode: "purchase_pricing_option" },
+    mapping: {
+      ...context.mapping,
+      providerServiceProductId: "product-a",
+      paidPaymentRoute: "mindbody_alternative_payment",
+      paidPaymentMethodId: 801,
+      paidCheckoutLocationId: 98,
+    },
+  };
   deps.provider.createBooking = async () => ({
     status: "requires_action",
     certainty: "provider_confirmed",
+    serviceProductId: "product-a",
+    providerAccessToken: "opaque-provider-token",
+    paymentRoute: "mindbody_alternative_payment",
     requiredAction: { type: "redirect", url: "https://payments.example.test/challenge" },
   });
-  const result = await createClassBooking(input, deps);
+  const result = await createClassBooking({ ...input, quote: paidQuote, context: paidContext }, deps);
   assert.equal(result.booking.status, "requires_action");
+  assert.equal(result.booking.redirectUrl, "https://payments.example.test/challenge");
+  assert.deepEqual(deps.calls.completions[0].requiredAction, {
+    type: "redirect",
+    url: "https://payments.example.test/challenge",
+  });
+  assert.deepEqual(deps.calls.completions[0].paymentAction, {
+    ciphertext: "sealed-token",
+    nonce: "sealed-nonce",
+    keyVersion: "payment-action-v1",
+    businessId: "business-a",
+    bookingId: "booking-a",
+    attemptId: "attempt-a",
+    route: "mindbody_alternative_payment",
+  });
+  assert.doesNotMatch(JSON.stringify(deps.calls.completions[0]), /opaque-provider-token/);
   assert.equal(deps.calls.completions[0].attemptStatus, "requires_action");
   assert.equal(deps.calls.completions[0].releaseWriteLock, false);
   assert.equal(deps.calls.queued.length, 0);
@@ -277,6 +327,99 @@ test("a Visit without the exact quoted ClientService remains unknown", async () 
   const result = await createClassBooking(input, deps);
   assert.equal(result.booking.status, "unknown");
   assert.equal(deps.calls.queued.length, 1);
+});
+
+test("missing paid runtime configuration stops before consuming the quote or claiming a write", async () => {
+  const deps = dependencies();
+  let claims = 0;
+  deps.catalogue.claimAttempt = async () => { claims += 1; };
+  deps.validateWriteConfiguration = async () => {
+    throw new BookingOrchestrationError(
+      "PAID_ROUTE_NOT_CONFIGURED",
+      "The approved Mindbody payment route is unavailable.",
+      503,
+    );
+  };
+  await assert.rejects(
+    createClassBooking({
+      ...input,
+      quote: {
+        ...quote,
+        fulfilmentMode: "purchase_pricing_option",
+        providerClientServiceId: null,
+        providerServiceProductId: "product-1",
+        grandTotal: 115,
+      },
+      context: {
+        ...context,
+        offer: { ...context.offer, fulfilmentMode: "purchase_pricing_option" },
+      },
+    }, deps),
+    (error) => error.code === "PAID_ROUTE_NOT_CONFIGURED",
+  );
+  assert.equal(claims, 0);
+  assert.equal(deps.calls.writes, 0);
+});
+
+test("paid confirmation requires the exact pricing option, roster, ClientService, Sale, and Transaction", async () => {
+  const paidQuote = {
+    ...quote,
+    fulfilmentMode: "purchase_pricing_option",
+    providerClientServiceId: null,
+    providerServiceProductId: "product-1",
+    grandTotal: 125,
+  };
+  const paidContext = {
+    ...context,
+    offer: { ...context.offer, fulfilmentMode: "purchase_pricing_option" },
+  };
+  for (const providerResult of [
+    {
+      status: "confirmed", certainty: "provider_confirmed",
+      visitId: "visit-1", clientServiceId: "client-service-1",
+      serviceProductId: "product-1",
+    },
+    {
+      status: "confirmed", certainty: "provider_confirmed",
+      serviceProductId: "product-1", saleId: "sale-1", cartId: "cart-1",
+      transactionId: "transaction-1", paymentId: "payment-1",
+      atomicCheckoutConfirmed: true,
+    },
+    {
+      status: "confirmed", certainty: "provider_confirmed",
+      visitId: "visit-1", clientServiceId: "client-service-1",
+      serviceProductId: "product-attacker", saleId: "sale-1", cartId: "cart-1",
+      transactionId: "transaction-1", paymentId: "payment-1",
+      atomicCheckoutConfirmed: true,
+    },
+  ]) {
+    const deps = dependencies();
+    deps.provider.createBooking = async () => providerResult;
+    const result = await createClassBooking({
+      ...input,
+      quote: paidQuote,
+      context: paidContext,
+      idempotencyKey: crypto.randomUUID(),
+    }, deps);
+    assert.equal(result.booking.status, "unknown");
+    assert.equal(deps.calls.queued.length, 1);
+  }
+
+  const deps = dependencies();
+  deps.provider.createBooking = async () => ({
+    status: "confirmed", certainty: "provider_confirmed",
+    visitId: "visit-1", clientServiceId: "client-service-1",
+    serviceProductId: "product-1", saleId: "sale-1", cartId: "cart-1",
+    transactionId: "transaction-1", paymentId: "payment-1",
+    atomicCheckoutConfirmed: true,
+  });
+  const confirmed = await createClassBooking({
+    ...input,
+    quote: paidQuote,
+    context: paidContext,
+    idempotencyKey: crypto.randomUUID(),
+  }, deps);
+  assert.equal(confirmed.booking.status, "confirmed");
 });
 
 test("approved unpaid never turns Mindbody entitlement, sale, payment, or waitlist evidence into an approved-unpaid Booking confirmation", async () => {

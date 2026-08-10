@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { createClassBooking } from "../_shared/class-booking.js";
+import { BookingOrchestrationError, createClassBooking } from "../_shared/class-booking.js";
 import { createClassBookingCatalogue } from "../_shared/class-booking-catalogue.js";
 import { handleClassBooking } from "../_shared/class-booking-handler.js";
 import { revalidateClassBookingQuoteBeforeWrite } from "../_shared/class-booking-quote.js";
@@ -19,6 +19,7 @@ import {
   createMindbodyClientQuoteClient,
   instrumentClientQuoteProvider,
 } from "../_shared/mindbody-client-quote.js";
+import { sealPaymentActionToken } from "../_shared/payment-action-crypto.js";
 
 const requiredEnvironment = [
   "SUPABASE_URL",
@@ -48,6 +49,21 @@ function configured() {
   if (requiredEnvironment.some((name) => !Deno.env.get(name))) return false;
   return /^[a-f0-9]{64}$/i.test(Deno.env.get("MEMBERSTACK_CONTRACT_EVIDENCE_DIGEST") ?? "")
     && staffTokens() !== null;
+}
+
+function paymentActionConfiguration() {
+  const encryptionKeyHex = Deno.env.get("MINDBODY_PAYMENT_ACTION_ENCRYPTION_KEY") ?? "";
+  const keyVersion = Deno.env.get("MINDBODY_PAYMENT_ACTION_KEY_VERSION") ?? "";
+  const callbackUrl = Deno.env.get("MINDBODY_PAYMENT_CALLBACK_URL") ?? "";
+  try {
+    const parsed = new URL(callbackUrl);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password) return null;
+  } catch {
+    return null;
+  }
+  if (!/^[0-9a-f]{64}$/i.test(encryptionKeyHex)
+    || !/^[A-Za-z0-9._-]{1,64}$/.test(keyVersion)) return null;
+  return { encryptionKeyHex, keyVersion, callbackUrl };
 }
 
 function configurationError(request: Request) {
@@ -85,15 +101,42 @@ Deno.serve(async (request) => {
     }),
   };
   const configuredStaffTokens = staffTokens()!;
-  const providerOptions = (context: { integration: { id: string; providerSiteId: string } }) => {
+  const providerOptions = (
+    context: {
+      integration: { id: string; providerSiteId: string };
+      mapping?: {
+        paidPaymentRoute?: string | null;
+        paidPaymentMethodId?: number | null;
+        paidCheckoutLocationId?: number | null;
+      };
+    },
+    operation?: { bookingId?: string },
+  ) => {
     const userToken = configuredStaffTokens[context.integration.id];
     if (!userToken) throw new Error("No staff token is configured for the selected integration.");
+    const paymentAction = paymentActionConfiguration();
+    let paidRoute = null;
+    if (paymentAction
+      && operation?.bookingId
+      && context.mapping?.paidPaymentRoute === "mindbody_alternative_payment"
+      && Number.isSafeInteger(context.mapping.paidPaymentMethodId)
+      && context.mapping?.paidCheckoutLocationId === 98) {
+      const callback = new URL(paymentAction.callbackUrl);
+      callback.searchParams.set("booking", operation.bookingId);
+      paidRoute = {
+        type: context.mapping.paidPaymentRoute,
+        paymentMethodId: context.mapping.paidPaymentMethodId,
+        checkoutLocationId: context.mapping.paidCheckoutLocationId,
+        callbackUrl: callback.toString(),
+      };
+    }
     return {
       apiKey: Deno.env.get("MINDBODY_API_KEY")!,
       siteId: context.integration.providerSiteId,
       userToken,
       baseUrl: Deno.env.get("MINDBODY_BASE_URL") ?? "https://api.mindbodyonline.com",
       requestTimeoutMs: Number(Deno.env.get("MINDBODY_REQUEST_TIMEOUT_MS") ?? 10_000),
+      ...(paidRoute ? { paidRoute } : {}),
     };
   };
   return handleClassBooking(request, {
@@ -132,10 +175,20 @@ Deno.serve(async (request) => {
       },
     ),
     createWriteProvider: (
-      context: { business: { id: string }; integration: { id: string; providerSiteId: string } },
-      operation: { requestId: string; attemptId: string },
+      context: {
+        business: { id: string };
+        integration: { id: string; providerSiteId: string };
+        mapping: {
+          paidPaymentRoute?: string | null;
+          paidPaymentMethodId?: number | null;
+          paidCheckoutLocationId?: number | null;
+        };
+      },
+      operation: { requestId: string; bookingId: string; attemptId: string },
     ) => instrumentClassBookingProvider(
-      createMindbodyClassBookingClient(providerOptions(context)),
+      createMindbodyClassBookingClient(providerOptions(context, {
+        bookingId: operation.bookingId,
+      })),
       {
         context: { businessId: context.business.id, attemptId: operation.attemptId },
         requestId: operation.requestId,
@@ -144,6 +197,33 @@ Deno.serve(async (request) => {
     ),
     executeBooking: createClassBooking,
     revalidateQuote: revalidateClassBookingQuoteBeforeWrite,
+    validateWriteConfiguration: ({ quote, context }: {
+      quote: { fulfilmentMode: string };
+      context: {
+        mapping: {
+          paidPaymentRoute?: string | null;
+          paidPaymentMethodId?: number | null;
+          paidCheckoutLocationId?: number | null;
+        };
+      };
+    }) => {
+      if (quote.fulfilmentMode === "purchase_pricing_option"
+        && (!paymentActionConfiguration()
+          || context.mapping.paidPaymentRoute !== "mindbody_alternative_payment"
+          || !Number.isSafeInteger(context.mapping.paidPaymentMethodId)
+          || context.mapping.paidCheckoutLocationId !== 98)) {
+        throw new BookingOrchestrationError(
+          "PAID_ROUTE_NOT_CONFIGURED",
+          "The approved Mindbody payment route is not configured in this runtime.",
+          503,
+        );
+      }
+    },
+    sealPaymentAction: (providerAccessToken: string, actionContext: Record<string, string>) => {
+      const configuration = paymentActionConfiguration();
+      if (!configuration) throw new Error("Paid payment-action encryption is not configured.");
+      return sealPaymentActionToken(providerAccessToken, actionContext, configuration);
+    },
     now,
     logger: console,
   });

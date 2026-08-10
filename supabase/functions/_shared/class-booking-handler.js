@@ -1,4 +1,5 @@
 import { BookingOrchestrationError } from "./class-booking.js";
+import { failure, headers, json, publicBooking, requestId } from "./class-booking-http.js";
 import { BookingQuoteError } from "./class-booking-quote.js";
 import { OfferAuthorizationError } from "./class-offer-authorization.js";
 import {
@@ -36,61 +37,6 @@ function parseRequest(value) {
     throw new BookingRequestError("INVALID_IDEMPOTENCY_KEY", "A client-generated UUID idempotency key is required.");
   }
   return { quoteId: value.quoteId, idempotencyKey: value.idempotencyKey };
-}
-
-function requestId(request) {
-  const supplied = request.headers.get("x-request-id");
-  return supplied && /^[A-Za-z0-9._:-]{1,128}$/.test(supplied) ? supplied : crypto.randomUUID();
-}
-
-function headers(origin, id) {
-  return {
-    ...(origin ? { "Access-Control-Allow-Origin": origin } : {}),
-    "Access-Control-Allow-Headers": "authorization, content-type, x-request-id",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Content-Type": "application/json",
-    Vary: "Origin",
-    "X-Request-Id": id,
-  };
-}
-
-function json(body, status, origin, id) {
-  return new Response(JSON.stringify(body), { status, headers: headers(origin, id) });
-}
-
-function failure(code, message, status, origin, id) {
-  return json({
-    ok: false,
-    error: { code, message, retryable: status >= 500 },
-    requestId: id,
-  }, status, origin, id);
-}
-
-function publicBooking(stored) {
-  const references = {
-    ...(stored.providerClassId ? { classId: stored.providerClassId } : {}),
-    ...(stored.providerVisitId ? { visitId: stored.providerVisitId } : {}),
-    ...(stored.providerRosterBookingId ? { rosterBookingId: stored.providerRosterBookingId } : {}),
-    ...(stored.providerWaitlistEntryId ? { waitlistEntryId: stored.providerWaitlistEntryId } : {}),
-    ...(stored.providerClientServiceId ? { clientServiceId: stored.providerClientServiceId } : {}),
-    ...(stored.providerServiceProductId ? { serviceProductId: stored.providerServiceProductId } : {}),
-    ...(stored.providerSaleId ? { saleId: stored.providerSaleId } : {}),
-    ...(stored.providerCartId ? { cartId: stored.providerCartId } : {}),
-    ...(stored.providerTransactionId ? { transactionId: stored.providerTransactionId } : {}),
-    ...(stored.providerPaymentId ? { paymentId: stored.providerPaymentId } : {}),
-  };
-  return {
-    id: stored.id,
-    status: stored.status === "pending" ? "unknown" : stored.status,
-    providerReferences: references,
-    ...(stored.className ? { className: stored.className } : {}),
-    ...(stored.startAt ? { startAt: stored.startAt } : {}),
-    ...(stored.locationName ? { locationName: stored.locationName } : {}),
-    price: {
-      amount: Number(stored.priceAmount ?? 0),
-      currency: stored.currency,
-    },
-  };
 }
 
 function success(result, origin, id) {
@@ -154,6 +100,7 @@ export async function handleClassBooking(request, dependencies) {
       catalogue: dependencies.catalogue,
       now: dependencies.now,
       revalidateQuote: (facts) => dependencies.revalidateQuote(facts, { provider: quoteProvider, now: dependencies.now }),
+      validateWriteConfiguration: dependencies.validateWriteConfiguration,
       authorizeWrite: async () => {
         const current = await dependencies.authorizeRequest({
           browserToken,

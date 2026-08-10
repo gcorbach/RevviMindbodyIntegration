@@ -57,6 +57,14 @@ function entitlementFact(service) {
   };
 }
 
+function requiredMindbodyInteger(value, name) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number <= 0) {
+    throw new TypeError(`${name} must be a positive Mindbody integer ID.`);
+  }
+  return number;
+}
+
 export function createMindbodyClientQuoteClient(options) {
   const siteId = requiredMindbodyText(options?.siteId, "siteId");
   requiredMindbodyText(options?.userToken, "userToken");
@@ -190,14 +198,22 @@ export function createMindbodyClientQuoteClient(options) {
       "ClientServices",
     )).map(entitlementFact),
     testCheckout: async ({ classId, clientId, locationId, productId }) => {
+      const selectedClassId = requiredMindbodyInteger(classId, "classId");
       const envelope = await request("sale/checkoutshoppingcart", {
         method: "POST",
         body: {
           ClientId: requiredMindbodyText(clientId, "clientId"),
-          LocationId: requiredMindbodyText(locationId, "locationId"),
+          LocationId: requiredMindbodyInteger(locationId, "locationId"),
           Test: true,
-          CartItems: [{ Item: { Type: "Service", Metadata: { Id: requiredMindbodyText(productId, "productId") } }, Quantity: 1 }],
-          ClassIds: [requiredMindbodyText(classId, "classId")],
+          InStore: false,
+          CalculateTax: true,
+          SendEmail: false,
+          EnforceLocationRestrictions: true,
+          Items: [{
+            Item: { Type: "Service", Metadata: { Id: requiredMindbodyText(productId, "productId") } },
+            Quantity: 1,
+            ClassIds: [selectedClassId],
+          }],
         },
       });
       const cart = envelope?.ShoppingCart;

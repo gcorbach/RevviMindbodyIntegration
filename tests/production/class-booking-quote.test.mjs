@@ -17,7 +17,13 @@ function context(mode = "purchase_pricing_option") {
     location: { id: "location-a", displayName: "Rosebank", providerLocationId: "7", timezone: "Africa/Johannesburg" },
     offer: { id: "offer-a", displayName: "Revvi Yoga", fulfilmentMode: mode, cancellationPolicyText: "Cancel with the studio.", cancellationPolicyCertainty: "studio_reported" },
     integration: { id: "integration-a", providerSiteId: "-99", environment: "sandbox", allowClientCreation: false },
-    mapping: { id: "mapping-a", version: 4, providerServiceProductId: mode === "purchase_pricing_option" ? "product-a" : null, modeEvidenceVerified: true },
+    mapping: {
+      id: "mapping-a",
+      version: 4,
+      providerServiceProductId: mode === "purchase_pricing_option" ? "product-a" : null,
+      paidCheckoutLocationId: mode === "purchase_pricing_option" ? 98 : null,
+      modeEvidenceVerified: true,
+    },
     customerProviderProfile: null,
     inventoryAllowlist: { location: ["7"], program: ["11"], classDescription: ["13"], sessionType: ["23"], classSchedule: [] },
   };
@@ -48,6 +54,11 @@ function dependencies(overrides = {}) {
 
 test("an exact resolved client receives a short-lived provider-calculated paid quote", async () => {
   const deps = dependencies();
+  let checkoutFacts;
+  deps.provider.testCheckout = async (facts) => {
+    checkoutFacts = facts;
+    return { subtotal: 120, discountTotal: 20, taxTotal: 15, grandTotal: 115 };
+  };
   const result = await createClassBookingQuote({ customer: { id: "customer-a" }, identity, classId: "771", context: context() }, deps);
 
   assert.equal(result.quoteId, "quote-a");
@@ -60,6 +71,7 @@ test("an exact resolved client receives a short-lived provider-calculated paid q
   assert.equal(deps.saved[0].mappingVersion, 4);
   assert.equal(deps.saved[0].providerClientUniqueId, "41");
   assert.equal(deps.saved[0].status, "open");
+  assert.equal(checkoutFacts.locationId, 98);
 });
 
 test("ambiguous exact identities create support work and stop before Class or cart operations", async () => {
