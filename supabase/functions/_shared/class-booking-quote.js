@@ -131,8 +131,13 @@ function classOccurrenceFacts(occurrence, input) {
   return {
     classId,
     classScheduleId: occurrence.classScheduleId == null ? null : String(occurrence.classScheduleId),
+    classDescriptionId: occurrence.classDescriptionId == null ? null : String(occurrence.classDescriptionId),
+    programId: occurrence.programId == null ? null : String(occurrence.programId),
+    sessionTypeId: occurrence.sessionTypeId == null ? null : String(occurrence.sessionTypeId),
     name: String(occurrence.name ?? "Class"),
+    staffName: occurrence.staffName == null ? null : String(occurrence.staffName),
     startAt: startAt.toISOString(),
+    endAt: occurrence.endAt == null ? null : new Date(occurrence.endAt).toISOString(),
     locationName: String(occurrence.locationName ?? input.context.location.displayName),
   };
 }
@@ -308,8 +313,24 @@ export async function revalidateClassBookingQuoteBeforeWrite(input, dependencies
     uniqueClientId: quote.providerClientUniqueId,
     timezone: context.location.timezone,
   });
-  classOccurrenceFacts(occurrence, { classId: quote.classId, context });
-  if (quote.fulfilmentMode !== "purchase_pricing_option") return { changed: false };
+  const classOccurrence = classOccurrenceFacts(occurrence, { classId: quote.classId, context });
+  if (quote.fulfilmentMode === "existing_entitlement") {
+    const services = await dependencies.provider.getClientServices({
+      classId: quote.classId,
+      clientId: quote.providerClientId,
+    });
+    const exact = services.filter((service) => String(service?.id ?? "") === String(quote.providerClientServiceId ?? "")
+      && eligibleEntitlement(service, dependencies.now()));
+    if (exact.length !== 1) {
+      throw new BookingQuoteError(
+        "ENTITLEMENT_NO_LONGER_USABLE",
+        "The quoted Mindbody entitlement is no longer usable for this Class. Request a new quote.",
+        409,
+      );
+    }
+    return { changed: false, occurrence: classOccurrence };
+  }
+  if (quote.fulfilmentMode !== "purchase_pricing_option") return { changed: false, occurrence: classOccurrence };
   const [totals, currency] = await Promise.all([
     dependencies.provider.testCheckout({
       classId: quote.classId,
@@ -326,5 +347,5 @@ export async function revalidateClassBookingQuoteBeforeWrite(input, dependencies
       409,
     );
   }
-  return { changed: false };
+  return { changed: false, occurrence: classOccurrence };
 }

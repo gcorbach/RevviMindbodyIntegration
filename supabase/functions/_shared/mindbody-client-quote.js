@@ -173,7 +173,11 @@ export function createMindbodyClientQuoteClient(options) {
         programId: String(occurrence.ClassDescription?.Program?.Id ?? ""),
         sessionTypeId: String(occurrence.ClassDescription?.SessionType?.Id ?? ""),
         name: String(occurrence.ClassDescription?.Name ?? "Class"),
+        ...(occurrence.Staff?.Name == null ? {} : { staffName: String(occurrence.Staff.Name) }),
         startAt,
+        ...(occurrence?.EndDateTime == null ? {} : {
+          endAt: normalizeMindbodyDateTime(occurrence.EndDateTime, requiredMindbodyText(timezone, "timezone")),
+        }),
         locationId: String(occurrence.Location?.Id ?? ""),
         locationName: String(occurrence.Location?.Name ?? ""),
         isAvailable: occurrence.IsAvailable === true,

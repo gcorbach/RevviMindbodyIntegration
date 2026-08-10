@@ -187,3 +187,20 @@ test("the pre-write seam re-reads the Class, reruns Test checkout and blocks a c
   );
   assert.equal(testCheckouts, 1);
 });
+
+test("the pre-write seam revalidates the quote's exact entitlement", async () => {
+  const deps = dependencies();
+  deps.provider.getClientServices = async () => [{
+    id: "different-pass", current: true, remaining: 1, unlimited: false, returned: false,
+  }];
+  const quote = {
+    offerId: "offer-a", mappingId: "mapping-a", mappingVersion: 4, locationId: "location-a",
+    fulfilmentMode: "existing_entitlement", classId: "771", providerClientId: "rss-1",
+    providerClientUniqueId: "41", providerClientServiceId: "pass-1",
+    subtotal: 0, discountTotal: 0, taxTotal: 0, grandTotal: 0, currency: "ZAR",
+  };
+  await assert.rejects(
+    revalidateClassBookingQuoteBeforeWrite({ quote, context: context("existing_entitlement") }, deps),
+    (error) => error.code === "ENTITLEMENT_NO_LONGER_USABLE",
+  );
+});
