@@ -36,6 +36,21 @@ test("the Webflow adapter represents a logged-out Customer without inventing ide
   assert.equal(await createMemberstackAuthorizationHeader(browser), null);
 });
 
+test("the Webflow adapter waits for the supported Memberstack ready event fallback", async () => {
+  const browser = new EventTarget();
+  setTimeout(() => {
+    browser.$memberstackDom = {
+      getCurrentMember: async () => ({ data: { id: "member-a" } }),
+      getMemberCookie: async () => "memberstack.jwt.signature",
+    };
+    browser.dispatchEvent(new Event("memberstack.ready"));
+  }, 5);
+
+  assert.deepEqual(await createMemberstackAuthorizationHeader(browser), {
+    Authorization: "Bearer memberstack.jwt.signature",
+  });
+});
+
 test("an unsupported or malformed Memberstack browser contract fails closed", async (t) => {
   await t.test("missing DOM package", async () => {
     await assert.rejects(
