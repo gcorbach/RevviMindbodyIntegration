@@ -140,7 +140,10 @@ export async function authorizeClassOfferRequest(input, dependencies) {
 
   const context = {
     purpose: input.purpose,
-    customer,
+    customer: {
+      ...customer,
+      ...(member.identity ? { identity: member.identity } : {}),
+    },
     business: offerContext.business,
     location: offerContext.location,
     offer: offerContext.offer,

@@ -1,7 +1,7 @@
-const DEFAULT_BASE_URL = "https://api.mindbodyonline.com";
+import { createMindbodyJsonTransport, instrumentMindbodyProvider } from "./mindbody-http.js";
+
 const DEFAULT_PAGE_LIMIT = 100;
 const DEFAULT_MAX_PAGES = 50;
-const DEFAULT_TIMEOUT_MS = 10_000;
 
 const RESOURCES = Object.freeze({
   sites: { path: "site/sites", collection: "Sites" },
@@ -72,11 +72,6 @@ export class MindbodyClassReadError extends Error {
   }
 }
 
-function requiredText(value, name) {
-  if (typeof value !== "string" || value.trim() === "") throw new TypeError(`${name} is required.`);
-  return value.trim();
-}
-
 function positiveInteger(value, name, maximum = Number.MAX_SAFE_INTEGER) {
   if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
     throw new TypeError(`${name} must be a positive integer no greater than ${maximum}.`);
@@ -110,16 +105,14 @@ function paginationFacts(body, fallbackOffset, pageLength) {
 }
 
 export function createMindbodyClassReadClient(options) {
-  const apiKey = requiredText(options?.apiKey, "apiKey");
-  const siteId = requiredText(options?.siteId, "siteId");
-  const baseUrl = requiredText(options?.baseUrl ?? DEFAULT_BASE_URL, "baseUrl")
-    .replace(/\/+$/, "")
-    .replace(/\/public\/v6$/i, "");
   const pageLimit = positiveInteger(options?.pageLimit ?? DEFAULT_PAGE_LIMIT, "pageLimit", 200);
   const maxPages = positiveInteger(options?.maxPages ?? DEFAULT_MAX_PAGES, "maxPages", 100);
-  const requestTimeoutMs = positiveInteger(options?.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS, "requestTimeoutMs", 60_000);
-  const fetchImpl = options?.fetchImpl ?? fetch;
-  const userToken = typeof options?.userToken === "string" && options.userToken.trim() ? options.userToken.trim() : null;
+  const transport = createMindbodyJsonTransport({
+    ...options,
+    unavailableMessage: "Mindbody class inventory is temporarily unavailable.",
+    invalidMessage: "Mindbody returned an invalid class inventory response.",
+    createError: (message, diagnostic, cause) => new MindbodyClassReadError(message, diagnostic, cause),
+  });
 
   async function getAll(resource, query = {}) {
     const definition = RESOURCES[resource];
@@ -127,57 +120,17 @@ export function createMindbodyClassReadClient(options) {
     const results = [];
 
     for (let page = 0; page < maxPages; page += 1) {
-      const url = new URL(`${baseUrl}/public/v6/${definition.path}`);
-      appendQuery(url.searchParams, query);
-      url.searchParams.set("Limit", String(pageLimit));
-      url.searchParams.set("Offset", String(offset));
-      let response;
-      try {
-        response = await fetchImpl(url, {
-          method: "GET",
-          headers: {
-            Accept: "application/json",
-            "Api-Key": apiKey,
-            SiteId: siteId,
-            ...(userToken ? { Authorization: `Bearer ${userToken}` } : {}),
-          },
-          signal: AbortSignal.timeout(requestTimeoutMs),
-        });
-      } catch (cause) {
-        throw new MindbodyClassReadError("Mindbody class inventory is temporarily unavailable.", {
-          endpointName: definition.path,
-          statusCode: null,
-          providerRequestId: null,
-          errorCode: cause?.name === "TimeoutError" ? "TIMEOUT" : "NETWORK_ERROR",
-        }, cause);
-      }
-
-      if (!response.ok) {
-        throw new MindbodyClassReadError("Mindbody class inventory is temporarily unavailable.", {
-          endpointName: definition.path,
-          statusCode: response.status,
-          providerRequestId: response.headers.get("x-request-id") ?? response.headers.get("request-id"),
-          errorCode: `HTTP_${response.status}`,
-        });
-      }
-
-      let body;
-      try {
-        body = await response.json();
-      } catch (cause) {
-        throw new MindbodyClassReadError("Mindbody returned an invalid class inventory response.", {
-          endpointName: definition.path,
-          statusCode: response.status,
-          providerRequestId: response.headers.get("x-request-id") ?? response.headers.get("request-id"),
-          errorCode: "INVALID_JSON",
-        }, cause);
-      }
+      const searchParams = new URLSearchParams();
+      appendQuery(searchParams, query);
+      searchParams.set("Limit", String(pageLimit));
+      searchParams.set("Offset", String(offset));
+      const body = await transport.request(definition.path, { searchParams });
       const pageItems = body?.[definition.collection];
       if (!Array.isArray(pageItems)) {
         throw new MindbodyClassReadError("Mindbody returned an invalid class inventory response.", {
           endpointName: definition.path,
-          statusCode: response.status,
-          providerRequestId: response.headers.get("x-request-id") ?? response.headers.get("request-id"),
+          statusCode: 200,
+          providerRequestId: null,
           errorCode: "INVALID_COLLECTION",
         });
       }
@@ -208,41 +161,5 @@ export function createMindbodyClassReadClient(options) {
 }
 
 export function instrumentClassReadProvider(provider, options) {
-  const clock = options?.clock ?? (() => performance.now());
-  const context = options?.context ?? {};
-  const instrumented = {};
-  for (const [method, endpointName] of Object.entries(PROVIDER_METHOD_ENDPOINTS)) {
-    if (typeof provider?.[method] !== "function") continue;
-    instrumented[method] = async (...args) => {
-      const startedAt = clock();
-      try {
-        const result = await provider[method](...args);
-        await options.recordDiagnostic({
-          ...context,
-          endpointName,
-          requestId: options.requestId ?? null,
-          providerRequestId: null,
-          statusCode: 200,
-          durationMs: Math.max(0, Math.round(clock() - startedAt)),
-          success: true,
-          errorCode: null,
-        });
-        return result;
-      } catch (error) {
-        const diagnostic = error?.diagnostic ?? {};
-        await options.recordDiagnostic({
-          ...context,
-          endpointName: diagnostic.endpointName ?? endpointName,
-          requestId: options.requestId ?? null,
-          providerRequestId: diagnostic.providerRequestId ?? null,
-          statusCode: diagnostic.statusCode ?? null,
-          durationMs: Math.max(0, Math.round(clock() - startedAt)),
-          success: false,
-          errorCode: diagnostic.errorCode ?? "UNEXPECTED_ERROR",
-        });
-        throw error;
-      }
-    };
-  }
-  return Object.freeze(instrumented);
+  return instrumentMindbodyProvider(provider, PROVIDER_METHOD_ENDPOINTS, options);
 }
