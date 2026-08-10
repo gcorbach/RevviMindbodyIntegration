@@ -4,6 +4,14 @@
 # working directory name when running `supabase init`.
 project_id = "revvi-booking"
 
+[functions.class-offer-eligibility]
+enabled = true
+verify_jwt = false
+
+[functions.memberstack-webhook]
+enabled = true
+verify_jwt = false
+
 # Retained Appointment prototype routes. Every route also has a runtime guard that
 # rejects deployed execution and requires REVVI_APPOINTMENT_PROTOTYPE_ENABLED=true.
 [functions.prototype-appointment-sandbox-check]
