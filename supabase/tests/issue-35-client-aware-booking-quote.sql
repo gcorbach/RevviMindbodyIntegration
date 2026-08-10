@@ -52,6 +52,9 @@ values
   ('35000000-0000-4000-8000-000000000001', '35000000-0000-4000-8000-000000000051', 'program', '11'),
   ('35000000-0000-4000-8000-000000000001', '35000000-0000-4000-8000-000000000051', 'class_description', '13'),
   ('35000000-0000-4000-8000-000000000001', '35000000-0000-4000-8000-000000000051', 'session_type', '23');
+update public.class_offer_provider_mappings
+set mode_verified_at = now(), mode_evidence_digest = repeat('b', 64)
+where id = '35000000-0000-4000-8000-000000000051';
 update public.class_offer_provider_mappings set status = 'active' where id = '35000000-0000-4000-8000-000000000051';
 update public.class_revvi_offers set status = 'active' where id = '35000000-0000-4000-8000-000000000041';
 
