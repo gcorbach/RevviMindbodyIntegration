@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Choose a time | Revvi</title>
+  <title>Local Appointment prototype: choose a time | Revvi</title>
   <style>
     :root { color-scheme: light; --ink:#17201d; --muted:#63716b; --paper:#f8f8f4; --line:#dce2dc; --brand:#126a47; --mint:#dff4e9; --warn:#fff5d6; }
     * { box-sizing: border-box; } body { margin: 0; padding: 24px 16px 48px; background: var(--paper); color: var(--ink); font: 16px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; }
     main { max-width: 860px; margin: auto; } .eyebrow { color: var(--brand); font-size: 12px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
     h1 { margin: 8px 0; font-size: clamp(30px, 5vw, 52px); line-height: 1; letter-spacing: -.05em; } h2 { margin: 0; font-size: 22px; } p { color: var(--muted); }
-    .context, .panel, .state { border: 1px solid var(--line); border-radius: 16px; background: white; padding: 20px; } .context { margin: 24px 0 16px; }
+    .prototype-banner { border: 1px solid #ead79b; border-radius: 12px; background: var(--warn); color: var(--ink); font-weight: 800; margin-bottom: 20px; padding: 12px 14px; } .context, .panel, .state { border: 1px solid var(--line); border-radius: 16px; background: white; padding: 20px; } .context { margin: 24px 0 16px; }
     .context-row, .date-row, .review-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; } .context-row strong { display: block; font-size: 18px; }
     .change, .back { color: var(--brand); font-weight: 700; } .date-row { margin-top: 24px; align-items: end; } label { display: grid; gap: 6px; font-weight: 700; } input[type="date"] { border: 1px solid var(--line); border-radius: 9px; color: var(--ink); font: inherit; padding: 10px; }
     .slots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 16px; } .slot { background: var(--mint); border: 1px solid #bfe3d0; border-radius: 12px; color: var(--brand); cursor: pointer; font: inherit; font-weight: 800; padding: 14px; text-align: left; } .slot small { color: var(--muted); display: block; font-weight: 500; margin-top: 3px; }
@@ -21,6 +21,7 @@
 </head>
 <body>
   <main data-testid="availability-page" aria-live="polite">
+    <div class="prototype-banner">Local Appointment prototype â€” not production Class Booking</div>
     <div class="eyebrow">Revvi booking</div>
     <h1 id="page-title">Choose a time</h1>
     <p id="page-description">Live times for your selected service.</p>
@@ -46,14 +47,14 @@
     </section>
   </main>
   <script>
-    const apiBase = window.REVVI_CATALOGUE_API_URL || "/functions/v1/booking-availability";
+    const apiBase = window.REVVI_CATALOGUE_API_URL || "/functions/v1/prototype-appointment-availability";
     const token = window.REVVI_CUSTOMER_TOKEN;
     const elements = {
       context: document.querySelector("[data-testid='booking-context']"), business: document.querySelector("#business-name"), location: document.querySelector("#location-name"), change: document.querySelector("#change-location"),
       timeSelection: document.querySelector("[data-testid='time-selection']"), serviceName: document.querySelector("#service-name"), serviceSummary: document.querySelector("#service-summary"), date: document.querySelector("#date-picker"), loading: document.querySelector("#loading"), empty: document.querySelector("#empty-date"), next: document.querySelector("#earliest-next"), slots: document.querySelector("#slots"), error: document.querySelector("#error"), review: document.querySelector("#review"),
       reviewBusiness: document.querySelector("#review-business"), reviewLocation: document.querySelector("#review-location"), reviewService: document.querySelector("#review-service"), reviewStart: document.querySelector("#review-start"), reviewDuration: document.querySelector("#review-duration"), reviewPrice: document.querySelector("#review-price"), backToTimes: document.querySelector("#back-to-times"), reviewBack: document.querySelector("#review-back"), continueBooking: document.querySelector("#continue-booking"), reviewError: document.querySelector("#review-error"), confirmation: document.querySelector("#confirmation"), confirmationEyebrow: document.querySelector("#confirmation-eyebrow"), confirmationTitle: document.querySelector("#confirmation-title"), confirmationDetails: document.querySelector("#confirmation-details"),
     };
-    const bookingApiBase = window.REVVI_BOOKING_API_URL || "/functions/v1/booking-attempt";
+    const bookingApiBase = window.REVVI_BOOKING_API_URL || "/functions/v1/prototype-appointment-attempt";
     function today() { return new Date().toISOString().slice(0, 10); }
     function currentParams() { return new URLSearchParams(location.search); }
     function selectedDate(params = currentParams()) { return params.get("date") || today(); }

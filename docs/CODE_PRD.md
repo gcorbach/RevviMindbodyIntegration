@@ -2,46 +2,50 @@
 
 ## Code PRD
 
-**Version:** 1.1 — Phase 0 consolidation
-**Status:** Ready for foundation/read implementation; provider writes remain gated
+**Version:** 1.2 — classes-only realignment
+**Status:** Binding production specification; provider writes remain evidence-gated
 **Project type:** Controlled MVP / pilot
 **Estimated implementation budget:** 120 hours
-**Initial production target:** One Mindbody partner
+**Initial production target:** One Mindbody Business
 **Initial booking type:** Classes only
 
-**Binding MVP scope decision:** The 120-hour pilot supports exactly one approved booking mode for one activated Mindbody Site:
+**Specification authority:** This document is the binding production specification. GitHub issue #10 and implementation issues #11–#19 describe the retained appointment prototype and are historical where they conflict with this document. Appointment endpoints, appointment identifiers, and appointment fixtures must not be used by the production Class Booking path.
 
-1. an explicit existing `ClientService` pass;
-2. a studio-approved free/unpaid booking; or
-3. a Mindbody-hosted redirect/opaque payment flow that Mindbody confirms in writing and Revvi verifies in a controlled sandbox.
+**Binding product model:** A Revvi Customer arrives from a Webflow Offer page with a Business, Location, and Revvi Offer already selected. Supabase is authoritative for the Offer, its eligible Memberstack plan IDs, approved Class inventory, and one configured fulfilment mode. Webflow stores presentation content and stable references only. Mindbody remains authoritative for the available Class occurrences, client record, price or entitlement, roster result, and financial result.
 
-Raw card data must never enter Webflow, browser JavaScript, Supabase, Revvi logs, or any other Revvi-controlled infrastructure. If no approved no-raw-card booking mode is available, the 120-hour deliverable becomes the availability, eligibility, client-resolution, quote, and operational foundation plus a non-paid pilot. This scope decision is derived from [`MINDBODY_FINDINGS.md`](MINDBODY_FINDINGS.md).
+Each Revvi Offer has exactly one fulfilment mode:
+
+1. `purchase_pricing_option` — purchase the Offer's dedicated Mindbody pricing option and book the selected Class occurrence;
+2. `existing_entitlement` — use one exact eligible Mindbody `ClientService`/pass; or
+3. `approved_unpaid` — create the Class Booking without additional Mindbody payment under an explicitly approved Business arrangement.
+
+Unknown or unproven modes fail closed. Raw card data must never enter Webflow, browser JavaScript, Supabase, Revvi logs, or any other Revvi-controlled infrastructure. A paid Offer may be activated only after Mindbody confirms a no-raw-card payment route for the pilot Business and controlled sandbox evidence proves it. The architecture may be implemented before the first Business's commercial terms are known; activation configuration selects the one proven mode required by that Offer.
 
 ---
 
 # 1. Purpose
 
-Build a secure booking integration that allows eligible Revvi members to view and book approved Mindbody classes without leaving the Revvi website.
+Build a secure booking integration that allows eligible Revvi Customers to view and book approved existing Mindbody Classes without leaving the Revvi website.
 
 The implementation will extend Revvi’s existing platform rather than replace it:
 
 * Webflow remains the frontend and CMS.
-* Memberstack remains the member login and membership system.
+* Memberstack remains the Revvi Customer login and subscription system.
 * Supabase becomes the application database and backend API layer.
-* Mindbody remains the source of truth for schedules, availability, purchases, rosters, bookings, and cancellations.
+* Mindbody remains the source of truth for schedules, availability, purchases, entitlements, rosters, Bookings, and cancellations.
 
-The first implementation is a controlled pilot for one Mindbody partner. The architecture should support additional partners later without requiring a rewrite.
+The first implementation is a controlled pilot for one Mindbody Business. The architecture should support additional Businesses later without requiring a rewrite.
 
 ---
 
 # 2. MVP Goals
 
-The MVP must allow an eligible Revvi member to:
+The MVP must allow an eligible Revvi Customer to:
 
 1. Log into Revvi through Memberstack.
-2. Open a Mindbody-enabled partner page.
-3. View eligible upcoming classes.
-4. Select a class.
+2. Open a Webflow Offer page after selecting its Business and Location.
+3. View eligible upcoming Class occurrences covered by that Offer.
+4. Select a Class time.
 5. Confirm the Revvi offer and a short-lived, Mindbody-calculated quote.
 6. Complete the supported Mindbody booking flow.
 7. Receive a successful or failed booking response.
@@ -49,7 +53,7 @@ The MVP must allow an eligible Revvi member to:
 9. View their upcoming Revvi bookings.
 10. Request cancellation of a supported booking and receive a confirmed, pending, unknown, or failed result.
 
-The MVP must also allow Revvi administrators to configure partner and offer mappings through the Supabase dashboard.
+The MVP must also allow Revvi staff to configure Businesses, Locations, Revvi Offers, Memberstack plan eligibility, approved Class inventory, and fulfilment modes through the Supabase dashboard.
 
 ---
 
@@ -64,7 +68,7 @@ The following are not included in the first implementation:
 * Mindbody Partner Network integration.
 * Mindbody Partner Store listing.
 * Custom Revvi admin application.
-* Partner self-service portal.
+* Business self-service portal.
 * Automated refunds, returns, voids, or financial compensation.
 * No-show mutation.
 * General late-cancellation penalty calculation or a guarantee of penalty-free cancellation.
@@ -77,7 +81,9 @@ The following are not included in the first implementation:
 * Non-Mindbody booking providers.
 * Advanced financial reconciliation.
 * Revvi handling, storing, or transmitting raw payment card data.
-* Broad multi-partner rollout during the pilot.
+* Broad multi-Business rollout during the pilot.
+
+The existing appointment implementation is retained only as a local sandbox/test prototype. It must be isolated from production routes, production configuration, Class Booking tables, readiness evidence, and acceptance claims.
 
 The MVP does include the minimum existing-pass discovery needed to select an explicit `ClientServiceId`, plus booking/cancellation reconciliation needed to avoid false success and unsafe retries.
 
@@ -138,9 +144,9 @@ Transactional email provider, optional
 
 “Consumer Bookings” is the current Public API commercial category, not the separate Mindbody Consumer API. Affiliate API, Partner Network, and Consumer API behavior are outside this PRD.
 
-The initial implementation may use Memberstack only for member identity and membership context.
+The initial implementation may use Memberstack only for Revvi Customer identity and subscription context.
 
-A complete webhook-driven Memberstack synchronization process is optional for the first pilot unless server-side eligibility cannot be validated safely without it.
+A complete webhook-driven Memberstack synchronization process is optional for the first pilot unless server-side Offer eligibility cannot be validated safely without it.
 
 ---
 
@@ -152,13 +158,13 @@ Provider reads may be retried with bounded backoff. Provider writes pass through
 ┌─────────────────────────────┐
 │         Webflow UI          │
 │                             │
-│ Partner page                │
+│ Revvi Offer page            │
 │ Class schedule              │
 │ Booking confirmation        │
 │ Upcoming bookings           │
 └──────────────┬──────────────┘
                │
-               │ Memberstack member context
+               │ Memberstack Customer context
                │ HTTPS requests
                ▼
 ┌─────────────────────────────┐
@@ -177,7 +183,7 @@ Provider reads may be retried with bounded backoff. Provider writes pass through
 │  Supabase DB │  │ Mindbody API   │
 │              │  │                │
 │ Mappings     │  │ Schedules      │
-│ Members      │  │ Pricing        │
+│ Customers    │  │ Pricing        │
 │ Bookings     │  │ Bookings       │
 │ Logs         │  │ Cancellations  │
 └──────────────┘  └────────────────┘
@@ -233,7 +239,7 @@ revvi-booking/
 │       │       └── schemas.ts
 │       ├── booking-eligibility/
 │       │   └── index.ts
-│       ├── partner-availability/
+│       ├── offer-class-availability/
 │       │   └── index.ts
 │       ├── booking-quote/
 │       │   └── index.ts
@@ -249,7 +255,7 @@ revvi-booking/
 │   ├── src/
 │   │   ├── index.ts
 │   │   ├── api.ts
-│   │   ├── member.ts
+│   │   ├── customer.ts
 │   │   ├── availability.ts
 │   │   ├── booking.ts
 │   │   ├── upcoming-bookings.ts
@@ -268,45 +274,49 @@ A single repository is recommended for the MVP so database migrations, Edge Func
 
 # 7. Domain Model
 
-## 7.1 Partner
+## 7.1 Business
 
-A Revvi wellness partner.
+An independently configured organisation in Revvi with its own activated Mindbody Site and one or more Locations.
 
-A partner may have one or more locations and one or more booking-provider integrations.
+## 7.2 Business Integration
 
-## 7.2 Partner Integration
+The configuration connecting a Business to Mindbody, including its Site ID, activation, permissions, evidence gates, and feature flags.
 
-Configuration connecting a Revvi partner to an external booking provider.
+## 7.3 Revvi Offer
 
-For Mindbody, this includes the Mindbody Site ID and activation status.
+A pre-agreed benefit giving eligible Revvi Customers exclusive terms on approved existing Classes at one Business and one Location. Supabase owns the Offer definition; Webflow presents it using a stable Offer reference.
 
-## 7.3 Offer
+Every Offer declares:
 
-A Revvi-specific benefit that is available to eligible membership tiers.
+* exact eligible Memberstack plan IDs;
+* one Business and Location;
+* stable approved Class inventory boundaries using Program, Class Description, Session Type, and optionally Class Schedule IDs;
+* one fulfilment mode; and
+* for `purchase_pricing_option`, one dedicated Mindbody `Service.ProductId`.
 
-An offer may map to:
+The Offer never maps by displayed names or by time-specific `Class.Id` values. Future eligible occurrences are discovered from the stable inventory boundaries.
 
-* A Mindbody pricing option.
-* A location.
-* A class category.
-* A class type.
-* A specific service or session type.
+## 7.4 Offer Provider Mapping
 
-The exact mapping fields will depend on the confirmed Mindbody API model.
+The connection between a Revvi Offer and the Mindbody identifiers required to discover its approved existing Class occurrences and fulfil its commercial terms.
 
-## 7.4 Provider Mapping
+## 7.5 Class Occurrence
 
-The connection between a Revvi offer and the provider identifiers required to display or book eligible inventory.
+One time-specific scheduled Mindbody Class identified by `Class.Id`. It is discovered dynamically and is not the durable identity of a Revvi Offer.
 
-## 7.5 Booking
+## 7.6 Booking
 
-Revvi’s local representation of a booking created in Mindbody.
+A confirmed reservation for a Revvi Customer to attend a selected Class occurrence. A provider write with an uncertain outcome remains a Booking attempt until Mindbody evidence establishes confirmation.
 
-Mindbody remains the source of truth for the actual roster and operational booking status.
+Mindbody remains the source of truth for the roster and operational Booking status.
 
-## 7.6 Member Eligibility
+## 7.7 Offer Eligibility
 
-The server-side determination of whether a Memberstack member may use a particular Revvi offer.
+The server-side determination that the Revvi Customer’s current Memberstack plan permits the selected Revvi Offer. It must be revalidated immediately before every provider write.
+
+## 7.8 Offer Fulfilment Mode
+
+The one Business-approved Mindbody arrangement used to complete an Offer: purchase its pricing option, use one exact existing entitlement, or create an approved unpaid Booking. The server never chooses a different mode automatically.
 
 ---
 
@@ -359,6 +369,12 @@ create type booking_status as enum (
   'unknown'
 );
 
+create type offer_fulfilment_mode as enum (
+  'purchase_pricing_option',
+  'existing_entitlement',
+  'approved_unpaid'
+);
+
 create type payment_status as enum (
   'not_required',
   'pending',
@@ -373,8 +389,8 @@ create type provider_attempt_type as enum (
   'client_create',
   'quote',
   'purchase_booking',
-  'existing_pass_booking',
-  'free_unpaid_booking',
+  'existing_entitlement_booking',
+  'approved_unpaid_booking',
   'waitlist_join',
   'cancellation',
   'waitlist_removal',
@@ -398,10 +414,10 @@ create type api_log_direction as enum (
 
 ---
 
-## 8.2 Members
+## 8.2 Revvi Customers
 
 ```sql
-create table public.members (
+create table public.revvi_customers (
   id uuid primary key default gen_random_uuid(),
 
   memberstack_member_id text not null unique,
@@ -409,11 +425,8 @@ create table public.members (
   first_name text,
   last_name text,
 
-  membership_status text,
-  membership_plan_id text,
-  membership_plan_name text,
-
-  eligible_tiers text[] not null default '{}',
+  subscription_status text,
+  memberstack_plan_ids text[] not null default '{}',
   eligibility_override boolean,
 
   last_synced_at timestamptz,
@@ -426,15 +439,15 @@ create table public.members (
 Notes:
 
 * `eligibility_override` supports pilot testing.
-* The long-term eligibility model may need a separate membership table.
-* For the MVP, a simplified member snapshot is acceptable.
+* Memberstack remains authoritative for subscription status and plan membership.
+* The snapshot is never sufficient by itself for a provider write; current eligibility is revalidated server-side.
 
 ---
 
-## 8.3 Partners
+## 8.3 Businesses
 
 ```sql
-create table public.partners (
+create table public.businesses (
   id uuid primary key default gen_random_uuid(),
 
   name text not null,
@@ -450,14 +463,14 @@ create table public.partners (
 
 ---
 
-## 8.4 Partner Integrations
+## 8.4 Business Integrations
 
 ```sql
-create table public.partner_integrations (
+create table public.business_integrations (
   id uuid primary key default gen_random_uuid(),
 
-  partner_id uuid not null
-    references public.partners(id)
+  business_id uuid not null
+    references public.businesses(id)
     on delete cascade,
 
   provider integration_provider not null,
@@ -486,7 +499,7 @@ create table public.partner_integrations (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
-  unique (partner_id, provider)
+  unique (business_id, provider)
 );
 ```
 
@@ -498,18 +511,18 @@ Before activation, list every location represented by the Site ID, record `charg
 
 ---
 
-## 8.5 Partner Locations
+## 8.5 Business Locations
 
 ```sql
-create table public.partner_locations (
+create table public.business_locations (
   id uuid primary key default gen_random_uuid(),
 
-  partner_id uuid not null
-    references public.partners(id)
+  business_id uuid not null
+    references public.businesses(id)
     on delete cascade,
 
-  partner_integration_id uuid
-    references public.partner_integrations(id)
+  business_integration_id uuid
+    references public.business_integrations(id)
     on delete cascade,
 
   provider_location_id text,
@@ -532,25 +545,27 @@ create table public.partner_locations (
 
 ---
 
-## 8.6 Partner Offers
+## 8.6 Revvi Offers
 
 ```sql
-create table public.partner_offers (
+create table public.revvi_offers (
   id uuid primary key default gen_random_uuid(),
 
-  partner_id uuid not null
-    references public.partners(id)
+  business_id uuid not null
+    references public.businesses(id)
     on delete cascade,
+
+  business_location_id uuid not null
+    references public.business_locations(id),
 
   title text not null,
   slug text not null,
 
   description text,
 
-  eligible_tiers text[] not null default '{}',
+  eligible_memberstack_plan_ids text[] not null default '{}',
   status offer_status not null default 'draft',
-
-  booking_provider integration_provider,
+  fulfilment_mode offer_fulfilment_mode not null,
 
   cancellation_policy text,
   preparation_instructions text,
@@ -558,13 +573,15 @@ create table public.partner_offers (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
-  unique (partner_id, slug)
+  unique (business_id, business_location_id, slug)
 );
 ```
 
 `cancellation_policy` is versioned Revvi/studio-authored display text. It is not a claim that `Program.CancelOffset` is a complete or guaranteed provider cancellation rule. Store the policy approval/version in `configuration` or a dedicated policy table if it changes during the pilot.
 
 ---
+
+An Offer is activatable only when its Business/Location mapping, exact Memberstack plan IDs, approved Class inventory, and selected fulfilment-mode evidence are valid. Webflow CMS content must reference this row by stable `id`; it cannot override eligibility, inventory, price, or mode.
 
 ## 8.7 Offer Provider Mappings
 
@@ -573,15 +590,15 @@ create table public.offer_provider_mappings (
   id uuid primary key default gen_random_uuid(),
 
   offer_id uuid not null
-    references public.partner_offers(id)
+    references public.revvi_offers(id)
     on delete cascade,
 
-  partner_integration_id uuid not null
-    references public.partner_integrations(id)
+  business_integration_id uuid not null
+    references public.business_integrations(id)
     on delete cascade,
 
   provider_site_id text not null,
-  provider_service_product_id text not null,
+  provider_service_product_id text,
   provider_service_barcode_id text,
 
   configuration jsonb not null default '{}'::jsonb,
@@ -597,7 +614,7 @@ create table public.offer_provider_mappings (
 );
 ```
 
-`provider_service_product_id` is Mindbody `Service.ProductId`. Do not use the barcode-like `Service.Id` or a service name as the canonical mapping key. A time-specific `Class.Id` must never be stored as a durable offer mapping.
+`provider_service_product_id` is required only for `purchase_pricing_option` and is Mindbody `Service.ProductId`. One paid Offer at one Location maps to one dedicated pricing option. Do not use the barcode-like `Service.Id` or a service name as the canonical mapping key. A time-specific `Class.Id` must never be stored as a durable Offer mapping.
 
 Use child allowlist rows for inventory boundaries:
 
@@ -609,7 +626,7 @@ create table public.offer_provider_allowlist (
     on delete cascade,
 
   entity_type text not null check (
-    entity_type in ('location', 'program', 'class_description', 'session_type')
+    entity_type in ('location', 'program', 'class_description', 'session_type', 'class_schedule')
   ),
   provider_entity_id text not null,
 
@@ -637,17 +654,17 @@ The `configuration` field may contain safe filtering rules, for example:
 create table public.bookings (
   id uuid primary key default gen_random_uuid(),
 
-  member_id uuid not null
-    references public.members(id),
+  revvi_customer_id uuid not null
+    references public.revvi_customers(id),
 
-  partner_id uuid not null
-    references public.partners(id),
+  business_id uuid not null
+    references public.businesses(id),
 
   offer_id uuid not null
-    references public.partner_offers(id),
+    references public.revvi_offers(id),
 
-  partner_location_id uuid
-    references public.partner_locations(id),
+  business_location_id uuid
+    references public.business_locations(id),
 
   provider integration_provider not null,
 
@@ -735,10 +752,10 @@ Short-lived provider-calculated quotes require a typed record:
 create table public.booking_quotes (
   id uuid primary key default gen_random_uuid(),
 
-  member_id uuid not null references public.members(id),
-  offer_id uuid not null references public.partner_offers(id),
-  partner_integration_id uuid not null
-    references public.partner_integrations(id),
+  revvi_customer_id uuid not null references public.revvi_customers(id),
+  offer_id uuid not null references public.revvi_offers(id),
+  business_integration_id uuid not null
+    references public.business_integrations(id),
 
   provider_site_id text not null,
   provider_class_id text not null,
@@ -747,8 +764,8 @@ create table public.booking_quotes (
   provider_service_product_id text,
   provider_client_service_id text,
 
-  booking_mode text not null check (
-    booking_mode in ('existing_pass', 'free_unpaid', 'mindbody_redirect')
+  fulfilment_mode offer_fulfilment_mode not null check (
+    fulfilment_mode in ('purchase_pricing_option', 'existing_entitlement', 'approved_unpaid')
   ),
 
   subtotal numeric(12, 2) not null,
@@ -780,8 +797,8 @@ create table public.provider_api_logs (
   provider integration_provider not null,
   direction api_log_direction not null default 'outbound',
 
-  partner_id uuid
-    references public.partners(id),
+  business_id uuid
+    references public.businesses(id),
 
   booking_id uuid
     references public.bookings(id),
@@ -861,23 +878,23 @@ For the initial Memberstack-based architecture:
 
 * Deny anonymous direct table access by default.
 * Deny browser writes to booking tables.
-* Edge Functions use the service role after performing member validation.
+* Edge Functions use the service role after performing Revvi Customer validation.
 * Admin operations are initially performed through the Supabase dashboard.
 
 Example default policy posture:
 
 ```sql
-alter table public.members enable row level security;
-alter table public.partners enable row level security;
-alter table public.partner_integrations enable row level security;
-alter table public.partner_locations enable row level security;
-alter table public.partner_offers enable row level security;
+alter table public.revvi_customers enable row level security;
+alter table public.businesses enable row level security;
+alter table public.business_integrations enable row level security;
+alter table public.business_locations enable row level security;
+alter table public.revvi_offers enable row level security;
 alter table public.offer_provider_mappings enable row level security;
 alter table public.offer_provider_allowlist enable row level security;
 alter table public.bookings enable row level security;
 alter table public.provider_attempts enable row level security;
 alter table public.booking_quotes enable row level security;
-alter table public.member_provider_profiles enable row level security;
+alter table public.revvi_customer_provider_profiles enable row level security;
 alter table public.provider_api_logs enable row level security;
 alter table public.webhook_events enable row level security;
 ```
@@ -1017,10 +1034,10 @@ export interface BookingQuoteResult {
   clientUniqueId?: string;
   serviceProductId?: string;
   clientServiceId?: string;
-  bookingMode:
-    | "existing_pass"
-    | "free_unpaid"
-    | "mindbody_redirect";
+  fulfilmentMode:
+    | "purchase_pricing_option"
+    | "existing_entitlement"
+    | "approved_unpaid";
   subtotal: number;
   discountTotal: number;
   taxTotal: number;
@@ -1067,46 +1084,46 @@ export class ProviderError extends Error {
 
 ---
 
-# 12. Authentication and Member Identity
+# 12. Authentication and Revvi Customer Identity
 
 ## 12.1 MVP Approach
 
-The Webflow frontend retrieves the current Memberstack member.
+The Webflow frontend retrieves the current authenticated Memberstack Customer.
 
-The frontend sends a Memberstack member token or verifiable identity proof to the Edge Function.
+The frontend sends a Memberstack token or verifiable identity proof to the Edge Function.
 
 The Edge Function must not trust:
 
-* A raw member ID sent without verification.
-* A frontend-provided membership tier.
+* A raw Customer ID sent without verification.
+* Frontend-provided Memberstack plan IDs.
 * A frontend-provided eligibility boolean.
 
 The exact verification approach depends on Memberstack’s available server-side token validation mechanism.
 
 If direct token validation is not practical, use this fallback:
 
-1. Sync Memberstack members into Supabase through signed webhooks.
+1. Sync Memberstack Customers and subscriptions into Supabase through signed webhooks.
 2. Require a signed short-lived booking token generated from a trusted server-side process.
 3. For controlled pilot users, use a temporary allowlist only during testing.
 
-A production booking should never be authorized only because the browser says the user is eligible.
+A production Booking must never be authorized only because the browser says the Customer is eligible.
 
 ---
 
 ## 12.2 Request Context
 
-Every member-facing Edge Function should create a request context:
+Every Customer-facing Edge Function should create a request context:
 
 ```ts
 export interface RequestContext {
   requestId: string;
   origin: string | null;
 
-  member: {
+  revviCustomer: {
     id: string;
     memberstackMemberId: string;
     email?: string;
-    eligibleTiers: string[];
+    memberstackPlanIds: string[];
   };
 
   receivedAt: Date;
@@ -1157,12 +1174,13 @@ POST /functions/v1/booking-eligibility
 
 ```json
 {
-  "partnerSlug": "pilot-partner",
+  "businessSlug": "pilot-business",
+  "locationId": "business-location-uuid",
   "offerId": "uuid"
 }
 ```
 
-Member identity is supplied through the authorization mechanism, not through the JSON body.
+Revvi Customer identity is supplied through the authorization mechanism, not through the JSON body.
 
 ### Response
 
@@ -1172,12 +1190,12 @@ Member identity is supplied through the authorization mechanism, not through the
   "data": {
     "eligible": true,
     "reason": null,
-    "member": {
+    "revviCustomer": {
       "firstName": "Gabriella"
     },
     "offer": {
       "id": "uuid",
-      "title": "Revvi Member Single Class"
+      "title": "Revvi Yoga Offer"
     }
   },
   "requestId": "uuid"
@@ -1186,36 +1204,38 @@ Member identity is supplied through the authorization mechanism, not through the
 
 ### Eligibility Rules
 
-A member is eligible when:
+A Revvi Customer is eligible when:
 
-* The member exists.
-* The membership status is active.
+* The Customer exists and is authenticated.
+* Memberstack reports an active subscription.
 * The offer is active.
-* The partner integration is active.
-* The member tier intersects with the offer’s eligible tiers.
-* No explicit eligibility override blocks the member.
+* The Business integration and selected Location are active.
+* At least one current Memberstack plan ID exactly matches the Offer’s configured eligible plan IDs.
+* No explicit eligibility override blocks the Customer.
+
+These rules are evaluated again immediately before every provider write.
 
 ---
 
-## 13.2 Partner Availability
+## 13.2 Offer Class Availability
 
 ### Endpoint
 
 ```txt
-POST /functions/v1/partner-availability
+POST /functions/v1/offer-class-availability
 ```
 
-POST is preferred over GET because the request may contain filters and verified member context.
+POST is preferred over GET because the request may contain filters and verified Customer context.
 
 ### Request
 
 ```json
 {
-  "partnerSlug": "pilot-partner",
+  "businessSlug": "pilot-business",
   "offerId": "uuid",
   "startDate": "2026-08-01",
   "endDate": "2026-08-14",
-  "locationId": "optional-uuid"
+  "locationId": "business-location-uuid"
 }
 ```
 
@@ -1225,14 +1245,14 @@ POST is preferred over GET because the request may contain filters and verified 
 {
   "ok": true,
   "data": {
-    "partner": {
+    "business": {
       "id": "uuid",
-      "name": "Partner Name",
-      "slug": "pilot-partner"
+      "name": "Business Name",
+      "slug": "pilot-business"
     },
     "offer": {
       "id": "uuid",
-      "title": "Revvi Member Single Class"
+      "title": "Revvi Yoga Offer"
     },
     "sessions": [
       {
@@ -1264,7 +1284,7 @@ POST is preferred over GET because the request may contain filters and verified 
 * Date range must have a maximum allowed duration.
 * Default range should be 14 days.
 * Inventory must be filtered using the active offer mapping.
-* Ineligible members must not receive bookable inventory.
+* Ineligible Customers must not receive bookable inventory.
 * Raw Mindbody data must not be returned.
 * Treat `sessionId` as an alias of the required Mindbody `Class.Id`; never use `ClassScheduleId` as an occurrence ID.
 * Do not promise or display numeric remaining spots when capacity fields are null, hidden, or contradictory.
@@ -1302,7 +1322,7 @@ Perform a final pre-booking validation before displaying the confirmation screen
     "quoteId": "signed-or-stored-reference",
     "expiresAt": "2026-08-03T12:10:00Z",
     "quoteFingerprint": "sha256-of-normalized-quote-inputs",
-    "bookingMode": "existing_pass",
+    "fulfilmentMode": "existing_entitlement",
     "session": {
       "classId": "mindbody-class-id",
       "name": "Pilates Reformer",
@@ -1349,23 +1369,23 @@ POST /functions/v1/create-booking
 }
 ```
 
-The quote fixes the approved `bookingMode`; the browser cannot choose or override it. Raw PAN, CVV, expiry, billing-card data, or an unverified generic payment token must never be accepted by this endpoint. A Mindbody redirect completion reference may be accepted only through a separate, documented completion endpoint after that flow is approved and tested.
+The quote fixes the approved `fulfilmentMode`; the browser cannot choose or override it. Raw PAN, CVV, expiry, billing-card data, or an unverified generic payment token must never be accepted by this endpoint. A Mindbody redirect completion reference may be accepted only through a separate, documented completion endpoint after that flow is approved and tested.
 
 ### Processing Flow
 
-1. Authenticate the member.
+1. Authenticate the Revvi Customer.
 2. Validate the request.
 3. Check the idempotency key.
 4. Resolve the quote.
-5. Ensure the quote belongs to the member.
+5. Ensure the quote belongs to the Revvi Customer.
 6. Ensure the quote has not expired.
 7. Revalidate eligibility.
-8. Revalidate the active partner mapping.
+8. Revalidate the active Business, Location, Offer, and provider mapping.
 9. Resolve the exact Mindbody client and explicit ClientService/Product selected by the quote.
 10. Re-read the selected Class with client context and re-run the Test cart where payment applies.
 11. Reject a material quote change and require user reconfirmation.
 12. Create the local booking and a pending provider attempt in one database transaction.
-13. Acquire a member/class write lock and call Mindbody once using the quote’s approved mode.
+13. Acquire a Customer/Class write lock and call Mindbody once using the quote’s approved mode.
 14. Store distinct provider references and mark the attempt `confirmed`, `requires_action`, `failed`, or `unknown`.
 15. On timeout or ambiguous response, do not replay; enqueue reconciliation and return `unknown`/pending support status.
 16. Log only allowlisted typed facts and return a normalized result.
@@ -1437,7 +1457,7 @@ POST /functions/v1/upcoming-bookings
       {
         "id": "uuid",
         "status": "confirmed",
-        "partnerName": "Partner Name",
+        "businessName": "Business Name",
         "className": "Pilates Reformer",
         "startAt": "2026-08-03T14:00:00Z",
         "locationName": "Downtown Studio",
@@ -1449,7 +1469,7 @@ POST /functions/v1/upcoming-bookings
 }
 ```
 
-Only bookings belonging to the authenticated member may be returned.
+Only Bookings belonging to the authenticated Revvi Customer may be returned.
 
 ---
 
@@ -1466,13 +1486,13 @@ POST /functions/v1/cancel-booking
 ```json
 {
   "bookingId": "local-booking-uuid",
-  "reason": "Member requested cancellation"
+  "reason": "Revvi Customer requested cancellation"
 }
 ```
 
 ### Processing Flow
 
-1. Authenticate the member.
+1. Authenticate the Revvi Customer.
 2. Fetch the local booking.
 3. Confirm booking ownership.
 4. Confirm this pilot booking mode supports a cancellation request.
@@ -1519,7 +1539,7 @@ POST /functions/v1/memberstack-webhook
 * Verify the webhook signature.
 * Store the external event ID.
 * Ignore duplicate events.
-* Update the local member snapshot.
+* Update the local Revvi Customer subscription snapshot.
 * Store a redacted event payload.
 * Return success quickly.
 * Log processing failures.
@@ -1638,14 +1658,14 @@ Client resolution is required before a client-aware quote or booking:
 Persistent client mapping is required once a profile is resolved:
 
 ```sql
-create table public.member_provider_profiles (
+create table public.revvi_customer_provider_profiles (
   id uuid primary key default gen_random_uuid(),
 
-  member_id uuid not null
-    references public.members(id),
+  revvi_customer_id uuid not null
+    references public.revvi_customers(id),
 
-  partner_integration_id uuid not null
-    references public.partner_integrations(id),
+  business_integration_id uuid not null
+    references public.business_integrations(id),
 
   provider integration_provider not null,
   provider_site_id text not null,
@@ -1660,7 +1680,7 @@ create table public.member_provider_profiles (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
-  unique (member_id, partner_integration_id)
+  unique (revvi_customer_id, business_integration_id)
 );
 ```
 
@@ -1675,7 +1695,7 @@ No Mindbody password is required by the documented `AddClient` contract. Waiver/
 The MVP assumes:
 
 * Revvi does not receive, transmit, log, or store raw PAN, CVV, expiry, or billing-card data.
-* Mindbody or the partner’s Mindbody-connected merchant account processes payment.
+* Mindbody or the Business’s Mindbody-connected merchant account processes payment.
 * Any approved paid flow is hosted/redirected by Mindbody or uses an opaque mechanism explicitly documented and approved for Revvi.
 * Sensitive payment fields are never written to Supabase logs or tables.
 
@@ -1696,17 +1716,17 @@ If Revvi must directly collect or transmit raw card data, paid booking is remove
 
 The 120-hour scope does not include building a custom PCI-compliant payment form.
 
-## 16.4 Allowed Pilot Booking Modes
+## 16.4 Offer Fulfilment Modes
 
-Enable exactly one mode per pilot integration:
+Configure exactly one mode per Revvi Offer:
 
 ```txt
-existing_pass      Explicit tested ClientServiceId; no automatic pass selection
-free_unpaid        Only with written studio approval and tested provider settings
-mindbody_redirect  Only after sandbox proof and confirmation that payment remains Mindbody-managed
+purchase_pricing_option  Dedicated Service.ProductId; client-aware Test quote; live purchase plus ClassIds only through an approved no-raw-card payment route
+existing_entitlement     One exact tested ClientServiceId; no automatic entitlement selection
+approved_unpaid          AddClientToClass without additional payment only with written Business approval and tested provider settings
 ```
 
-All other modes fail closed. Paid production remains disabled until every gate above is satisfied.
+The browser cannot choose or change the mode. All unknown modes fail closed. A mode may be modeled before it is operational, but an Offer using it cannot become active until its mode-specific evidence is complete. Paid production remains disabled until every gate above is satisfied.
 
 ---
 
@@ -1719,7 +1739,8 @@ Recommended markup contract:
 ```html
 <div
   data-revvi-booking
-  data-partner-slug="pilot-partner"
+  data-business-slug="pilot-business"
+  data-location-id="BUSINESS_LOCATION_UUID"
   data-offer-id="OFFER_UUID"
 >
   <div data-booking-loading hidden></div>
@@ -1785,7 +1806,7 @@ type BookingWidgetState =
 * Reuse the same key only to retrieve the existing local attempt after a network failure; do not use it to replay an unknown provider write.
 * Never display raw API errors.
 * Never expose provider secrets or internal database IDs unnecessarily.
-* Format times in the partner location’s timezone.
+* Format times in the selected Business Location’s timezone.
 * Display availability as stale after a booking attempt and refresh it.
 * Do not assume a displayed slot remains available.
 * Display numeric remaining spots only when the normalized value is non-null and internally consistent.
@@ -1826,11 +1847,11 @@ Suggested schemas:
 
 ```ts
 const availabilityRequestSchema = z.object({
-  partnerSlug: z.string().min(1),
+  businessSlug: z.string().min(1),
   offerId: z.string().uuid(),
   startDate: z.string().date(),
   endDate: z.string().date(),
-  locationId: z.string().uuid().optional(),
+  locationId: z.string().uuid(),
 });
 
 const createBookingRequestSchema = z.object({
@@ -1852,12 +1873,12 @@ Use stable internal error codes:
 
 ```txt
 AUTH_REQUIRED
-MEMBER_NOT_FOUND
-MEMBERSHIP_INACTIVE
+REVVI_CUSTOMER_NOT_FOUND
+SUBSCRIPTION_INACTIVE
 OFFER_NOT_FOUND
 OFFER_INACTIVE
-MEMBER_NOT_ELIGIBLE
-PARTNER_NOT_FOUND
+OFFER_NOT_ELIGIBLE
+BUSINESS_NOT_FOUND
 INTEGRATION_NOT_CONFIGURED
 INTEGRATION_INACTIVE
 OFFER_MAPPING_NOT_FOUND
@@ -1900,8 +1921,8 @@ Example:
 const publicMessages: Record<string, string> = {
   SESSION_FULL:
     "This class is no longer available. Please choose another time.",
-  MEMBER_NOT_ELIGIBLE:
-    "Your current membership does not include this offer.",
+  OFFER_NOT_ELIGIBLE:
+    "Your current Revvi subscription does not include this offer.",
   PROVIDER_UNAVAILABLE:
     "Booking is temporarily unavailable. Please try again shortly.",
 };
@@ -1917,7 +1938,7 @@ Every provider request should log:
 * Function name.
 * Provider.
 * Endpoint name.
-* Partner ID.
+* Business ID.
 * Booking ID where applicable.
 * Duration.
 * Status code.
@@ -1971,7 +1992,7 @@ Rules:
 
 1. Store the local pending booking before calling Mindbody.
 2. Create a provider-attempt row with an idempotency key and normalized request fingerprint.
-3. Serialize writes for the same member/Class and return the existing local attempt for a repeated key.
+3. Serialize writes for the same Revvi Customer/Class and return the existing local attempt for a repeated key.
 4. Keep native Add Client to Class quick deduplication enabled, but do not treat its undocumented window as an exactly-once guarantee.
 5. Store provider request references and distinct resource IDs.
 6. Do not automatically issue another provider write after an uncertain failure.
@@ -1988,11 +2009,13 @@ No custom admin UI is included.
 
 Revvi administrators will use the Supabase dashboard to manage:
 
-* Partners.
-* Partner integrations.
-* Partner locations.
-* Offers.
-* Offer mappings.
+* Businesses.
+* Business integrations.
+* Business Locations.
+* Revvi Offers.
+* exact eligible Memberstack plan IDs.
+* Offer provider mappings and approved Class inventory.
+* Offer fulfilment modes and activation evidence.
 * Integration status.
 * Pilot eligibility overrides.
 * Booking support records.
@@ -2006,26 +2029,27 @@ Production support actions must be explicit and audited. The Supabase dashboard 
 Create database views where useful:
 
 ```sql
-create view public.admin_partner_offer_mappings as
+create view public.admin_business_offer_mappings as
 select
-  p.name as partner_name,
-  p.slug as partner_slug,
+  b.name as business_name,
+  b.slug as business_slug,
   pi.provider_site_id,
   pi.status as integration_status,
   po.title as offer_title,
   po.status as offer_status,
+  po.fulfilment_mode,
   opm.provider_service_product_id,
   opm.status as mapping_status
-from public.partners p
-join public.partner_integrations pi
-  on pi.partner_id = p.id
-join public.partner_offers po
-  on po.partner_id = p.id
+from public.businesses b
+join public.business_integrations pi
+  on pi.business_id = b.id
+join public.revvi_offers po
+  on po.business_id = b.id
 left join public.offer_provider_mappings opm
   on opm.offer_id = po.id;
 ```
 
-Pilot studio onboarding must verify and record:
+Pilot Business onboarding must verify and record:
 
 - approved Site and every chargeable Location;
 - Site currency, IANA timezone, tax-inclusive mode, and per-staff pricing;
@@ -2085,7 +2109,7 @@ Test with mocked Mindbody responses:
 * Cancellation committed despite timeout/error, then reconciled.
 * Pass restored, not restored, and restoration unknown.
 * Duplicate/out-of-order/missing webhook events.
-* Member ineligible.
+* Revvi Customer ineligible for the Offer.
 * Offer mapping missing.
 
 ## 24.3 Sandbox Tests
@@ -2113,9 +2137,9 @@ Cross-regional, merchant/SCA, processor failures, and comprehensive payment fixt
 
 Test:
 
-* Logged-out member.
-* Eligible member.
-* Ineligible member.
+* Logged-out visitor.
+* Eligible Revvi Customer.
+* Ineligible Revvi Customer.
 * Loading state.
 * Empty state.
 * Provider error.
@@ -2157,15 +2181,15 @@ No production provider write may be enabled until Revvi has recorded:
 ## Authentication
 
 * Logged-out visitors cannot book.
-* Member identity is verified server-side.
-* Ineligible members cannot create bookings.
-* Members cannot view or cancel another member’s booking.
+* Revvi Customer identity and current Memberstack plan IDs are verified server-side.
+* Ineligible Customers cannot create Bookings.
+* Customers cannot view or cancel another Customer’s Booking.
 
 ## Availability
 
-* Eligible class availability can be retrieved for the pilot partner.
+* Eligible Class availability can be retrieved for the pilot Business, selected Location, and Offer.
 * Inventory is filtered through the active Revvi offer mapping.
-* Times display in the correct partner timezone.
+* Times display in the correct Business Location timezone.
 * Empty and error states are supported.
 * Null or hidden capacity does not produce a fabricated slot count.
 * `Class.Id` is used as the occurrence key and `Service.ProductId` as the pricing-option key.
@@ -2173,8 +2197,8 @@ No production provider write may be enabled until Revvi has recorded:
 ## Booking
 
 * Client matching fails closed on ambiguity and stores Site-scoped Client/RSSID + Unique ID.
-* A pilot member can create a booking through exactly one approved pilot mode.
-* The booking appears in the partner’s Mindbody roster or booking system.
+* A pilot Revvi Customer can create a Booking through the Offer’s one approved fulfilment mode.
+* The Booking appears in the Business’s Mindbody Class roster.
 * The local Supabase booking is marked confirmed.
 * Repeated browser submission returns the existing Revvi attempt; ambiguous provider outcomes are not replayed.
 * Failed booking attempts do not display success.
@@ -2183,7 +2207,7 @@ No production provider write may be enabled until Revvi has recorded:
 
 ## Cancellation
 
-* A member can request cancellation of their own supported booking.
+* A Revvi Customer can request cancellation of their own supported Booking.
 * Cancellation is submitted to Mindbody.
 * The result is verified or remains `unknown`; ambiguous writes are not replayed.
 * Failed cancellations do not falsely show success.
@@ -2191,7 +2215,7 @@ No production provider write may be enabled until Revvi has recorded:
 
 ## Operations
 
-* Revvi can configure the pilot partner through Supabase.
+* Revvi can configure the pilot Business, Location, Offer, Memberstack plan IDs, approved Class inventory, and fulfilment mode through Supabase.
 * Known limitations are documented.
 * A manual reconciliation process exists.
 * A queued reconciliation path, support lock/view, webhook dedupe, and 24-hour sweep exist.
@@ -2245,15 +2269,15 @@ The application can retrieve and normalize class availability from the configure
 
 ---
 
-## Milestone 3 — Partner Mapping and Eligibility
+## Milestone 3 — Offer Mapping and Eligibility
 
 **Target effort:** 18 hours
 
 Deliverables:
 
-* Pilot partner seed/configuration.
-* Offer and provider mappings.
-* Member eligibility logic.
+* Pilot Business and Location configuration.
+* Revvi Offer, fulfilment mode, and provider mappings.
+* Exact Memberstack plan eligibility logic.
 * Memberstack identity integration.
 * Eligibility endpoint.
 * Availability filtering.
@@ -2261,7 +2285,7 @@ Deliverables:
 
 Completion condition:
 
-Only an eligible test member can retrieve bookable inventory for the configured Revvi offer.
+Only an eligible test Revvi Customer can retrieve bookable inventory for the configured Revvi Offer, Business, and Location.
 
 ---
 
@@ -2281,7 +2305,7 @@ Deliverables:
 
 Completion condition:
 
-An eligible member can view normalized pilot partner availability on the Webflow page.
+An eligible Revvi Customer can view normalized pilot Offer availability on the Webflow page.
 
 ---
 
@@ -2305,7 +2329,7 @@ Deliverables:
 
 Completion condition:
 
-An eligible pilot user can create one supported class booking through the single approved pilot mode; the result appears in Mindbody and Supabase, or remains safely unknown without replay.
+An eligible pilot Revvi Customer can create one supported Class Booking through the Offer’s configured and approved mode; the result appears in Mindbody and Supabase, or remains safely unknown without replay.
 
 ---
 
@@ -2326,7 +2350,7 @@ Deliverables:
 
 Completion condition:
 
-A member can view and request cancellation of their supported pilot booking without false success, refund, or pass-restoration claims.
+A Revvi Customer can view and request cancellation of their supported pilot Booking without false success, refund, or entitlement-restoration claims.
 
 ---
 
@@ -2347,7 +2371,7 @@ Deliverables:
 
 Completion condition:
 
-The integration is ready for a controlled pilot with one Mindbody partner.
+The integration is ready for a controlled pilot with one Mindbody Business and at least one activated Revvi Offer.
 
 ---
 
@@ -2379,7 +2403,7 @@ When uncertainty affects the budget, priority must be:
 8. Basic cancellation.
 9. Confirmation email.
 10. Waivers.
-11. Additional partner support.
+11. Additional Business support.
 
 Lower-priority features may be deferred to a later phase rather than compromising booking reliability.
 
@@ -2396,8 +2420,8 @@ Recommended implementation sequence:
 4. Implement provider abstraction.
 5. Implement Mindbody read client.
 6. Validate sandbox authentication/permissions and read endpoints.
-7. Seed one pilot partner, Product ID, and inventory allowlists.
-8. Implement member identity, eligibility, and Site-scoped client resolution.
+7. Configure one pilot Business, Location, Offer, exact Memberstack plan IDs, and inventory allowlists.
+8. Implement Revvi Customer identity, Offer eligibility, and Site-scoped client resolution.
 9. Implement availability state normalization and endpoint.
 10. Build Webflow availability UI.
 11. Validate the selected authentication, booking mode, and Mindbody-managed payment path in the sandbox; record commercial and retention assumptions.
@@ -2416,11 +2440,11 @@ Recommended implementation sequence:
 
 After the pilot, a separate phase may include:
 
-* Additional Mindbody partners.
+* Additional Mindbody Businesses.
 * Appointment booking.
-* Partner self-service onboarding.
+* Business self-service onboarding.
 * Custom Revvi admin dashboard.
-* Full Memberstack webhook synchronization.
+* Full Memberstack webhook synchronization beyond the eligibility evidence needed for the pilot.
 * Automated confirmation emails.
 * Waiver presentation and acceptance.
 * Advanced reconciliation beyond the minimum unknown-state queue and 24-hour sweep.
@@ -2445,14 +2469,14 @@ The project is complete when:
 * The code is committed to the agreed repository.
 * Database migrations can recreate the required schema.
 * Required Edge Functions are deployed.
-* The pilot partner is configured.
-* An eligible member can view availability.
+* The pilot Business, Location, and Revvi Offer are configured in Supabase and referenced from Webflow.
+* An eligible Revvi Customer can view approved Class availability.
 * Client identity is resolved without automatic duplicate merging.
-* An eligible member can create a class booking through the single approved pilot mode.
-* The booking appears in Mindbody.
-* The booking is stored in Supabase.
+* An eligible Revvi Customer can create a Class Booking through the Offer’s configured and approved fulfilment mode.
+* The Booking appears in the Mindbody Class roster.
+* The Booking is stored in Supabase.
 * Repeated local submissions are deduplicated and ambiguous provider writes are reconciled before retry.
-* A member can view their booking.
+* A Revvi Customer can view their Booking.
 * Basic cancellation works where sandbox-proven, and refund/pass restoration remain separate.
 * Webhook intake, reconciliation, support locks, and 48-hour diagnostic deletion are operating.
 * Known limitations are documented.

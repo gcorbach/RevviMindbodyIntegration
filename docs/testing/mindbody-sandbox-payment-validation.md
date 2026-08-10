@@ -1,29 +1,33 @@
-# Mindbody Sandbox Payment Validation
+# Retained Appointment prototype: Mindbody sandbox payment validation
+
+These instructions exercise the historical Appointment prototype only. They are not production Class Booking readiness evidence.
 
 Run these checks in order. Do not send a real card number or a non-test checkout request while the payment model is still unsettled.
 
 ## 1. Verify sandbox payment capability
 
-Populate `supabase/functions/.env.local` with the sandbox API key and Studio/Site ID, then start the read-only diagnostic:
+Populate `supabase/functions/.env.local` with the sandbox API key and Studio/Site ID, then start the local Appointment prototype functions through the temporary enabled configuration:
 
 ```powershell
-pnpm supabase functions serve mindbody-sandbox-check --env-file supabase/functions/.env.local --no-verify-jwt
+pnpm prototype:appointment:functions
 ```
 
 In a second terminal, call it:
 
 ```powershell
-Invoke-RestMethod http://localhost:54321/functions/v1/mindbody-sandbox-check
+Invoke-RestMethod http://localhost:54321/functions/v1/prototype-appointment-sandbox-check
 ```
 
 This calls only Mindbody's `GET /site/paymenttypes` endpoint. Record the response's payment types and any error without recording credentials.
+
+Stop the serve command with Ctrl+C when the diagnostic session is complete. Its temporary configuration is removed automatically; the production configuration remains disabled.
 
 ## 2. Establish a test booking fixture
 
 Create one disposable client (only once per test run):
 
 ```powershell
-Invoke-RestMethod -Method Post -Uri "http://localhost:54321/functions/v1/mindbody-sandbox-create-client"
+Invoke-RestMethod -Method Post -Uri "http://localhost:54321/functions/v1/prototype-appointment-sandbox-create-client"
 ```
 
 The helper creates a `Revvi Sandbox` client with a unique `@example.test` email. Save the returned Mindbody client ID locally for the next request; do not add it to source control.

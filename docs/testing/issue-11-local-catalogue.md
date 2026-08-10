@@ -1,6 +1,6 @@
-# Issue #11 local catalogue
+# Issue #11 retained Appointment prototype catalogue
 
-Issue #11 is deliberately sandbox-only. The local seed creates two Revvi Businesses for tenant tests:
+Issue #11 is a historical Appointment prototype and is deliberately sandbox-only. It does not implement the production Class catalogue. The local seed creates two Revvi Businesses for tenant tests:
 
 - `sandbox-wellness` is the active development Business.
 - `sandbox-secondary` is disabled and exists to prove that customer context cannot cross tenants.
@@ -27,16 +27,14 @@ The Edge Function still resolves `__MINDBODY_SANDBOX_SITE_ID__` from `MINDBODY_S
 The customer endpoint is:
 
 ```text
-GET /functions/v1/business-catalogue?business=sandbox-wellness&location=sandbox-location
+GET /functions/v1/prototype-appointment-catalogue?business=sandbox-wellness&location=sandbox-location
 Authorization: Bearer <Supabase access token with app_metadata.identity_provider=memberstack, app_metadata.memberstack_id, and app_metadata.memberstack_verified=true>
 ```
 
 The response contains only Revvi Business/Location fields and allowlisted live service fields. Mindbody credentials, Site IDs, provider session IDs, and raw provider payloads stay server-side.
 
-Run the local database/RLS suite with `pnpm supabase test db`. The explicit acceptance command uses a local Mindbody double and the browser test where Edge is installed, after the local Supabase stack is up. Set the local service-role key first:
+Run the local database/RLS suite with `pnpm supabase test db`. After the local Supabase stack is up, run the explicit Appointment prototype suite; it discovers the local credentials and uses a local Mindbody double:
 
 ```powershell
-$env:SUPABASE_SERVICE_ROLE_KEY = '<local service-role key>'
-$env:RUN_HTTP_TESTS = '1'
-pnpm test:acceptance
+pnpm test:prototype:appointment
 ```
