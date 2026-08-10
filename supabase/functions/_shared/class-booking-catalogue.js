@@ -228,6 +228,28 @@ export function createClassBookingCatalogue(supabase, quoteCatalogue) {
       return storedPayload(data);
     },
 
+    async recordReconciliationObservation(facts) {
+      const references = facts.providerReferences ?? {};
+      const { data, error } = await supabase.rpc("record_class_booking_reconciliation_observation", {
+        candidate_business_id: facts.businessId,
+        candidate_booking_id: facts.bookingId,
+        candidate_attempt_id: facts.attemptId,
+        candidate_write_token: facts.writeToken,
+        candidate_provider_visit_id: references.providerVisitId,
+        candidate_provider_roster_booking_id: references.providerRosterBookingId,
+        candidate_provider_waitlist_entry_id: references.providerWaitlistEntryId,
+        candidate_provider_client_service_id: references.providerClientServiceId,
+        candidate_provider_service_product_id: references.providerServiceProductId,
+        candidate_provider_sale_id: references.providerSaleId,
+        candidate_provider_cart_id: references.providerCartId,
+        candidate_provider_transaction_id: references.providerTransactionId,
+        candidate_provider_payment_id: references.providerPaymentId,
+        candidate_error_code: facts.errorCode,
+      });
+      if (error) throw unavailable("The unresolved Mindbody reconciliation evidence could not be persisted safely.");
+      return storedPayload(data);
+    },
+
     async recordProviderDiagnostic(facts) {
       const { error } = await supabase.from("class_booking_provider_diagnostics").insert({
         business_id: facts.businessId,

@@ -71,7 +71,10 @@ function providerReferences(result = {}) {
   };
 }
 
-function hasConfirmationEvidence(result) {
+function hasConfirmationEvidence(result, quote) {
+  if (quote?.fulfilmentMode === "approved_unpaid") {
+    return Boolean(result?.visitId || result?.rosterBookingId);
+  }
   return Boolean(result?.visitId
     || result?.rosterBookingId
     || (result?.atomicCheckoutConfirmed === true && result?.saleId && result?.transactionId));
@@ -82,7 +85,14 @@ function modeEvidenceMatches(result, quote) {
     return result?.clientServiceId != null
       && String(result.clientServiceId) === String(quote.providerClientServiceId);
   }
-  if (quote?.fulfilmentMode === "approved_unpaid") return result?.clientServiceId == null;
+  if (quote?.fulfilmentMode === "approved_unpaid") {
+    return result?.clientServiceId == null
+      && result?.serviceProductId == null
+      && result?.saleId == null
+      && result?.cartId == null
+      && result?.transactionId == null
+      && result?.paymentId == null;
+  }
   if (quote?.fulfilmentMode === "purchase_pricing_option") {
     return result?.serviceProductId != null
       && String(result.serviceProductId) === String(quote.providerServiceProductId);
@@ -91,12 +101,13 @@ function modeEvidenceMatches(result, quote) {
 }
 
 function normalizeProviderOutcome(result, quote) {
-  if (result?.status === "waitlisted" && result.waitlistEntryId) {
+  if (quote?.fulfilmentMode !== "approved_unpaid"
+    && result?.status === "waitlisted" && result.waitlistEntryId) {
     return { status: "waitlisted", attemptStatus: "confirmed", certainty: "provider_confirmed" };
   }
   if (result?.status === "confirmed"
     && result.certainty === "provider_confirmed"
-    && hasConfirmationEvidence(result)
+    && hasConfirmationEvidence(result, quote)
     && modeEvidenceMatches(result, quote)) {
     return { status: "confirmed", attemptStatus: "confirmed", certainty: "provider_confirmed" };
   }
@@ -231,6 +242,7 @@ export async function reconcileClassBooking(input, dependencies) {
       uniqueClientId: input.quote.providerClientUniqueId,
       clientServiceId: input.quote.providerClientServiceId,
       serviceProductId: input.quote.providerServiceProductId,
+      mode: input.quote.fulfilmentMode,
       saleId: input.booking.providerSaleId,
       transactionId: input.booking.providerTransactionId,
       webhookEvidence: input.webhookEvidence,
@@ -239,7 +251,23 @@ export async function reconcileClassBooking(input, dependencies) {
     return { booking: input.booking, attempt: input.attempt };
   }
   const outcome = normalizeProviderOutcome(result, input.quote);
-  if (outcome.status === "unknown" || outcome.status === "requires_action") {
+  if (outcome.status === "unknown") {
+    const references = providerReferences(result);
+    const hasObservation = result?.errorCode != null
+      || Object.values(references).some((value) => value != null);
+    if (!hasObservation || typeof dependencies.catalogue.recordReconciliationObservation !== "function") {
+      return { booking: input.booking, attempt: input.attempt };
+    }
+    return dependencies.catalogue.recordReconciliationObservation({
+      businessId: input.quote.businessId,
+      bookingId: input.booking.id,
+      attemptId: input.attempt.id,
+      writeToken: input.writeToken,
+      providerReferences: references,
+      errorCode: result?.errorCode ?? null,
+    });
+  }
+  if (outcome.status === "requires_action") {
     return { booking: input.booking, attempt: input.attempt };
   }
   return dependencies.catalogue.completeReconciliation({

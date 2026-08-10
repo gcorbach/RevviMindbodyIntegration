@@ -59,7 +59,7 @@ values
 update public.class_offer_provider_mappings set status = 'active'
 where id in ('33000000-0000-4000-8000-000000000041', '33000000-0000-4000-8000-000000000042');
 update public.class_revvi_offers set status = 'active'
-where id in ('33000000-0000-4000-8000-000000000031', '33000000-0000-4000-8000-000000000032');
+where id = '33000000-0000-4000-8000-000000000031';
 
 select is(
   (select count(*)::int from public.resolve_class_availability_context(
