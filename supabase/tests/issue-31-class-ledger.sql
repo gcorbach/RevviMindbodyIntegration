@@ -194,11 +194,30 @@ insert into public.class_offer_provider_mappings (
 
 insert into public.class_offer_inventory_allowlist (
   id, business_id, mapping_id, entity_kind, provider_entity_id
-) values (
+) values
+(
   '31000000-0000-0000-0000-000000000061',
   '31000000-0000-0000-0000-000000000001',
   '31000000-0000-0000-0000-000000000051',
   'class_description', 'yoga-description-a'
+),
+(
+  '31000000-0000-0000-0000-000000000063',
+  '31000000-0000-0000-0000-000000000001',
+  '31000000-0000-0000-0000-000000000051',
+  'location', 'location-a'
+),
+(
+  '31000000-0000-0000-0000-000000000064',
+  '31000000-0000-0000-0000-000000000001',
+  '31000000-0000-0000-0000-000000000051',
+  'program', 'yoga-program-a'
+),
+(
+  '31000000-0000-0000-0000-000000000065',
+  '31000000-0000-0000-0000-000000000001',
+  '31000000-0000-0000-0000-000000000051',
+  'session_type', 'yoga-session-a'
 );
 
 update public.class_offer_provider_mappings
@@ -328,7 +347,7 @@ select is(
 );
 select is(
   (select count(*)::int from public.class_offer_inventory_allowlist where mapping_id = '31000000-0000-0000-0000-000000000051'),
-  1,
+  4,
   'the active Offer is backed by stable approved class-family inventory'
 );
 
@@ -347,7 +366,7 @@ select throws_ok(
   $$update public.class_offer_provider_mappings
     set status = 'active'
     where id = '31000000-0000-0000-0000-000000000052'$$,
-  'active Class mapping requires stable approved inventory',
+  'active Class mapping requires Location, Program, Class Description, and Session Type inventory',
   'an incomplete provider mapping fails closed'
 );
 select throws_ok(
