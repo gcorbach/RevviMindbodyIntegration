@@ -122,7 +122,7 @@ function transactionFact(value) {
   };
 }
 
-function exactFinancialEvidence(salesEnvelope, transactionsEnvelope, input) {
+function exactSaleState(salesEnvelope, transactionsEnvelope, input) {
   const expectedProductId = text(input.serviceProductId);
   const exactSale = array(salesEnvelope?.Sales)
     .map(saleFact)
@@ -132,20 +132,30 @@ function exactFinancialEvidence(salesEnvelope, transactionsEnvelope, input) {
       && sale.classIds.includes(String(input.classId))
       && (!expectedProductId || sale.productIds.includes(expectedProductId)));
   if (!exactSale) return null;
-  const exactTransaction = array(transactionsEnvelope?.Transactions)
+  const matchingTransactions = array(transactionsEnvelope?.Transactions)
     .map(transactionFact)
     .filter(Boolean)
-    .find((transaction) => transaction.transactionId
-      && transaction.saleId === exactSale.saleId
-      && SUCCESSFUL_TRANSACTION_STATUSES.has(transaction.status));
-  if (!exactTransaction) return null;
+    .filter((transaction) => transaction.transactionId && transaction.saleId === exactSale.saleId);
+  const successfulTransaction = matchingTransactions.find((transaction) => (
+    SUCCESSFUL_TRANSACTION_STATUSES.has(transaction.status)
+  ));
+  return {
+    saleId: exactSale.saleId,
+    transactionId: (successfulTransaction ?? matchingTransactions[0])?.transactionId ?? null,
+    transactionConfirmed: Boolean(successfulTransaction),
+  };
+}
+
+function exactFinancialEvidence(salesEnvelope, transactionsEnvelope, input) {
+  const state = exactSaleState(salesEnvelope, transactionsEnvelope, input);
+  if (!state?.transactionConfirmed) return null;
   return {
     status: "confirmed",
     certainty: "provider_confirmed",
     atomicCheckoutConfirmed: true,
-    saleId: exactSale.saleId,
-    transactionId: exactTransaction.transactionId,
-    serviceProductId: expectedProductId,
+    saleId: state.saleId,
+    transactionId: state.transactionId,
+    serviceProductId: text(input.serviceProductId),
   };
 }
 
@@ -248,6 +258,7 @@ export function createMindbodyClassBookingClient(options) {
     async reconcileBooking(input) {
       const classId = requiredMindbodyText(input?.classId, "classId");
       const clientId = requiredMindbodyText(input?.clientId, "clientId");
+      const mode = text(input?.mode);
       const operations = [
         request("client/clientschedule", { query: { ClientIds: [clientId] } }),
         request("client/clientvisits", { query: { ClientId: clientId } }),
@@ -267,6 +278,34 @@ export function createMindbodyClassBookingClient(options) {
         ...array(envelopes[2]?.Visits).map(visitFact),
       ].filter(Boolean);
       const exactVisit = visits.find((visit) => exactFact(visit, { classId, clientId }));
+      const financialInput = {
+        classId,
+        clientId,
+        serviceProductId: input.serviceProductId,
+      };
+      const financialContamination = mode === "approved_unpaid"
+        ? exactSaleState(envelopes[4], envelopes[5], financialInput)
+        : null;
+      const financialEvidence = mode === "approved_unpaid"
+        ? null
+        : exactFinancialEvidence(envelopes[4], envelopes[5], financialInput);
+      if (financialContamination) {
+        return {
+          status: "unknown",
+          certainty: "unknown",
+          errorCode: "APPROVED_UNPAID_FINANCIAL_EVIDENCE",
+          saleId: financialContamination.saleId,
+          transactionId: financialContamination.transactionId,
+        };
+      }
+      if (mode === "approved_unpaid"
+        && (settled[4]?.status !== "fulfilled" || settled[5]?.status !== "fulfilled")) {
+        return {
+          status: "unknown",
+          certainty: "unknown",
+          errorCode: "APPROVED_UNPAID_FINANCIAL_STATE_UNVERIFIED",
+        };
+      }
       if (exactVisit?.visitId) {
         return { status: "confirmed", certainty: "provider_confirmed", ...exactVisit };
       }
@@ -277,11 +316,6 @@ export function createMindbodyClassBookingClient(options) {
       }
       const webhookEvidence = exactWebhookEvidence(input.webhookEvidence, { classId, clientId });
       if (webhookEvidence) return webhookEvidence;
-      const financialEvidence = exactFinancialEvidence(envelopes[4], envelopes[5], {
-        classId,
-        clientId,
-        serviceProductId: input.serviceProductId,
-      });
       if (financialEvidence) return financialEvidence;
       return { status: "unknown", certainty: "unknown" };
     },

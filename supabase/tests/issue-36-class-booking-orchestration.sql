@@ -40,12 +40,12 @@ insert into public.class_revvi_offers (
 );
 insert into public.class_offer_provider_mappings (
   id, business_id, offer_id, fulfilment_mode, integration_id, location_id,
-  status, validated_at, validation_evidence_digest, mode_verified_at, mode_evidence_digest
+  status, validated_at, validation_evidence_digest
 ) values (
   '36000000-0000-4000-8000-000000000051', '36000000-0000-4000-8000-000000000001',
   '36000000-0000-4000-8000-000000000041', 'approved_unpaid',
   '36000000-0000-4000-8000-000000000011', '36000000-0000-4000-8000-000000000021',
-  'draft', now(), repeat('a', 64), now(), repeat('b', 64)
+  'draft', now(), repeat('a', 64)
 );
 insert into public.class_offer_inventory_allowlist (business_id, mapping_id, entity_kind, provider_entity_id)
 values
@@ -53,10 +53,21 @@ values
   ('36000000-0000-4000-8000-000000000001', '36000000-0000-4000-8000-000000000051', 'program', '11'),
   ('36000000-0000-4000-8000-000000000001', '36000000-0000-4000-8000-000000000051', 'class_description', '13'),
   ('36000000-0000-4000-8000-000000000001', '36000000-0000-4000-8000-000000000051', 'session_type', '23');
-update public.class_offer_provider_mappings
-set mode_verified_at = now(), mode_evidence_digest = repeat('b', 64)
-where id = '36000000-0000-4000-8000-000000000051';
 update public.class_offer_provider_mappings set status = 'active'
+where id = '36000000-0000-4000-8000-000000000051';
+insert into public.class_approved_unpaid_evidence (
+  business_id, mapping_id, mapping_version, evidence_kind, evidence_digest, verified_at
+)
+select
+  mapping.business_id, mapping.id, mapping.mapping_version, evidence.kind,
+  encode(extensions.digest(mapping.id::text || evidence.kind::text, 'sha256'), 'hex'), now()
+from public.class_offer_provider_mappings mapping
+cross join unnest(enum_range(null::public.class_approved_unpaid_evidence_kind)) evidence(kind)
+where mapping.id = '36000000-0000-4000-8000-000000000051';
+update public.class_offer_provider_mappings
+set approved_unpaid_enabled = true,
+    mode_verified_at = now(),
+    mode_evidence_digest = repeat('b', 64)
 where id = '36000000-0000-4000-8000-000000000051';
 update public.class_revvi_offers set status = 'active'
 where id = '36000000-0000-4000-8000-000000000041';

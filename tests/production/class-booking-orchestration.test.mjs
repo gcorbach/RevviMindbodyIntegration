@@ -65,7 +65,9 @@ const occurrence = Object.freeze({
 });
 
 function dependencies(overrides = {}) {
-  const calls = { writes: 0, completions: [], queued: [], reconciliations: 0, authorizations: 0 };
+  const calls = {
+    writes: 0, completions: [], observations: [], queued: [], reconciliations: 0, authorizations: 0,
+  };
   const claimed = {
     shouldWrite: true,
     writeToken: "b".repeat(64),
@@ -89,6 +91,13 @@ function dependencies(overrides = {}) {
         booking: { id: "booking-a", status: facts.status },
         attempt: { id: "attempt-a", status: "reconciled" },
       }),
+      recordReconciliationObservation: async (facts) => {
+        calls.observations.push(facts);
+        return {
+          booking: { id: "booking-a", status: "unknown", ...facts.providerReferences },
+          attempt: { id: "attempt-a", status: "unknown" },
+        };
+      },
     },
     provider: {
       createBooking: async () => {
@@ -270,14 +279,53 @@ test("a Visit without the exact quoted ClientService remains unknown", async () 
   assert.equal(deps.calls.queued.length, 1);
 });
 
+test("approved unpaid never turns Mindbody entitlement, sale, payment, or waitlist evidence into an approved-unpaid Booking confirmation", async () => {
+  const unpaidQuote = {
+    ...quote,
+    fulfilmentMode: "approved_unpaid",
+    providerClientServiceId: null,
+  };
+  const unpaidContext = {
+    ...context,
+    offer: { ...context.offer, fulfilmentMode: "approved_unpaid" },
+  };
+  for (const providerResult of [
+    {
+      status: "confirmed", certainty: "provider_confirmed", visitId: "visit-1",
+      clientServiceId: "unexpected-pass",
+    },
+    {
+      status: "confirmed", certainty: "provider_confirmed", visitId: "visit-1",
+      saleId: "sale-1", transactionId: "transaction-1", atomicCheckoutConfirmed: true,
+    },
+    { status: "waitlisted", certainty: "provider_confirmed", waitlistEntryId: "waitlist-1" },
+  ]) {
+    const deps = dependencies();
+    deps.provider.createBooking = async () => providerResult;
+    const result = await createClassBooking({
+      ...input,
+      quote: unpaidQuote,
+      context: unpaidContext,
+      idempotencyKey: crypto.randomUUID(),
+    }, deps);
+    assert.equal(result.booking.status, "unknown");
+    assert.equal(deps.calls.queued.length, 1);
+    assert.equal(deps.calls.completions[0].paymentStatus, "not_required");
+  }
+});
+
 test("reconciliation can confirm from authoritative Visit evidence and releases the write lock", async () => {
   const deps = dependencies();
-  deps.provider.reconcileBooking = async () => ({
+  let reconciliationInput;
+  deps.provider.reconcileBooking = async (providerInput) => {
+    reconciliationInput = providerInput;
+    return {
     status: "confirmed",
     certainty: "provider_confirmed",
     visitId: "visit-reconciled",
     clientServiceId: "pass-1",
-  });
+    };
+  };
   const result = await reconcileClassBooking({
     booking: { id: "booking-a", status: "unknown" },
     attempt: { id: "attempt-a", status: "unknown" },
@@ -287,6 +335,30 @@ test("reconciliation can confirm from authoritative Visit evidence and releases 
 
   assert.equal(result.booking.status, "confirmed");
   assert.equal(result.attempt.status, "reconciled");
+  assert.equal(reconciliationInput.mode, "existing_entitlement");
+});
+
+test("approved-unpaid reconciliation records financial contamination and retains unknown state", async () => {
+  const deps = dependencies();
+  deps.provider.reconcileBooking = async () => ({
+    status: "unknown",
+    certainty: "unknown",
+    errorCode: "APPROVED_UNPAID_FINANCIAL_EVIDENCE",
+    saleId: "sale-unexpected",
+    transactionId: "transaction-failed",
+  });
+  const result = await reconcileClassBooking({
+    booking: { id: "booking-a", status: "unknown" },
+    attempt: { id: "attempt-a", status: "unknown" },
+    quote: { ...quote, fulfilmentMode: "approved_unpaid", providerClientServiceId: null },
+    writeToken: "b".repeat(64),
+  }, deps);
+
+  assert.equal(result.booking.status, "unknown");
+  assert.equal(deps.calls.observations.length, 1);
+  assert.equal(deps.calls.observations[0].providerReferences.providerSaleId, "sale-unexpected");
+  assert.equal(deps.calls.observations[0].providerReferences.providerTransactionId, "transaction-failed");
+  assert.equal(deps.calls.observations[0].errorCode, "APPROVED_UNPAID_FINANCIAL_EVIDENCE");
 });
 
 test("inconclusive reconciliation stays unknown and does not permit replay", async () => {

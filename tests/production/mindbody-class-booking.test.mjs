@@ -177,6 +177,91 @@ test("inconclusive reconciliation remains unknown and never treats absence as re
   assert.equal(result.certainty, "unknown");
 });
 
+test("approved unpaid reconciliation confirms only roster evidence with no matching financial state", async () => {
+  const calls = [];
+  const client = createMindbodyClassBookingClient(options(async (url) => {
+    const path = new URL(url).pathname;
+    calls.push(path);
+    if (path.endsWith("/class/classvisits")) {
+      return response({ Visits: [{ Id: "visit-unpaid", ClassId: 771, ClientId: "rss-1" }] });
+    }
+    return response({});
+  }));
+  const result = await client.reconcileBooking({
+    mode: "approved_unpaid", classId: "771", clientId: "rss-1",
+  });
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.visitId, "visit-unpaid");
+  assert.equal(calls.some((path) => path.endsWith("/sale/sales")), true);
+  assert.equal(calls.some((path) => path.endsWith("/sale/transactions")), true);
+});
+
+test("approved unpaid reconciliation keeps any matching Sale state unknown", async () => {
+  for (const transaction of [
+    null,
+    { Id: "transaction-failed", SaleId: "sale-unexpected", Status: "Failed" },
+    { Id: "transaction-approved", SaleId: "sale-unexpected", Status: "Approved" },
+  ]) {
+    const client = createMindbodyClassBookingClient(options(async (url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/class/classvisits")) {
+        return response({ Visits: [{ Id: "visit-contaminated", ClassId: 771, ClientId: "rss-1" }] });
+      }
+      if (path.endsWith("/sale/sales")) {
+        return response({ Sales: [{ Id: "sale-unexpected", ClientId: "rss-1", ClassIds: ["771"] }] });
+      }
+      if (path.endsWith("/sale/transactions")) {
+        return response({ Transactions: transaction ? [transaction] : [] });
+      }
+      return response({});
+    }));
+    const result = await client.reconcileBooking({
+      mode: "approved_unpaid", classId: "771", clientId: "rss-1",
+    });
+    assert.equal(result.status, "unknown");
+    assert.equal(result.errorCode, "APPROVED_UNPAID_FINANCIAL_EVIDENCE");
+    assert.equal(result.saleId, "sale-unexpected");
+    assert.equal(result.transactionId, transaction?.Id ?? null);
+  }
+});
+
+test("approved unpaid reconciliation stays unknown when financial state cannot be read", async () => {
+  const client = createMindbodyClassBookingClient(options(async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/class/classvisits")) {
+      return response({ Visits: [{ Id: "visit-unverified", ClassId: 771, ClientId: "rss-1" }] });
+    }
+    if (path.endsWith("/sale/sales")) throw new DOMException("timed out", "TimeoutError");
+    return response({});
+  }));
+  const result = await client.reconcileBooking({
+    mode: "approved_unpaid", classId: "771", clientId: "rss-1",
+  });
+  assert.equal(result.status, "unknown");
+  assert.equal(result.errorCode, "APPROVED_UNPAID_FINANCIAL_STATE_UNVERIFIED");
+});
+
+test("approved unpaid reconciliation preserves a matching Sale when Transaction reads fail", async () => {
+  const client = createMindbodyClassBookingClient(options(async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/class/classvisits")) {
+      return response({ Visits: [{ Id: "visit-contaminated", ClassId: 771, ClientId: "rss-1" }] });
+    }
+    if (path.endsWith("/sale/sales")) {
+      return response({ Sales: [{ Id: "sale-known", ClientId: "rss-1", ClassIds: ["771"] }] });
+    }
+    if (path.endsWith("/sale/transactions")) throw new DOMException("timed out", "TimeoutError");
+    return response({});
+  }));
+  const result = await client.reconcileBooking({
+    mode: "approved_unpaid", classId: "771", clientId: "rss-1",
+  });
+  assert.equal(result.status, "unknown");
+  assert.equal(result.errorCode, "APPROVED_UNPAID_FINANCIAL_EVIDENCE");
+  assert.equal(result.saleId, "sale-known");
+  assert.equal(result.transactionId, null);
+});
+
 test("reconciliation accepts exact atomic Sale/Transaction evidence and verified webhook roster evidence", async () => {
   const financialClient = createMindbodyClassBookingClient(options(async (url) => {
     const path = new URL(url).pathname;
