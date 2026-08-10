@@ -12,6 +12,7 @@
     "test:prototype:appointment": "node tests/run-appointment-prototype.mjs"
   },
   "devDependencies": {
+    "@memberstack/admin": "1.6.0",
     "supabase": "^2.109.1"
   }
 }
