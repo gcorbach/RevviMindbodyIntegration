@@ -1,58 +1,76 @@
-# Sandbox Business pilot operations
+# Classes-only pilot activation
 
-This runbook controls the pre-approval Business-to-Business pilot against the Mindbody sandbox. Mindbody remains authoritative for provider results; the Revvi operational ledger records tenant-scoped readiness, Booking attempts, evidence references, and staff actions.
+This runbook activates one Revvi Offer for one Mindbody Business, Location, environment, fulfilment mode, and mapping version. It never activates the retained Appointment prototype. Mindbody remains authoritative for Class inventory, roster, Visit, entitlement, sale, and cancellation results.
 
-## Ownership
+## What activation does
 
-- Platform operations owns evidence recording, activation, deactivation, and rollback.
-- Booking support owns unknown-outcome alerts and reconciliation under `docs/operations/booking-support.md`.
-- The responsible platform-operations actor must be identifiable in every readiness change.
-- Business staff cannot promote a Business or read another Business's readiness record.
+Availability and client-aware quotes may be tested while a pilot is inactive. A new Mindbody Booking write is allowed only when `class_offer_provider_mappings.pilot_write_enabled` is true and the provider-write boundary can re-prove all of the following:
 
-## Sandbox diagnostics and evidence
+- the Business, integration, Location, Revvi Offer, and mapping are active;
+- the exact mapping version and selected fulfilment mode are still verified;
+- a classes-only readiness row is active for the same environment;
+- every mandatory controlled-evidence kind is current; and
+- no required evidence has been revoked.
 
-Run diagnostics with Revvi's server-side API key and sandbox Site ID. Never paste secrets, provider bodies, customer profile data, PAN/CVV, or raw notification content into evidence or limitations.
+Database owners can construct transactional test fixtures. Application traffic cannot bypass this gate.
 
-Record a passing, timestamped evidence reference for every check:
+## Choose the pilot scope
 
-1. `site_activation`: Revvi's application is activated for the configured sandbox Site.
-2. `sandbox_connectivity`: authenticated Public API calls succeed for that Site.
-3. `approved_locations` and `approved_services`: the enabled Revvi catalogue matches the intended sandbox records.
-4. `live_availability`: the selected Location and service return bookable availability.
-5. `client_mapping`: unique-match, create, conflict, and ambiguous Mindbody Client paths were validated.
-6. `branding` and `support_contact`: approved pilot presentation and an owned support route are recorded.
-7. `checkout_or_non_paid`: record `supported_checkout` evidence or an explicit `approved_non_paid` decision matching the Business completion mode.
-8. `transactional_messages`: describe observed Mindbody behaviour and record accepted payment or notification limitations.
-9. `tenant_isolation`: the automated cross-Business suite passed.
-10. `booking_lifecycle`: the automated complete Booking-attempt lifecycle suite passed, including unknown and expired outcomes.
-11. `controlled_booking`: reference a confirmed, tenant-owned controlled Booking attempt.
+Record these identifiers before testing:
 
-Evidence references should point to durable, access-controlled test output or approval records. Accepted limitations must say what is unavailable in sandbox and who accepted the constraint; they are not waivers for failed safety checks.
+- `business_id`, Mindbody Site ID, confirmed `public_api_consumer_booking` product/use case, and effective chargeable Location count;
+- `integration_id` and `environment` (`sandbox` or `production`);
+- `location_id`, Mindbody Location ID, and IANA timezone;
+- `offer_id`, exact Memberstack plan IDs, and signed Revvi terms;
+- `mapping_id`, `mapping_version`, and exactly one fulfilment mode; and
+- the stable Location, Program, Class Description, Session Type, and optional Schedule allowlist.
 
-## Promotion
+The initial pilot must use a mode whose own evidence gate is complete. `existing_entitlement` and `approved_unpaid` are available when their controlled proof is current. `purchase_pricing_option` is eligible only after its separate route flag, written payment approval, processor/country/permission/PCI evidence, and controlled recovery proof are all active; otherwise it remains disabled.
 
-1. Confirm the Business is configured for `sandbox` and has at least one enabled approved Location and service.
-2. Confirm all thirteen checks are passing and were verified after the most recent deactivation.
-3. Confirm the checkout/non-paid decision matches the configured completion mode, transactional-message behaviour is recorded, and the configured support contact is present.
-4. Confirm there are no unresolved unknown Booking outcomes or open unknown-outcome support items.
-5. Exercise the retained local Appointment prototype only through the `prototype-appointment-readiness` staff API. It is not a production Class readiness gate.
-6. Re-read the readiness record and verify `status=active`, the tenant flag is enabled, the responsible actor and activation action are recorded, and other Businesses are unchanged.
-7. Perform one final smoke check as a Revvi Customer for that Business without reusing the controlled Booking's idempotency key.
+## Controlled evidence package
 
-## Rollback and incidents
+Run the checks against the exact scoped Business and Location. Store full artifacts in an access-controlled system, then record only an opaque reference and SHA-256 digest in Revvi. Never store raw provider bodies, Revvi Customer data, payment data, PAN/CVV, tokens, or notification contents in the readiness ledger.
 
-Deactivate the Business immediately for an incident, material readiness failure, revoked Site Activation, or provider-configuration drift. Deactivation stops new Booking attempts only. It does not delete operational history, cancel anything in Mindbody, repeat a provider write, or change an existing Booking outcome.
+Every enum value in `class_pilot_evidence_kind` is mandatory:
 
-After rollback:
+1. `site_activation` — Mindbody confirms Revvi's application for the exact Site and environment.
+2. `api_product_use_case` — Mindbody confirms the Public API / Consumer Booking product and the exact Revvi Class use case.
+3. `commercial_terms` and `chargeable_locations` — the effective commercial schedule and typed `chargeable_location_count` cover the Location.
+4. `endpoint_permissions` — the real auth matrix proves every read/write/reconciliation endpoint used by the selected mode.
+5. `retention_classification` — written retention treatment covers the operational ledger and diagnostics.
+6. `signed_offer_terms` — the partner approved Revvi-only terms on the existing approved Classes.
+7. `memberstack_plan_eligibility` — exact eligible plans pass and an inactive/unrelated plan fails closed.
+8. `class_inventory_allowlist` — only the approved Class taxonomy is returned.
+9. `timezone_currency_tax`, `pricing_restrictions`, `required_client_fields`, and `notification_behavior` — observed Business rules and accepted limitations are recorded.
+10. `eligible_availability`, `ineligible_revvi_customer_denial`, and `out_of_allowlist_denial` — Revvi Customer-facing boundaries are exercised.
+11. `client_resolution` — unique match/create plus ambiguous/conflict paths are exercised without guessing.
+12. `quote_and_requote` — the client-aware quote, expiry, recalculation, and changed-total reconfirmation are exercised.
+13. `authoritative_booking` — Webflow completion is matched to the exact Mindbody Class roster/Visit and the selected mode's payment, entitlement, or approved-unpaid evidence.
+14. `cancellation_convergence`, `unknown_convergence`, and `webhook_convergence` — drills converge by authoritative reads without replay or false success.
+15. `diagnostic_expiry` — the 48-hour diagnostic purge is observed.
+16. `support_process` and `rollback_drill` — ownership, alerting, manual evidence rules, and fail-closed rollback are exercised.
 
-1. Use the support view to reconcile unknown outcomes before any promotion attempt.
-2. Preserve evidence and audit actions; add new records rather than editing history.
-3. Correct the incident or configuration.
-4. Re-run and re-record all thirteen checks after the deactivation timestamp.
-5. Re-enable only through the normal activation gate. A direct feature-flag override is not a recovery path.
+Record each result through `record_class_pilot_evidence(mapping_id, kind, digest, reference, verifier, observed_at)`. The verifier must identify the responsible operator; the reference must be opaque and safe to retain.
 
-A changed sandbox Site ID is an automatic rollback: the readiness fingerprint is cleared, the tenant flag is disabled, and a system-authored `site_activation_changed` action is recorded.
+## Activate
 
-## Production handoff after Mindbody approval
+Before activation, confirm the readiness query shows no unresolved `pending`, `requires_action`, `cancel_pending`, or `unknown` Booking for the mapping and no queued, processing, or support-bound reconciliation item.
 
-Do not promote or overwrite sandbox evidence for production. Before production activation is implemented, add environment-scoped readiness records so sandbox and production evidence remain separate and immutable. Then complete real Site Activation and repeat the full checklist against the Business's actual Locations, services, availability, payment configuration, transactional messaging, branding, support ownership, isolation, lifecycle, and controlled Booking. Production enablement remains blocked until that separate implementation and verification are complete.
+Call `activate_class_pilot(mapping_id)`. It fails unless configuration, selected-mode proof, inventory dimensions, Memberstack plans, evidence completeness, and operational convergence all pass. On success, re-read both rows:
+
+- `class_pilot_readiness.status = 'active'` for the exact mapping version/environment; and
+- `class_offer_provider_mappings.pilot_write_enabled = true`.
+
+Then perform one fresh eligible Revvi Customer Webflow smoke Booking with a new idempotency key and verify the exact Mindbody roster/Visit. If that final smoke creates an unknown outcome, stop and reconcile it; do not replay the write.
+
+## Fail closed and recover
+
+Call `deactivate_class_pilot(mapping_id, reason)` for an incident, provider/configuration drift, unresolved outcome, lost approval, or rollback. This blocks new provider writes but does not alter or delete existing Bookings.
+
+Call `revoke_class_pilot_evidence(evidence_id, reason)` when any proof expires or is invalidated. Revocation immediately disables the mapping and preserves the old evidence as history. Record a fresh controlled result for that evidence kind and rerun normal activation; never edit the old digest.
+
+A material mapping/version change also closes the gate automatically. So does drift in Site ID, API product, chargeable Location count, provider Location ID, timezone, Offer Location/mode/status, or exact Memberstack plan IDs. Every evidence row and activation binds a digest of those facts; fresh configuration requires fresh evidence. Sandbox evidence never activates production: production has a distinct integration environment and must repeat the complete package.
+
+## Handover record
+
+The pilot handover must include the scoped IDs, evidence-set digest, activation actor/time, selected mode and disabled alternatives, support owner, alert route, rollback owner, known accepted limitations, and links to controlled artifacts. Do not describe the pilot as ready while any external approval or controlled result is missing.
