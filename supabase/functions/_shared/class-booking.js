@@ -1,0 +1,254 @@
+export class BookingOrchestrationError extends Error {
+  constructor(code, message, status = 409, details = {}) {
+    super(message);
+    this.name = "BookingOrchestrationError";
+    this.code = code;
+    this.status = status;
+    this.certainty = details.certainty ?? null;
+    this.providerErrorCode = details.providerErrorCode ?? null;
+  }
+}
+
+const MODES = new Map([
+  ["purchase_pricing_option", "purchase_booking"],
+  ["existing_entitlement", "existing_entitlement_booking"],
+  ["approved_unpaid", "approved_unpaid_booking"],
+]);
+
+function requiredText(value, code, message) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new BookingOrchestrationError(code, message, 422);
+  }
+  return value.trim();
+}
+
+function validateBinding(input, now) {
+  const quote = input?.quote;
+  const context = input?.context;
+  if (!quote || !context || !input?.customer?.id) {
+    throw new BookingOrchestrationError("BOOKING_CONTEXT_INVALID", "The Class Booking context is incomplete.", 500);
+  }
+  if (quote.customerId !== input.customer.id
+    || quote.businessId !== context.business?.id
+    || quote.offerId !== context.offer?.id
+    || quote.mappingId !== context.mapping?.id
+    || quote.mappingVersion !== context.mapping?.version
+    || quote.locationId !== context.location?.id
+    || quote.fulfilmentMode !== context.offer?.fulfilmentMode) {
+    throw new BookingOrchestrationError("QUOTE_BINDING_CHANGED", "The Booking quote no longer matches this Revvi Customer or Offer.", 409);
+  }
+  if (quote.status !== "open") {
+    throw new BookingOrchestrationError("QUOTE_NOT_OPEN", "This Booking quote has already been used.", 409);
+  }
+  const expiresAt = new Date(quote.expiresAt);
+  if (Number.isNaN(expiresAt.getTime()) || expiresAt <= now) {
+    throw new BookingOrchestrationError("QUOTE_EXPIRED", "This Booking quote expired. Select the Class again.", 409);
+  }
+  if (context.mapping.modeEvidenceVerified !== true) {
+    throw new BookingOrchestrationError("FULFILMENT_MODE_NOT_VERIFIED", "This Offer mode has not passed its controlled Mindbody verification.", 503);
+  }
+  if (!MODES.has(quote.fulfilmentMode)) {
+    throw new BookingOrchestrationError("FULFILMENT_MODE_UNSUPPORTED", "This Offer has an unsupported fulfilment mode.", 503);
+  }
+}
+
+async function sha256(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function providerReferences(result = {}) {
+  return {
+    providerVisitId: result.visitId ?? null,
+    providerRosterBookingId: result.rosterBookingId ?? null,
+    providerWaitlistEntryId: result.waitlistEntryId ?? null,
+    providerClientServiceId: result.clientServiceId ?? null,
+    providerServiceProductId: result.serviceProductId ?? null,
+    providerSaleId: result.saleId ?? null,
+    providerCartId: result.cartId ?? null,
+    providerTransactionId: result.transactionId ?? null,
+    providerPaymentId: result.paymentId ?? null,
+  };
+}
+
+function hasConfirmationEvidence(result) {
+  return Boolean(result?.visitId
+    || result?.rosterBookingId
+    || (result?.atomicCheckoutConfirmed === true && result?.saleId && result?.transactionId));
+}
+
+function modeEvidenceMatches(result, quote) {
+  if (quote?.fulfilmentMode === "existing_entitlement") {
+    return result?.clientServiceId != null
+      && String(result.clientServiceId) === String(quote.providerClientServiceId);
+  }
+  if (quote?.fulfilmentMode === "approved_unpaid") return result?.clientServiceId == null;
+  if (quote?.fulfilmentMode === "purchase_pricing_option") {
+    return result?.serviceProductId != null
+      && String(result.serviceProductId) === String(quote.providerServiceProductId);
+  }
+  return true;
+}
+
+function normalizeProviderOutcome(result, quote) {
+  if (result?.status === "waitlisted" && result.waitlistEntryId) {
+    return { status: "waitlisted", attemptStatus: "confirmed", certainty: "provider_confirmed" };
+  }
+  if (result?.status === "confirmed"
+    && result.certainty === "provider_confirmed"
+    && hasConfirmationEvidence(result)
+    && modeEvidenceMatches(result, quote)) {
+    return { status: "confirmed", attemptStatus: "confirmed", certainty: "provider_confirmed" };
+  }
+  if (result?.status === "requires_action"
+    && result?.certainty === "provider_confirmed"
+    && result?.requiredAction?.type === "redirect"
+    && /^https:\/\//i.test(result.requiredAction.url ?? "")) {
+    return { status: "requires_action", attemptStatus: "requires_action", certainty: "provider_confirmed" };
+  }
+  if (result?.status === "failed" && result?.certainty === "provider_rejected") {
+    return { status: "failed", attemptStatus: "failed", certainty: "provider_rejected" };
+  }
+  return { status: "unknown", attemptStatus: "unknown", certainty: "unknown" };
+}
+
+function publicResult(stored) {
+  return {
+    booking: stored.booking,
+    attempt: stored.attempt,
+  };
+}
+
+async function persistOutcome(claim, outcome, result, input, dependencies) {
+  const unknown = outcome.status === "unknown";
+  const paidPaymentStatus = result?.paymentStatus ?? ({
+    confirmed: "paid",
+    requires_action: "requires_action",
+    failed: "failed",
+    unknown: "unknown",
+  }[outcome.status] ?? "unknown");
+  const stored = await dependencies.catalogue.completeAttempt({
+    businessId: input.quote.businessId,
+    bookingId: claim.booking.id,
+    attemptId: claim.attempt.id,
+    writeToken: claim.writeToken,
+    status: outcome.status,
+    attemptStatus: outcome.attemptStatus,
+    paymentStatus: input.quote.fulfilmentMode === "purchase_pricing_option" ? paidPaymentStatus : "not_required",
+    providerRequestId: result?.providerRequestId ?? null,
+    providerReferences: providerReferences(result),
+    requiredAction: outcome.status === "requires_action" ? result.requiredAction : null,
+    errorCode: result?.errorCode ?? null,
+    errorMessage: result?.errorMessage ?? null,
+    releaseWriteLock: !new Set(["unknown", "requires_action"]).has(outcome.status),
+  });
+  if (unknown) {
+    await dependencies.catalogue.enqueueReconciliation({
+      businessId: input.quote.businessId,
+      bookingId: claim.booking.id,
+      attemptId: claim.attempt.id,
+      reasonCode: result?.errorCode ?? "PROVIDER_OUTCOME_UNKNOWN",
+    });
+  }
+  return publicResult(stored);
+}
+
+export async function createClassBooking(input, dependencies) {
+  const idempotencyKey = requiredText(
+    input?.idempotencyKey,
+    "INVALID_IDEMPOTENCY_KEY",
+    "A Class Booking idempotency key is required.",
+  );
+  const existing = await dependencies.catalogue.findAttempt({
+    customerId: input?.customer?.id,
+    idempotencyKey,
+  });
+  if (existing) return publicResult(existing);
+
+  const now = dependencies.now();
+  validateBinding(input, now);
+  const revalidated = await dependencies.revalidateQuote({ quote: input.quote, context: input.context });
+  if (typeof dependencies.authorizeWrite === "function") await dependencies.authorizeWrite();
+  const requestFingerprint = await sha256(JSON.stringify({
+    quoteFingerprint: input.quote.quoteFingerprint,
+    customerId: input.customer.id,
+    classId: input.quote.classId,
+    fulfilmentMode: input.quote.fulfilmentMode,
+    clientServiceId: input.quote.providerClientServiceId,
+    serviceProductId: input.quote.providerServiceProductId,
+  }));
+  const claim = await dependencies.catalogue.claimAttempt({
+    quote: input.quote,
+    occurrence: revalidated.occurrence,
+    idempotencyKey,
+    requestFingerprint,
+    attemptType: MODES.get(input.quote.fulfilmentMode),
+  });
+  if (!claim?.shouldWrite) return publicResult(claim);
+
+  const provider = typeof dependencies.createProvider === "function"
+    ? dependencies.createProvider({ booking: claim.booking, attempt: claim.attempt })
+    : dependencies.provider;
+  let result;
+  try {
+    result = await provider.createBooking({
+      mode: input.quote.fulfilmentMode,
+      siteId: input.quote.providerSiteId,
+      locationId: input.quote.providerLocationId,
+      classId: input.quote.classId,
+      clientId: input.quote.providerClientId,
+      uniqueClientId: input.quote.providerClientUniqueId,
+      clientServiceId: input.quote.providerClientServiceId,
+      serviceProductId: input.quote.providerServiceProductId,
+      idempotencyKey,
+    });
+  } catch (error) {
+    const rejected = error?.certainty === "provider_rejected";
+    result = {
+      status: rejected ? "failed" : "unknown",
+      certainty: rejected ? "provider_rejected" : "unknown",
+      errorCode: error?.providerErrorCode ?? error?.code ?? (rejected ? "PROVIDER_REJECTED" : "PROVIDER_OUTCOME_UNKNOWN"),
+      errorMessage: rejected ? "Mindbody rejected the Class Booking." : "Mindbody may have accepted the Class Booking.",
+    };
+  }
+  return persistOutcome(claim, normalizeProviderOutcome(result, input.quote), result, input, dependencies);
+}
+
+export async function reconcileClassBooking(input, dependencies) {
+  if (!input?.booking?.id || !input?.attempt?.id || !input?.quote?.id) {
+    throw new BookingOrchestrationError("RECONCILIATION_CONTEXT_INVALID", "The Class Booking reconciliation context is incomplete.", 500);
+  }
+  if (!new Set(["pending", "unknown"]).has(input.booking.status)
+    || !new Set(["pending", "unknown"]).has(input.attempt.status)) {
+    return { booking: input.booking, attempt: input.attempt };
+  }
+  let result;
+  try {
+    result = await dependencies.provider.reconcileBooking({
+      siteId: input.quote.providerSiteId,
+      classId: input.quote.classId,
+      clientId: input.quote.providerClientId,
+      uniqueClientId: input.quote.providerClientUniqueId,
+      clientServiceId: input.quote.providerClientServiceId,
+      serviceProductId: input.quote.providerServiceProductId,
+      saleId: input.booking.providerSaleId,
+      transactionId: input.booking.providerTransactionId,
+      webhookEvidence: input.webhookEvidence,
+    });
+  } catch {
+    return { booking: input.booking, attempt: input.attempt };
+  }
+  const outcome = normalizeProviderOutcome(result, input.quote);
+  if (outcome.status === "unknown" || outcome.status === "requires_action") {
+    return { booking: input.booking, attempt: input.attempt };
+  }
+  return dependencies.catalogue.completeReconciliation({
+    businessId: input.quote.businessId,
+    bookingId: input.booking.id,
+    attemptId: input.attempt.id,
+    writeToken: input.writeToken,
+    status: outcome.status,
+    providerReferences: providerReferences(result),
+    errorCode: result?.errorCode ?? null,
+  });
+}
