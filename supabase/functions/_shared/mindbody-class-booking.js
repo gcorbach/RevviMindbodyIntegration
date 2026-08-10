@@ -20,6 +20,10 @@ export class MindbodyClassBookingError extends Error {
 const BOOKING_ENDPOINTS = Object.freeze({
   createBooking: "class/addclienttoclass",
   reconcileBooking: "class/reconciliation",
+  cancelBooking: "class/cancellation",
+  reconcileCancellation: "class/cancellation-reconciliation",
+  readEntitlementState: "client/clientservices",
+  reconcileEntitlementRestoration: "client/clientservices",
 });
 
 function queryParameters(query) {
@@ -48,6 +52,11 @@ function visitFact(value) {
     clientId: text(value.ClientId ?? value.Client?.Id ?? value.clientId),
     clientServiceId: text(value.ServiceId ?? value.ClientServiceId ?? value.ClientService?.Id),
     rosterBookingId: text(value.BookingId ?? value.ClassRosterBookingId),
+    cancelled: value.Cancelled === true
+      || value.IsCancelled === true
+      || ["CANCELLED", "LATECANCELLED", "LATE_CANCELLED"].includes(
+        text(value.Status ?? value.AppointmentStatus)?.toUpperCase(),
+      ),
   };
 }
 
@@ -57,6 +66,7 @@ function waitlistFact(value) {
     waitlistEntryId: id(value),
     classId: text(value.ClassId ?? value.Class?.Id ?? value.classId),
     clientId: text(value.ClientId ?? value.Client?.Id ?? value.clientId),
+    cancelled: value.Cancelled === true || value.IsCancelled === true,
   };
 }
 
@@ -67,6 +77,11 @@ function exactFact(fact, input) {
 
 function array(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function paginationTotal(envelope) {
+  const total = Number(envelope?.PaginationResponse?.TotalResults);
+  return Number.isSafeInteger(total) && total >= 0 ? total : null;
 }
 
 function scheduleVisits(envelope) {
@@ -204,6 +219,59 @@ export function createMindbodyClassBookingClient(options) {
     body,
   });
 
+  async function getAll(path, query, collection) {
+    const items = [];
+    for (let page = 0; page < 10; page += 1) {
+      const envelope = await request(path, {
+        query: { ...query, Limit: 100, Offset: page * 100 },
+      });
+      const pageItems = array(envelope?.[collection]);
+      items.push(...pageItems);
+      const total = paginationTotal(envelope);
+      if ((total !== null && items.length >= total) || (total === null && pageItems.length < 100)) {
+        return items;
+      }
+    }
+    throw new MindbodyClassBookingError(
+      "Mindbody Class Booking reconciliation exceeded the safe paging limit.",
+      { endpointName: path, statusCode: 200, errorCode: "PAGE_LIMIT_EXCEEDED" },
+      undefined,
+      { code: "PAGE_LIMIT_EXCEEDED", certainty: "unknown" },
+    );
+  }
+
+  async function readEntitlementState(input) {
+    const classId = requiredMindbodyText(input?.classId, "classId");
+    const clientId = requiredMindbodyText(input?.clientId, "clientId");
+    const clientServiceId = requiredMindbodyText(input?.clientServiceId, "clientServiceId");
+    let services;
+    try {
+      services = await getAll(
+        "client/clientservices",
+        { ClientId: clientId, ClassId: classId },
+        "ClientServices",
+      );
+    } catch (error) {
+      return {
+        status: "unknown",
+        clientServiceId,
+        errorCode: error?.code ?? "ENTITLEMENT_RESTORATION_READ_UNAVAILABLE",
+      };
+    }
+    const service = services.find((candidate) => id(candidate) === clientServiceId);
+    if (!service) return { status: "missing", clientServiceId };
+    const remaining = service.Remaining == null ? null : Number(service.Remaining);
+    return {
+      status: "observed",
+      observedAt: new Date().toISOString(),
+      clientServiceId,
+      current: service.Current === true,
+      returned: service.Returned === true,
+      unlimited: service.Unlimited === true,
+      remaining: Number.isFinite(remaining) ? remaining : null,
+    };
+  }
+
   return Object.freeze({
     async createBooking(input) {
       const mode = requiredMindbodyText(input?.mode, "mode");
@@ -318,6 +386,134 @@ export function createMindbodyClassBookingClient(options) {
       if (webhookEvidence) return webhookEvidence;
       if (financialEvidence) return financialEvidence;
       return { status: "unknown", certainty: "unknown" };
+    },
+
+    async cancelBooking(input) {
+      const classId = requiredMindbodyText(input?.classId, "classId");
+      const clientId = requiredMindbodyText(input?.clientId, "clientId");
+      const removalType = requiredMindbodyText(input?.removalType, "removalType");
+      if (removalType === "waitlist") {
+        const waitlistEntryId = requiredMindbodyText(input?.waitlistEntryId, "waitlistEntryId");
+        await request("class/removefromwaitlist", {
+          method: "POST",
+          body: { Id: waitlistEntryId },
+        });
+        return { status: "accepted", certainty: "unverified", waitlistEntryId };
+      }
+      if (removalType !== "roster") {
+        throw new TypeError("removalType must be roster or waitlist.");
+      }
+      const visitId = requiredMindbodyText(input?.visitId, "visitId");
+      await request("class/removeclientfromclass", {
+        method: "POST",
+        body: {
+          ClientId: clientId,
+          ClassId: classId,
+          VisitId: visitId,
+          SendEmail: sendProviderEmail,
+        },
+      });
+      return { status: "accepted", certainty: "unverified", visitId };
+    },
+
+    async reconcileCancellation(input) {
+      const classId = requiredMindbodyText(input?.classId, "classId");
+      const clientId = requiredMindbodyText(input?.clientId, "clientId");
+      const removalType = requiredMindbodyText(input?.removalType, "removalType");
+      if (removalType === "waitlist") {
+        const waitlistEntryId = requiredMindbodyText(input?.waitlistEntryId, "waitlistEntryId");
+        let entries;
+        try {
+          entries = await getAll(
+            "class/waitlistentries",
+            { ClassIds: [classId], ClientIds: [clientId] },
+            "WaitlistEntries",
+          );
+        } catch {
+          return {
+            status: "unknown",
+            certainty: "unknown",
+            errorCode: "CANCELLATION_RECONCILIATION_UNAVAILABLE",
+          };
+        }
+        const exactWaitlist = entries
+          .map(waitlistFact)
+          .filter(Boolean)
+          .find((entry) => entry.waitlistEntryId === waitlistEntryId
+            && exactFact(entry, { classId, clientId }));
+        if (exactWaitlist && !exactWaitlist.cancelled) {
+          return { status: "active", certainty: "provider_confirmed", ...exactWaitlist };
+        }
+        return {
+          status: "cancelled",
+          certainty: "provider_confirmed",
+          waitlistEntryId,
+          authoritativeCancelled: true,
+        };
+      }
+      if (removalType !== "roster") throw new TypeError("removalType must be roster or waitlist.");
+      const visitId = requiredMindbodyText(input?.visitId, "visitId");
+      const settled = await Promise.allSettled([
+        getAll("client/clientschedule", { ClientIds: [clientId] }, "Classes"),
+        getAll("client/clientvisits", { ClientId: clientId }, "Visits"),
+        getAll("class/classvisits", { ClassId: classId }, "Visits"),
+      ]);
+      if (settled.some((result) => result.status !== "fulfilled")) {
+        return {
+          status: "unknown",
+          certainty: "unknown",
+          errorCode: "CANCELLATION_RECONCILIATION_UNAVAILABLE",
+        };
+      }
+      const exactVisits = [
+        ...scheduleVisits({ Classes: settled[0].value }),
+        ...settled[1].value.map(visitFact),
+        ...settled[2].value.map(visitFact),
+      ].filter((visit) => visit && visit.visitId === visitId
+        && exactFact(visit, { classId, clientId }));
+      if (exactVisits.some((visit) => !visit.cancelled)) {
+        return { status: "active", certainty: "provider_confirmed", ...exactVisits[0] };
+      }
+      return {
+        status: "cancelled",
+        certainty: "provider_confirmed",
+        visitId,
+        authoritativeCancelled: true,
+      };
+    },
+
+    readEntitlementState,
+
+    async reconcileEntitlementRestoration(input) {
+      const baseline = input?.baseline;
+      const after = await readEntitlementState(input);
+      const comparable = baseline?.status === "observed"
+        && after.status === "observed"
+        && baseline.clientServiceId === after.clientServiceId
+        && baseline.current === true
+        && baseline.returned === false
+        && after.current === true
+        && after.returned === false
+        && baseline.unlimited === false
+        && after.unlimited === false
+        && Number.isFinite(baseline.remaining)
+        && Number.isFinite(after.remaining);
+      if (comparable && after.remaining > baseline.remaining) {
+        return {
+          status: "confirmed",
+          certainty: "provider_confirmed",
+          clientServiceId: after.clientServiceId,
+          remainingBefore: baseline.remaining,
+          remainingAfter: after.remaining,
+          errorCode: null,
+        };
+      }
+      return {
+        status: "unknown",
+        certainty: "unknown",
+        clientServiceId: after.clientServiceId ?? baseline?.clientServiceId ?? null,
+        errorCode: after.errorCode ?? "ENTITLEMENT_RESTORATION_NOT_PROVEN",
+      };
     },
   });
 }

@@ -1,0 +1,27 @@
+<link rel="stylesheet" href="/assets/revvi-booking.css">
+
+<section
+  data-revvi-booking-history
+  data-upcoming-endpoint="SUPABASE_FUNCTIONS_URL/upcoming-bookings"
+  data-cancellation-endpoint="SUPABASE_FUNCTIONS_URL/cancel-booking"
+>
+  <h2>Your upcoming Classes</h2>
+  <p data-history-loading hidden>Loading your upcoming Bookingsâ€¦</p>
+  <p data-history-error hidden></p>
+  <p data-history-empty hidden>You have no upcoming Class Bookings.</p>
+  <section data-history-result hidden></section>
+  <section data-history-bookings></section>
+
+  <template data-history-booking-template>
+    <article data-history-booking>
+      <h3 data-history-class></h3>
+      <span data-history-business></span>
+      <span data-history-time></span>
+      <span data-history-location></span>
+      <span data-history-status></span>
+      <button type="button" data-history-cancel>Request cancellation</button>
+    </article>
+  </template>
+</section>
+
+<script src="/assets/revvi-booking.js" defer></script>

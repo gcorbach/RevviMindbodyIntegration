@@ -328,3 +328,128 @@ test("reconciliation propagates provider failure when every evidence read fails"
     /temporarily unavailable|provider unavailable/i,
   );
 });
+
+test("Class cancellation uses the exact Visit and waitlist entry without enabling provider email", async () => {
+  const calls = [];
+  const client = createMindbodyClassBookingClient(options(async (url, init) => {
+    calls.push({ path: new URL(url).pathname, body: JSON.parse(init.body) });
+    return response({});
+  }));
+  await client.cancelBooking({
+    removalType: "roster", classId: "771", clientId: "rss-1", visitId: "visit-1",
+  });
+  await client.cancelBooking({
+    removalType: "waitlist", classId: "771", clientId: "rss-1", waitlistEntryId: "wait-1",
+  });
+  assert.deepEqual(calls, [
+    {
+      path: "/public/v6/class/removeclientfromclass",
+      body: { ClientId: "rss-1", ClassId: "771", VisitId: "visit-1", SendEmail: false },
+    },
+    { path: "/public/v6/class/removefromwaitlist", body: { Id: "wait-1" } },
+  ]);
+});
+
+test("cancellation reconciliation requires complete authoritative reads before claiming absence", async () => {
+  let active = true;
+  const client = createMindbodyClassBookingClient(options(async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/client/clientvisits")) {
+      return response(active ? { Visits: [{ Id: "visit-1", ClassId: 771, ClientId: "rss-1" }] } : {});
+    }
+    return response({});
+  }));
+  const input = { removalType: "roster", classId: "771", clientId: "rss-1", visitId: "visit-1" };
+  const present = await client.reconcileCancellation(input);
+  assert.equal(present.status, "active");
+  active = false;
+  const absent = await client.reconcileCancellation(input);
+  assert.equal(absent.status, "cancelled");
+  assert.equal(absent.authoritativeCancelled, true);
+
+  const partial = createMindbodyClassBookingClient(options(async (url) => {
+    if (new URL(url).pathname.endsWith("/class/classvisits")) {
+      throw new DOMException("timed out", "TimeoutError");
+    }
+    return response({});
+  }));
+  const unknown = await partial.reconcileCancellation(input);
+  assert.equal(unknown.status, "unknown");
+  assert.equal(unknown.errorCode, "CANCELLATION_RECONCILIATION_UNAVAILABLE");
+});
+
+test("cancellation reconciliation follows pagination before treating an exact Visit as absent", async () => {
+  const offsets = [];
+  const client = createMindbodyClassBookingClient(options(async (url) => {
+    const requestUrl = new URL(url);
+    const path = requestUrl.pathname;
+    const offset = Number(requestUrl.searchParams.get("Offset"));
+    if (path.endsWith("/client/clientvisits")) {
+      offsets.push(offset);
+      if (offset === 0) {
+        return response({
+          Visits: Array.from({ length: 100 }, (_, index) => ({
+            Id: `other-${index}`, ClassId: 771, ClientId: "rss-1",
+          })),
+          PaginationResponse: { TotalResults: 101 },
+        });
+      }
+      return response({
+        Visits: [{ Id: "visit-1", ClassId: 771, ClientId: "rss-1" }],
+        PaginationResponse: { TotalResults: 101 },
+      });
+    }
+    if (path.endsWith("/client/clientschedule")) {
+      return response({ Classes: [], PaginationResponse: { TotalResults: 0 } });
+    }
+    return response({ Visits: [], PaginationResponse: { TotalResults: 0 } });
+  }));
+  const result = await client.reconcileCancellation({
+    removalType: "roster", classId: "771", clientId: "rss-1", visitId: "visit-1",
+  });
+  assert.equal(result.status, "active");
+  assert.deepEqual(offsets, [0, 100]);
+});
+
+test("entitlement restoration re-reads only the exact ClientService", async () => {
+  let remaining = 8;
+  const client = createMindbodyClassBookingClient(options(async () => response({
+    ClientServices: [
+      { Id: "other", Current: true, Remaining: 10 },
+      { Id: "service-1", Current: true, Remaining: remaining, Returned: false, Unlimited: false },
+    ],
+    PaginationResponse: { TotalResults: 2 },
+  })));
+  const input = { classId: "771", clientId: "rss-1", clientServiceId: "service-1" };
+  const baseline = await client.readEntitlementState(input);
+  assert.equal(baseline.status, "observed");
+  assert.equal(baseline.remaining, 8);
+
+  const unchanged = await client.reconcileEntitlementRestoration({ ...input, baseline });
+  assert.equal(unchanged.status, "unknown");
+  assert.equal(unchanged.errorCode, "ENTITLEMENT_RESTORATION_NOT_PROVEN");
+
+  remaining = 9;
+  const restored = await client.reconcileEntitlementRestoration({ ...input, baseline });
+  assert.equal(restored.status, "confirmed");
+  assert.equal(restored.remainingBefore, 8);
+  assert.equal(restored.remainingAfter, 9);
+
+  const missingBaseline = await client.reconcileEntitlementRestoration(input);
+  assert.equal(missingBaseline.status, "unknown");
+});
+
+test("waitlist reconciliation confirms removal only after the exact entry disappears", async () => {
+  let present = true;
+  const client = createMindbodyClassBookingClient(options(async () => response({
+    WaitlistEntries: present ? [{ Id: "wait-1", ClassId: 771, ClientId: "rss-1" }] : [],
+  })));
+  const input = {
+    removalType: "waitlist", classId: "771", clientId: "rss-1", waitlistEntryId: "wait-1",
+  };
+  assert.equal((await client.reconcileCancellation(input)).status, "active");
+  present = false;
+  const removed = await client.reconcileCancellation(input);
+  assert.equal(removed.status, "cancelled");
+  assert.equal(removed.authoritativeCancelled, true);
+});

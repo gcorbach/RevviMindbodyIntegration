@@ -1,6 +1,8 @@
 import { mountBookingWidget } from "./widget.js";
+import { mountBookingHistoryWidgets } from "./history.js";
 
 export { mountBookingWidget } from "./widget.js";
+export { mountBookingHistory, mountBookingHistoryWidgets } from "./history.js";
 
 export function mountBookingWidgets(documentRoot = document) {
   return [...documentRoot.querySelectorAll("[data-revvi-booking]")]
@@ -23,7 +25,11 @@ export function mountBookingWidgets(documentRoot = document) {
 }
 
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => mountBookingWidgets(), { once: true });
+  document.addEventListener("DOMContentLoaded", () => {
+    mountBookingWidgets();
+    mountBookingHistoryWidgets();
+  }, { once: true });
 } else {
   mountBookingWidgets();
+  mountBookingHistoryWidgets();
 }

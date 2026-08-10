@@ -20,6 +20,8 @@ var RevviBooking = (() => {
   // webflow/src/index.js
   var index_exports = {};
   __export(index_exports, {
+    mountBookingHistory: () => mountBookingHistory,
+    mountBookingHistoryWidgets: () => mountBookingHistoryWidgets,
     mountBookingWidget: () => mountBookingWidget,
     mountBookingWidgets: () => mountBookingWidgets
   });
@@ -74,7 +76,7 @@ var RevviBooking = (() => {
     }
     if (!response.ok || envelope?.ok !== true || !envelope?.data) {
       throw new BookingWidgetRequestError({
-        code: typeof envelope?.code === "string" ? envelope.code : "REQUEST_FAILED",
+        code: typeof envelope?.error?.code === "string" ? envelope.error.code : typeof envelope?.code === "string" ? envelope.code : "REQUEST_FAILED",
         status: response.status,
         retryable: response.status === 429 || response.status >= 500
       });
@@ -85,7 +87,9 @@ var RevviBooking = (() => {
     fetcher = window.fetch.bind(window),
     availabilityEndpoint = "/functions/v1/offer-class-availability",
     quoteEndpoint = "/functions/v1/booking-quote",
-    bookingEndpoint = "/functions/v1/create-booking"
+    bookingEndpoint = "/functions/v1/create-booking",
+    upcomingEndpoint = "/functions/v1/upcoming-bookings",
+    cancellationEndpoint = "/functions/v1/cancel-booking"
   } = {}) {
     return Object.freeze({
       async availability(authorization, context) {
@@ -111,6 +115,18 @@ var RevviBooking = (() => {
         bookingEndpoint,
         authorization,
         { quoteId, idempotencyKey }
+      ),
+      upcomingBookings: (authorization, limit = 20) => postJson(
+        fetcher,
+        upcomingEndpoint,
+        authorization,
+        { limit }
+      ),
+      cancelBooking: (authorization, bookingId, reason) => postJson(
+        fetcher,
+        cancellationEndpoint,
+        authorization,
+        { bookingId, reason }
       )
     });
   }
@@ -568,6 +584,138 @@ var RevviBooking = (() => {
     return Object.freeze({ refresh: loadAvailability });
   }
 
+  // webflow/src/history.js
+  function element2(root, selector) {
+    const value = root.querySelector(selector);
+    if (!value) throw new Error(`Revvi Booking history markup is missing ${selector}.`);
+    return value;
+  }
+  function formatDateTime2(value, timezone) {
+    try {
+      return new Intl.DateTimeFormat(void 0, {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: timezone
+      }).format(new Date(value));
+    } catch {
+      return "Time to be confirmed";
+    }
+  }
+  function cancellationLabel(booking) {
+    if (booking.cancellationState === "requestable") return "Cancellation available";
+    if (booking.cancellationState === "pending") return "Cancellation is being reconciled";
+    if (booking.cancellationState === "unsupported") return "Contact Revvi support to cancel";
+    return "Cancellation unavailable";
+  }
+  function mountBookingHistory(root, dependencies = {}) {
+    const browser = dependencies.browser ?? window;
+    const list = element2(root, "[data-history-bookings]");
+    const template = element2(root, "[data-history-booking-template]");
+    const loading = element2(root, "[data-history-loading]");
+    const errorView = element2(root, "[data-history-error]");
+    const empty = element2(root, "[data-history-empty]");
+    const resultView = element2(root, "[data-history-result]");
+    const api = dependencies.api ?? createBookingWidgetApi({
+      fetcher: dependencies.fetcher ?? browser.fetch.bind(browser),
+      upcomingEndpoint: root.dataset.upcomingEndpoint,
+      cancellationEndpoint: root.dataset.cancellationEndpoint
+    });
+    const authenticate = dependencies.authenticate ?? (() => createMemberstackAuthorizationHeader(browser));
+    let authorization;
+    const activeCancellations = /* @__PURE__ */ new Set();
+    function show(view) {
+      loading.hidden = view !== "loading";
+      errorView.hidden = view !== "error";
+      empty.hidden = view !== "empty";
+    }
+    function result(message, state) {
+      resultView.hidden = false;
+      resultView.dataset.historyResult = state;
+      resultView.textContent = message;
+    }
+    async function cancel(booking, button) {
+      if (activeCancellations.has(booking.id)) return;
+      if (!browser.confirm("Request cancellation of this Class Booking? Refund and pass restoration are handled separately.")) return;
+      activeCancellations.add(booking.id);
+      button.disabled = true;
+      button.textContent = "Requesting cancellation\xE2\u20AC\xA6";
+      try {
+        const cancellation = await api.cancelBooking(
+          authorization,
+          booking.id,
+          "Revvi Customer requested cancellation"
+        );
+        if (cancellation.status === "cancelled") {
+          result(
+            `Cancellation confirmed. Refund: ${cancellation.refund ?? "not requested"}. Pass restoration: ${cancellation.passRestoration ?? "unknown"}.`,
+            "cancelled"
+          );
+        } else if (cancellation.status === "unknown") {
+          result(
+            "Cancellation outcome is unknown. Do not submit it again; Revvi support is reconciling it. Refund and pass restoration remain unconfirmed.",
+            "unknown"
+          );
+        } else {
+          result(
+            "Mindbody did not confirm cancellation. The Booking remains active; no refund or pass restoration is claimed.",
+            "failed"
+          );
+        }
+        await load();
+      } catch (error) {
+        result(
+          error instanceof BookingWidgetRequestError ? error.message : "Revvi could not request cancellation safely.",
+          "failed"
+        );
+        button.disabled = false;
+        button.textContent = "Request cancellation";
+      } finally {
+        activeCancellations.delete(booking.id);
+      }
+    }
+    function render(bookings) {
+      list.replaceChildren();
+      for (const booking of bookings) {
+        const fragment = template.content.cloneNode(true);
+        const card = fragment.querySelector("[data-history-booking]");
+        card.dataset.bookingId = booking.id;
+        element2(fragment, "[data-history-class]").textContent = booking.className ?? "Class";
+        element2(fragment, "[data-history-business]").textContent = booking.businessName ?? "";
+        element2(fragment, "[data-history-time]").textContent = formatDateTime2(booking.startAt, booking.timezone);
+        element2(fragment, "[data-history-location]").textContent = booking.locationName ?? "";
+        element2(fragment, "[data-history-status]").textContent = cancellationLabel(booking);
+        const button = element2(fragment, "[data-history-cancel]");
+        button.disabled = booking.cancellationState !== "requestable";
+        if (!button.disabled) button.addEventListener("click", () => cancel(booking, button));
+        list.append(fragment);
+      }
+    }
+    async function load() {
+      show("loading");
+      try {
+        authorization = authorization ?? await authenticate();
+        if (!authorization) throw new MemberstackBrowserAuthenticationError("MEMBERSTACK_TOKEN_MISSING");
+        const data = await api.upcomingBookings(authorization, 20);
+        const bookings = Array.isArray(data?.bookings) ? data.bookings : [];
+        render(bookings);
+        show(bookings.length === 0 ? "empty" : "bookings");
+        root.dataset.historyState = bookings.length === 0 ? "empty" : "ready";
+      } catch (error) {
+        errorView.textContent = error instanceof BookingWidgetRequestError ? error.message : "Sign in to Revvi to view your upcoming Class Bookings.";
+        show("error");
+        root.dataset.historyState = "error";
+      }
+    }
+    void load();
+    return Object.freeze({ reload: load });
+  }
+  function mountBookingHistoryWidgets(documentRoot = document) {
+    return [...documentRoot.querySelectorAll("[data-revvi-booking-history]")].filter((root) => root.dataset.historyMounted !== "true").map((root) => {
+      root.dataset.historyMounted = "true";
+      return mountBookingHistory(root);
+    });
+  }
+
   // webflow/src/index.js
   function mountBookingWidgets(documentRoot = document) {
     return [...documentRoot.querySelectorAll("[data-revvi-booking]")].filter((root) => root.dataset.bookingMounted !== "true").map((root) => {
@@ -586,9 +734,13 @@ var RevviBooking = (() => {
     }).filter(Boolean);
   }
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => mountBookingWidgets(), { once: true });
+    document.addEventListener("DOMContentLoaded", () => {
+      mountBookingWidgets();
+      mountBookingHistoryWidgets();
+    }, { once: true });
   } else {
     mountBookingWidgets();
+    mountBookingHistoryWidgets();
   }
   return __toCommonJS(index_exports);
 })();

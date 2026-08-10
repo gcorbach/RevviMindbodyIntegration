@@ -21,8 +21,11 @@ const localToday = new Intl.DateTimeFormat("en-CA", {
   day: "2-digit",
 }).format(new Date());
 const canonicalEmbed = readFileSync(new URL("../../webflow/embed.html", import.meta.url), "utf8");
+const canonicalHistoryEmbed = readFileSync(new URL("../../webflow/history.html", import.meta.url), "utf8");
 const canonicalWidgetMarkup = canonicalEmbed.match(/<div[\s\S]*<\/div>/)?.[0];
 assert.ok(canonicalWidgetMarkup, "The canonical Webflow embed must contain the widget root.");
+const canonicalHistoryMarkup = canonicalHistoryEmbed.match(/<section[\s\S]*<\/section>/)?.[0];
+assert.ok(canonicalHistoryMarkup, "The canonical Webflow history embed must contain the component root.");
 
 function widgetMarkup(scenario = "available") {
   const scenarioQuery = `?scenario=${encodeURIComponent(scenario)}`;
@@ -148,6 +151,26 @@ async function launchChrome(url, size = "390,844") {
   }
 }
 
+function historyPage() {
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/revvi-booking.css"></head><body>
+    ${canonicalHistoryMarkup
+      .replace("SUPABASE_FUNCTIONS_URL/upcoming-bookings", "/functions/v1/upcoming-bookings")
+      .replace("SUPABASE_FUNCTIONS_URL/cancel-booking", "/functions/v1/cancel-booking")}
+    <script>
+      window.confirm = () => true;
+      window.$memberstackDom = {
+        getCurrentMember: async () => ({ data: { id: 'member-a' } }),
+        getMemberCookie: async () => "memberstack.jwt.signature"
+      };
+      const automation = setInterval(() => {
+        const button = document.querySelector("[data-history-cancel]:not([disabled])");
+        if (button) { button.click(); clearInterval(automation); }
+      }, 20);
+    </script>
+    <script src="/revvi-booking.js"></script>
+  </body></html>`;
+}
+
 test("the Webflow widget shows approved Class times responsively and suppresses double submit", { skip: !chromePath }, async () => {
   const widget = readFileSync(new URL("../../webflow/dist/revvi-booking.js", import.meta.url), "utf8");
   const stylesheet = readFileSync(new URL("../../webflow/dist/revvi-booking.css", import.meta.url), "utf8");
@@ -253,6 +276,61 @@ test("logged-out visitors see no live bookable Class inventory", { skip: !chrome
     assert.match(result.stdout, /Sign in to Revvi/);
     assert.doesNotMatch(result.stdout, /data-class-id="501"/);
     assert.equal(availabilityCalls, 0);
+  } finally {
+    server.closeAllConnections(); server.close();
+  }
+});
+
+test("upcoming Class history cancels once and keeps refund and pass restoration explicitly unconfirmed", { skip: !chromePath }, async () => {
+  const widget = readFileSync(new URL("../../webflow/dist/revvi-booking.js", import.meta.url), "utf8");
+  const stylesheet = readFileSync(new URL("../../webflow/dist/revvi-booking.css", import.meta.url), "utf8");
+  let cancellationCalls = 0;
+  const authorizationHeaders = [];
+  const server = createServer(async (request, response) => {
+    if (request.url === "/revvi-booking.js") { response.writeHead(200, { "content-type": "text/javascript" }); response.end(widget); return; }
+    if (request.url === "/revvi-booking.css") { response.writeHead(200, { "content-type": "text/css" }); response.end(stylesheet); return; }
+    if (request.url === "/functions/v1/upcoming-bookings") {
+      authorizationHeaders.push(request.headers.authorization);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, data: { bookings: [{
+        id: "39000000-0000-4000-8000-000000000001",
+        status: cancellationCalls ? "unknown" : "confirmed",
+        businessName: "Rosebank Yoga", className: "Yoga Flow",
+        startAt: "2026-08-12T16:00:00.000Z", timezone: "Africa/Johannesburg",
+        locationName: "Rosebank Studio",
+        cancellationState: cancellationCalls ? "pending" : "requestable",
+      }] } }));
+      return;
+    }
+    if (request.url === "/functions/v1/cancel-booking") {
+      cancellationCalls += 1;
+      authorizationHeaders.push(request.headers.authorization);
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      assert.equal(body.bookingId, "39000000-0000-4000-8000-000000000001");
+      assert.equal(body.reason, "Revvi Customer requested cancellation");
+      response.writeHead(202, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, data: {
+        bookingId: body.bookingId, status: "unknown",
+        passRestoration: "unknown", refund: "not_requested",
+      } }));
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" }); response.end(historyPage());
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const result = await launchChrome(`http://127.0.0.1:${server.address().port}/history`);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Your upcoming Classes/);
+    assert.match(result.stdout, /Yoga Flow/);
+    assert.match(result.stdout, /Cancellation is being reconciled/);
+    assert.match(result.stdout, /data-history-result="unknown"/);
+    assert.match(result.stdout, /Do not submit it again/);
+    assert.match(result.stdout, /Refund and pass restoration remain unconfirmed/);
+    assert.equal(cancellationCalls, 1);
+    assert.deepEqual([...new Set(authorizationHeaders)], ["Bearer memberstack.jwt.signature"]);
   } finally {
     server.closeAllConnections(); server.close();
   }

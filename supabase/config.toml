@@ -24,6 +24,22 @@ verify_jwt = false
 enabled = true
 verify_jwt = false
 
+[functions.upcoming-bookings]
+enabled = true
+verify_jwt = false
+
+[functions.cancel-booking]
+enabled = true
+verify_jwt = false
+
+[functions.webhooks]
+enabled = true
+verify_jwt = false
+
+[functions.class-lifecycle-worker]
+enabled = true
+verify_jwt = false
+
 # Retained Appointment prototype routes. Every route also has a runtime guard that
 # rejects deployed execution and requires REVVI_APPOINTMENT_PROTOTYPE_ENABLED=true.
 [functions.prototype-appointment-sandbox-check]
