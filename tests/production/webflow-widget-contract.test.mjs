@@ -14,6 +14,7 @@ test("the Webflow markup binds one stable Offer and preselected Location without
   assert.match(embed, /data-booking-location/);
   assert.match(embed, /data-booking-occurrences/);
   assert.match(embed, /data-availability-endpoint="SUPABASE_FUNCTIONS_URL\/offer-class-availability"/);
+  assert.match(embed, /data-payment-completion-endpoint="SUPABASE_FUNCTIONS_URL\/complete-paid-booking"/);
   assert.doesNotMatch(embed, /data-location-select|<select/i);
   assert.doesNotMatch(embed, /data-booking-session|data-session-/i);
 });

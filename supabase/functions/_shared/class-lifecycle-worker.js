@@ -82,6 +82,10 @@ export async function runClassLifecycleWorker(dependencies, limit = 25) {
         classId: context.booking.classId,
         clientId: context.booking.clientId,
         serviceProductId: context.booking.serviceProductId,
+        saleId: context.booking.saleId,
+        cartId: context.booking.cartId,
+        transactionId: context.booking.transactionId,
+        paymentId: context.booking.paymentId,
       });
       if (context.booking.status === "unknown"
         && ["confirmed", "waitlisted"].includes(observation.status)) {

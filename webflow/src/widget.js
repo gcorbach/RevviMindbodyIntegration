@@ -77,6 +77,7 @@ export function mountBookingWidget(root, dependencies = {}) {
     availabilityEndpoint: root.dataset.availabilityEndpoint,
     quoteEndpoint: root.dataset.quoteEndpoint,
     bookingEndpoint: root.dataset.bookingEndpoint,
+    paymentCompletionEndpoint: root.dataset.paymentCompletionEndpoint,
   });
   const authenticate = dependencies.authenticate
     ?? (() => createMemberstackAuthorizationHeader(browser));
@@ -204,6 +205,43 @@ export function mountBookingWidget(root, dependencies = {}) {
     }
   }
 
+  async function completeReturnedPayment() {
+    let returnedBookingId;
+    try {
+      returnedBookingId = new URL(browser.location.href).searchParams.get("booking");
+    } catch {
+      return false;
+    }
+    if (!UUID.test(returnedBookingId ?? "")) return false;
+    requestActive = true;
+    ui.submitting();
+    try {
+      authorization = await authenticate();
+      if (!authorization) {
+        ui.ineligible("Sign in to Revvi to finish checking this paid Booking.");
+        return true;
+      }
+      const data = await api.completePaidBooking(authorization, returnedBookingId);
+      const booking = data?.booking;
+      if (booking?.status === "confirmed") {
+        ui.success({ ...booking, timezone: root.dataset.locationTimezone });
+      } else if (["unknown", "pending", "requires_action", "reconciliation"].includes(booking?.status)) {
+        ui.reconciliation("Your payment and Class Booking are being reconciled. Do not submit another Booking.");
+      } else {
+        ui.error("Mindbody did not confirm this paid Booking.", false);
+      }
+    } catch (error) {
+      if (error instanceof BookingWidgetRequestError && [401, 403].includes(error.status)) {
+        ui.ineligible(error.message);
+      } else {
+        ui.reconciliation("The paid Booking result is not yet known. Do not submit another Booking while Revvi checks Mindbody.");
+      }
+    } finally {
+      requestActive = false;
+    }
+    return true;
+  }
+
   ui.confirmButton.addEventListener("click", submitBooking);
   function resetSelection() {
     selectedOccurrence = null;
@@ -228,6 +266,8 @@ export function mountBookingWidget(root, dependencies = {}) {
   dateInput.addEventListener("change", () => {
     if (!requestActive) void loadAvailability();
   });
-  void loadAvailability();
+  void (async () => {
+    if (!await completeReturnedPayment()) await loadAvailability();
+  })();
   return Object.freeze({ refresh: loadAvailability });
 }

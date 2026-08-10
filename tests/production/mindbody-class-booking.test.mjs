@@ -107,6 +107,102 @@ test("paid purchase stays fail-closed without an approved no-card provider route
   assert.equal(requests, 0);
 });
 
+test("an evidenced alternative-payment route initiates one atomic Class checkout without card fields", async () => {
+  let request;
+  const client = createMindbodyClassBookingClient({
+    ...options(async (url, init) => {
+      request = { url: String(url), init };
+      return response({
+        AccessToken: "opaque-provider-access-token",
+        RedirectUrl: "https://payments.example.test/continue",
+      });
+    }),
+    paidRoute: {
+      type: "mindbody_alternative_payment",
+      paymentMethodId: 801,
+      checkoutLocationId: 98,
+      callbackUrl: "https://api.revvi.example/functions/v1/complete-paid-booking",
+    },
+  });
+
+  const result = await client.createBooking({
+    mode: "purchase_pricing_option",
+    classId: "771",
+    clientId: "rss-1",
+    serviceProductId: "product-1",
+    priceAmount: 115,
+    currency: "ZAR",
+  });
+
+  assert.match(request.url, /\/public\/v6\/sale\/initiatecheckoutshoppingcart$/);
+  const body = JSON.parse(request.init.body);
+  assert.deepEqual(body, {
+    ClientId: "rss-1",
+    Test: false,
+    InStore: false,
+    CalculateTax: true,
+    SendEmail: false,
+    LocationId: 98,
+    PaymentAuthenticationCallbackUrl: "https://api.revvi.example/functions/v1/complete-paid-booking",
+    EnforceLocationRestrictions: true,
+    Items: [{
+      Item: { Type: "Service", Metadata: { Id: "product-1" } },
+      Quantity: 1,
+      ClassIds: [771],
+    }],
+    Payments: [{ PaymentMethodId: 801, Amount: 115 }],
+  });
+  assert.doesNotMatch(JSON.stringify(body), /card|pan|cvv|expiry/i);
+  assert.equal(result.status, "requires_action");
+  assert.equal(result.certainty, "provider_confirmed");
+  assert.deepEqual(result.requiredAction, {
+    type: "redirect",
+    url: "https://payments.example.test/continue",
+  });
+  assert.equal(result.providerAccessToken, "opaque-provider-access-token");
+  assert.equal(result.serviceProductId, "product-1");
+});
+
+test("paid return completes the exact initiated cart but never treats the callback response as success", async () => {
+  let request;
+  const client = createMindbodyClassBookingClient({
+    ...options(async (url, init) => {
+      request = { url: String(url), init };
+      return response({
+        Sale: { Id: "sale-unverified" },
+        Cart: { Id: "cart-unverified" },
+        Transaction: { Id: "transaction-unverified", Status: "Approved" },
+        Payment: { Id: "payment-unverified" },
+      });
+    }),
+    paidRoute: {
+      type: "mindbody_alternative_payment",
+      paymentMethodId: 801,
+      checkoutLocationId: 98,
+      callbackUrl: "https://www.revvi.example/payment-return",
+    },
+  });
+
+  const result = await client.completePaidBooking({
+    paymentRoute: "mindbody_alternative_payment",
+    providerAccessToken: "opaque-provider-access-token",
+    clientId: "rss-1",
+  });
+
+  assert.match(request.url, /\/public\/v6\/sale\/completecheckoutshoppingcart$/);
+  assert.deepEqual(JSON.parse(request.init.body), {
+    AccessToken: "opaque-provider-access-token",
+    ClientId: "rss-1",
+    Test: false,
+  });
+  assert.equal(result.status, "accepted");
+  assert.equal(result.certainty, "unverified");
+  assert.equal(result.saleId, "sale-unverified");
+  assert.equal(result.cartId, "cart-unverified");
+  assert.equal(result.transactionId, "transaction-unverified");
+  assert.equal(result.paymentId, "payment-unverified");
+});
+
 test("provider 4xx rejection is explicit while timeout and 5xx remain unknown", async () => {
   for (const [fetchImpl, certainty] of [
     [async () => response({ Error: { Code: "ClassFull" } }, 400), "provider_rejected"],
@@ -262,37 +358,194 @@ test("approved unpaid reconciliation preserves a matching Sale when Transaction 
   assert.equal(result.transactionId, null);
 });
 
-test("reconciliation accepts exact atomic Sale/Transaction evidence and verified webhook roster evidence", async () => {
+test("paid reconciliation requires exact roster and Sale/Transaction evidence together", async () => {
   const financialClient = createMindbodyClassBookingClient(options(async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/class/classvisits")) return response({ Visits: [{
+      Id: "visit-1", ClassId: 771, ClientId: "rss-1", ServiceId: "client-service-1",
+    }] });
+    if (path.endsWith("/client/clientservices")) return response({ ClientServices: [{
+      Id: "client-service-1", ProductId: "product-1", Current: true,
+    }] });
+    if (path.endsWith("/sale/sales")) return response({ Sales: [{
+      Id: "sale-1", ClientId: "rss-1", ClassIds: ["771"],
+      CartId: "cart-1", PaymentId: "payment-1", Items: [{ ProductId: "product-1" }],
+    }] });
+    if (path.endsWith("/sale/transactions")) return response({ Transactions: [{
+      Id: "txn-1", SaleId: "sale-1", CartId: "cart-1", PaymentId: "payment-1", Status: "Approved",
+    }] });
+    return response({});
+  }));
+  const financial = await financialClient.reconcileBooking({
+    mode: "purchase_pricing_option",
+    classId: "771", clientId: "rss-1", serviceProductId: "product-1",
+    saleId: "sale-1", cartId: "cart-1", transactionId: "txn-1", paymentId: "payment-1",
+  });
+  assert.equal(financial.status, "confirmed");
+  assert.equal(financial.atomicCheckoutConfirmed, true);
+  assert.equal(financial.visitId, "visit-1");
+  assert.equal(financial.clientServiceId, "client-service-1");
+  assert.equal(financial.saleId, "sale-1");
+  assert.equal(financial.cartId, "cart-1");
+  assert.equal(financial.transactionId, "txn-1");
+  assert.equal(financial.paymentId, "payment-1");
+
+  for (const evidenceToOmit of ["roster", "financial", "cart", "payment"]) {
+    const incompleteClient = createMindbodyClassBookingClient(options(async (url) => {
+      const path = new URL(url).pathname;
+      if (evidenceToOmit !== "roster" && path.endsWith("/class/classvisits")) {
+        return response({ Visits: [{
+          Id: "visit-1", ClassId: 771, ClientId: "rss-1", ServiceId: "client-service-1",
+        }] });
+      }
+      if (evidenceToOmit !== "roster" && path.endsWith("/client/clientservices")) {
+        return response({ ClientServices: [{
+          Id: "client-service-1", ProductId: "product-1", Current: true,
+        }] });
+      }
+      if (evidenceToOmit !== "financial" && path.endsWith("/sale/sales")) {
+        return response({ Sales: [{
+          Id: "sale-1", ClientId: "rss-1", ClassIds: ["771"],
+          ...(evidenceToOmit === "cart" ? {} : { CartId: "cart-1" }),
+          ...(evidenceToOmit === "payment" ? {} : { PaymentId: "payment-1" }),
+          Items: [{ ProductId: "product-1" }],
+        }] });
+      }
+      if (evidenceToOmit !== "financial" && path.endsWith("/sale/transactions")) {
+        return response({ Transactions: [{
+          Id: "txn-1", SaleId: "sale-1",
+          ...(evidenceToOmit === "cart" ? {} : { CartId: "cart-1" }),
+          ...(evidenceToOmit === "payment" ? {} : { PaymentId: "payment-1" }),
+          Status: "Approved",
+        }] });
+      }
+      return response({});
+    }));
+    const incomplete = await incompleteClient.reconcileBooking({
+      mode: "purchase_pricing_option",
+      classId: "771", clientId: "rss-1", serviceProductId: "product-1",
+      saleId: "sale-1", cartId: "cart-1", transactionId: "txn-1", paymentId: "payment-1",
+    });
+    assert.equal(incomplete.status, "unknown", `${evidenceToOmit} evidence must be required`);
+  }
+});
+
+test("paid reconciliation never confirms a cancelled Visit", async () => {
+  const client = createMindbodyClassBookingClient(options(async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/class/classvisits")) return response({ Visits: [{
+      Id: "visit-cancelled", ClassId: 771, ClientId: "rss-1",
+      ServiceId: "client-service-1", Cancelled: true,
+    }] });
+    if (path.endsWith("/client/clientservices")) return response({ ClientServices: [{
+      Id: "client-service-1", ProductId: "product-1", Current: true,
+    }] });
+    if (path.endsWith("/sale/sales")) return response({ Sales: [{
+      Id: "sale-1", ClientId: "rss-1", ClassIds: ["771"],
+      CartId: "cart-1", PaymentId: "payment-1", Items: [{ ProductId: "product-1" }],
+    }] });
+    if (path.endsWith("/sale/transactions")) return response({ Transactions: [{
+      Id: "txn-1", SaleId: "sale-1", CartId: "cart-1",
+      PaymentId: "payment-1", Status: "Approved",
+    }] });
+    return response({});
+  }));
+  const result = await client.reconcileBooking({
+    mode: "purchase_pricing_option",
+    classId: "771", clientId: "rss-1", serviceProductId: "product-1",
+    saleId: "sale-1", cartId: "cart-1", transactionId: "txn-1", paymentId: "payment-1",
+  });
+  assert.equal(result.status, "unknown");
+  assert.equal(result.visitId, undefined);
+});
+
+test("paid reconciliation accepts verified webhook roster evidence only with matching financial evidence", async () => {
+  const client = createMindbodyClassBookingClient(options(async (url) => {
     const path = new URL(url).pathname;
     if (path.endsWith("/sale/sales")) return response({ Sales: [{
       Id: "sale-1", ClientId: "rss-1", ClassIds: ["771"],
-      Items: [{ ProductId: "product-1" }],
+      CartId: "cart-1", PaymentId: "payment-1", Items: [{ ProductId: "product-1" }],
+    }] });
+    if (path.endsWith("/sale/transactions")) return response({ Transactions: [{
+      Id: "txn-1", SaleId: "sale-1", CartId: "cart-1", PaymentId: "payment-1", Status: "Approved",
+    }] });
+    if (path.endsWith("/client/clientservices")) return response({ ClientServices: [{
+      Id: "client-service-1", ProductId: "product-1", Current: true,
+    }] });
+    return response({});
+  }));
+  const result = await client.reconcileBooking({
+    mode: "purchase_pricing_option",
+    classId: "771",
+    clientId: "rss-1",
+    serviceProductId: "product-1",
+    saleId: "sale-1",
+    cartId: "cart-1",
+    transactionId: "txn-1",
+    paymentId: "payment-1",
+    webhookEvidence: [{
+      verified: true, type: "class_roster", classId: "771", clientId: "rss-1",
+      rosterBookingId: "roster-1", clientServiceId: "client-service-1",
+    }],
+  });
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.rosterBookingId, "roster-1");
+  assert.equal(result.clientServiceId, "client-service-1");
+  assert.equal(result.saleId, "sale-1");
+  assert.equal(result.cartId, "cart-1");
+  assert.equal(result.transactionId, "txn-1");
+  assert.equal(result.paymentId, "payment-1");
+});
+
+test("paid reconciliation rejects a roster Visit backed by another ClientService Product", async () => {
+  const client = createMindbodyClassBookingClient(options(async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/class/classvisits")) return response({ Visits: [{
+      Id: "visit-1", ClassId: 771, ClientId: "rss-1", ServiceId: "client-service-1",
+    }] });
+    if (path.endsWith("/client/clientservices")) return response({ ClientServices: [{
+      Id: "client-service-1", ProductId: "product-attacker", Current: true,
+    }] });
+    if (path.endsWith("/sale/sales")) return response({ Sales: [{
+      Id: "sale-1", ClientId: "rss-1", ClassIds: ["771"], Items: [{ ProductId: "product-1" }],
     }] });
     if (path.endsWith("/sale/transactions")) return response({ Transactions: [{
       Id: "txn-1", SaleId: "sale-1", Status: "Approved",
     }] });
     return response({});
   }));
-  const financial = await financialClient.reconcileBooking({
+  const result = await client.reconcileBooking({
+    mode: "purchase_pricing_option",
     classId: "771", clientId: "rss-1", serviceProductId: "product-1",
+    saleId: "sale-1", transactionId: "txn-1",
   });
-  assert.equal(financial.status, "confirmed");
-  assert.equal(financial.atomicCheckoutConfirmed, true);
-  assert.equal(financial.saleId, "sale-1");
-  assert.equal(financial.transactionId, "txn-1");
+  assert.equal(result.status, "unknown");
+  assert.equal(result.errorCode, "PAID_PURCHASE_AND_ROSTER_EVIDENCE_INCOMPLETE");
+});
 
-  const webhookClient = createMindbodyClassBookingClient(options(async () => response({})));
-  const webhook = await webhookClient.reconcileBooking({
-    classId: "771",
-    clientId: "rss-1",
-    webhookEvidence: [{
-      verified: true, type: "class_roster", classId: "771", clientId: "rss-1",
-      rosterBookingId: "roster-1",
-    }],
+test("paid reconciliation cannot substitute an older Sale or Transaction", async () => {
+  const client = createMindbodyClassBookingClient(options(async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/class/classvisits")) return response({ Visits: [{
+      Id: "visit-1", ClassId: 771, ClientId: "rss-1", ServiceId: "client-service-1",
+    }] });
+    if (path.endsWith("/client/clientservices")) return response({ ClientServices: [{
+      Id: "client-service-1", ProductId: "product-1", Current: true,
+    }] });
+    if (path.endsWith("/sale/sales")) return response({ Sales: [{
+      Id: "sale-old", ClientId: "rss-1", ClassIds: ["771"], Items: [{ ProductId: "product-1" }],
+    }] });
+    if (path.endsWith("/sale/transactions")) return response({ Transactions: [{
+      Id: "txn-old", SaleId: "sale-old", Status: "Approved",
+    }] });
+    return response({});
+  }));
+  const result = await client.reconcileBooking({
+    mode: "purchase_pricing_option",
+    classId: "771", clientId: "rss-1", serviceProductId: "product-1",
+    saleId: "sale-new", transactionId: "txn-new",
   });
-  assert.equal(webhook.status, "confirmed");
-  assert.equal(webhook.rosterBookingId, "roster-1");
+  assert.equal(result.status, "unknown");
 });
 
 test("reconciliation rejects unverified, mismatched, and incomplete evidence", async () => {

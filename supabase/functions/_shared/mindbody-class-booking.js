@@ -18,7 +18,8 @@ export class MindbodyClassBookingError extends Error {
 }
 
 const BOOKING_ENDPOINTS = Object.freeze({
-  createBooking: "class/addclienttoclass",
+  createBooking: "class-or-sale/create-booking",
+  completePaidBooking: "sale/completecheckoutshoppingcart",
   reconcileBooking: "class/reconciliation",
   cancelBooking: "class/cancellation",
   reconcileCancellation: "class/cancellation-reconciliation",
@@ -38,6 +39,34 @@ function queryParameters(query) {
 
 function text(value) {
   return value == null ? null : String(value).trim() || null;
+}
+
+function positiveInteger(value, name) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number <= 0) {
+    throw new TypeError(`${name} must be a positive Mindbody integer ID.`);
+  }
+  return number;
+}
+
+function money(value, name) {
+  const number = Number(value);
+  const cents = number * 100;
+  if (!Number.isFinite(number) || number <= 0
+    || Math.abs(cents - Math.round(cents)) > 1e-6) {
+    throw new TypeError(`${name} must be a positive two-decimal amount.`);
+  }
+  return number;
+}
+
+function httpsUrl(value) {
+  if (typeof value !== "string" || value.length > 2048) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 function id(value) {
@@ -123,6 +152,8 @@ function saleFact(value) {
   return {
     saleId: id(value),
     clientId: text(value.ClientId ?? value.Client?.Id),
+    cartId: text(value.CartId ?? value.ShoppingCartId ?? value.Cart?.Id ?? value.ShoppingCart?.Id),
+    paymentId: text(value.PaymentId ?? value.Payment?.Id ?? value.Payments?.[0]?.Id),
     classIds,
     productIds,
   };
@@ -133,16 +164,33 @@ function transactionFact(value) {
   return {
     transactionId: id(value),
     saleId: text(value.SaleId ?? value.Sale?.Id),
+    cartId: text(value.CartId ?? value.ShoppingCartId ?? value.Cart?.Id ?? value.ShoppingCart?.Id),
+    paymentId: text(value.PaymentId ?? value.Payment?.Id ?? value.Payments?.[0]?.Id),
     status: text(value.Status ?? value.TransactionStatus)?.toUpperCase() ?? null,
+  };
+}
+
+function clientServiceFact(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    clientServiceId: id(value),
+    serviceProductId: text(value.ProductId ?? value.Product?.Id),
+    current: value.Current === true,
+    returned: value.Returned === true,
   };
 }
 
 function exactSaleState(salesEnvelope, transactionsEnvelope, input) {
   const expectedProductId = text(input.serviceProductId);
+  const expectedSaleId = text(input.saleId);
+  const expectedCartId = text(input.cartId);
+  const expectedTransactionId = text(input.transactionId);
+  const expectedPaymentId = text(input.paymentId);
   const exactSale = array(salesEnvelope?.Sales)
     .map(saleFact)
     .filter(Boolean)
     .find((sale) => sale.saleId
+      && (!expectedSaleId || sale.saleId === expectedSaleId)
       && sale.clientId === String(input.clientId)
       && sale.classIds.includes(String(input.classId))
       && (!expectedProductId || sale.productIds.includes(expectedProductId)));
@@ -150,13 +198,23 @@ function exactSaleState(salesEnvelope, transactionsEnvelope, input) {
   const matchingTransactions = array(transactionsEnvelope?.Transactions)
     .map(transactionFact)
     .filter(Boolean)
-    .filter((transaction) => transaction.transactionId && transaction.saleId === exactSale.saleId);
+    .filter((transaction) => transaction.transactionId
+      && transaction.saleId === exactSale.saleId
+      && (!expectedTransactionId || transaction.transactionId === expectedTransactionId));
   const successfulTransaction = matchingTransactions.find((transaction) => (
     SUCCESSFUL_TRANSACTION_STATUSES.has(transaction.status)
+      && (!expectedCartId
+        || transaction.cartId === expectedCartId
+        || exactSale.cartId === expectedCartId)
+      && (!expectedPaymentId
+        || transaction.paymentId === expectedPaymentId
+        || exactSale.paymentId === expectedPaymentId)
   ));
   return {
     saleId: exactSale.saleId,
+    cartId: successfulTransaction?.cartId ?? exactSale.cartId ?? null,
     transactionId: (successfulTransaction ?? matchingTransactions[0])?.transactionId ?? null,
+    paymentId: successfulTransaction?.paymentId ?? exactSale.paymentId ?? null,
     transactionConfirmed: Boolean(successfulTransaction),
   };
 }
@@ -169,7 +227,9 @@ function exactFinancialEvidence(salesEnvelope, transactionsEnvelope, input) {
     certainty: "provider_confirmed",
     atomicCheckoutConfirmed: true,
     saleId: state.saleId,
+    cartId: state.cartId,
     transactionId: state.transactionId,
+    paymentId: state.paymentId,
     serviceProductId: text(input.serviceProductId),
   };
 }
@@ -206,6 +266,21 @@ export function createMindbodyClassBookingClient(options) {
   requiredMindbodyText(options?.userToken, "userToken");
   const sendProviderEmail = options?.sendProviderEmail === true
     && options?.notificationEvidenceVerified === true;
+  const configuredPaidRoute = options?.paidRoute?.type === "mindbody_alternative_payment"
+    && Number.isSafeInteger(options.paidRoute.paymentMethodId)
+    && options.paidRoute.paymentMethodId > 0
+    && options.paidRoute.checkoutLocationId === 98
+    && httpsUrl(options.paidRoute.callbackUrl)
+    ? Object.freeze({
+      type: options.paidRoute.type,
+      paymentMethodId: options.paidRoute.paymentMethodId,
+      checkoutLocationId: options.paidRoute.checkoutLocationId,
+      callbackUrl: httpsUrl(options.paidRoute.callbackUrl),
+    })
+    : null;
+  const configuredPaidCompletionRoute = options?.paidCompletionRoute === "mindbody_alternative_payment"
+    ? options.paidCompletionRoute
+    : configuredPaidRoute?.type ?? null;
   const transport = createMindbodyJsonTransport({
     ...options,
     unavailableMessage: "Mindbody Class Booking is temporarily unavailable.",
@@ -278,12 +353,61 @@ export function createMindbodyClassBookingClient(options) {
       const classId = requiredMindbodyText(input?.classId, "classId");
       const clientId = requiredMindbodyText(input?.clientId, "clientId");
       if (mode === "purchase_pricing_option") {
-        throw new MindbodyClassBookingError(
-          "No approved no-card Mindbody payment route is configured.",
-          { endpointName: "sale/checkoutshoppingcart", statusCode: null, errorCode: "PAID_ROUTE_NOT_APPROVED" },
-          undefined,
-          { code: "PAID_ROUTE_NOT_APPROVED", certainty: "provider_rejected" },
-        );
+        if (!configuredPaidRoute) {
+          throw new MindbodyClassBookingError(
+            "No approved no-card Mindbody payment route is configured.",
+            { endpointName: "sale/initiatecheckoutshoppingcart", statusCode: null, errorCode: "PAID_ROUTE_NOT_APPROVED" },
+            undefined,
+            { code: "PAID_ROUTE_NOT_APPROVED", certainty: "provider_rejected" },
+          );
+        }
+        const selectedClassId = positiveInteger(classId, "classId");
+        const serviceProductId = requiredMindbodyText(input?.serviceProductId, "serviceProductId");
+        const priceAmount = money(input?.priceAmount, "priceAmount");
+        if (!/^[A-Z]{3}$/.test(requiredMindbodyText(input?.currency, "currency"))) {
+          throw new TypeError("currency must be a three-letter uppercase code.");
+        }
+        const envelope = await request("sale/initiatecheckoutshoppingcart", {
+          method: "POST",
+          body: {
+            ClientId: clientId,
+            Test: false,
+            InStore: false,
+            CalculateTax: true,
+            SendEmail: false,
+            LocationId: configuredPaidRoute.checkoutLocationId,
+            PaymentAuthenticationCallbackUrl: configuredPaidRoute.callbackUrl,
+            EnforceLocationRestrictions: true,
+            Items: [{
+              Item: { Type: "Service", Metadata: { Id: serviceProductId } },
+              Quantity: 1,
+              ClassIds: [selectedClassId],
+            }],
+            Payments: [{
+              PaymentMethodId: configuredPaidRoute.paymentMethodId,
+              Amount: priceAmount,
+            }],
+          },
+        });
+        const redirectUrl = httpsUrl(envelope?.RedirectUrl);
+        const providerAccessToken = text(envelope?.AccessToken);
+        if (!redirectUrl || !providerAccessToken || providerAccessToken.length > 4096) {
+          return {
+            status: "unknown",
+            certainty: "unknown",
+            serviceProductId,
+            errorCode: "PAYMENT_INITIATION_EVIDENCE_MISSING",
+          };
+        }
+        return {
+          status: "requires_action",
+          certainty: "provider_confirmed",
+          paymentStatus: "requires_action",
+          serviceProductId,
+          paymentRoute: configuredPaidRoute.type,
+          providerAccessToken,
+          requiredAction: { type: "redirect", url: redirectUrl },
+        };
       }
       if (mode !== "existing_entitlement" && mode !== "approved_unpaid") {
         throw new MindbodyClassBookingError(
@@ -323,6 +447,42 @@ export function createMindbodyClassBookingClient(options) {
       return { status: "unknown", certainty: "unknown", errorCode: "BOOKING_EVIDENCE_MISSING" };
     },
 
+    async completePaidBooking(input) {
+      if (!configuredPaidCompletionRoute
+        || input?.paymentRoute !== configuredPaidCompletionRoute) {
+        throw new MindbodyClassBookingError(
+          "No approved no-card Mindbody payment route is configured.",
+          { endpointName: "sale/completecheckoutshoppingcart", statusCode: null, errorCode: "PAID_ROUTE_NOT_APPROVED" },
+          undefined,
+          { code: "PAID_ROUTE_NOT_APPROVED", certainty: "provider_rejected" },
+        );
+      }
+      const providerAccessToken = requiredMindbodyText(
+        input?.providerAccessToken,
+        "providerAccessToken",
+      );
+      if (providerAccessToken.length > 4096) {
+        throw new TypeError("providerAccessToken is too long.");
+      }
+      const clientId = requiredMindbodyText(input?.clientId, "clientId");
+      const envelope = await request("sale/completecheckoutshoppingcart", {
+        method: "POST",
+        body: { AccessToken: providerAccessToken, ClientId: clientId, Test: false },
+      });
+      const sale = saleFact(envelope?.Sale ?? envelope?.Sales?.[0]);
+      const transaction = transactionFact(
+        envelope?.Transaction ?? envelope?.Transactions?.[0],
+      );
+      return {
+        status: "accepted",
+        certainty: "unverified",
+        saleId: sale?.saleId ?? null,
+        cartId: id(envelope?.Cart ?? envelope?.ShoppingCart),
+        transactionId: transaction?.transactionId ?? null,
+        paymentId: id(envelope?.Payment ?? envelope?.Payments?.[0]),
+      };
+    },
+
     async reconcileBooking(input) {
       const classId = requiredMindbodyText(input?.classId, "classId");
       const clientId = requiredMindbodyText(input?.clientId, "clientId");
@@ -334,9 +494,13 @@ export function createMindbodyClassBookingClient(options) {
         request("class/waitlistentries", { query: { ClassIds: [classId], ClientIds: [clientId] } }),
         request("sale/sales", { query: { ClientId: clientId } }),
         request("sale/transactions", { query: { ClientId: clientId } }),
+        mode === "purchase_pricing_option"
+          ? request("client/clientservices", { query: { ClientId: clientId, ClassId: classId } })
+          : Promise.resolve({ ClientServices: [] }),
       ];
       const settled = await Promise.allSettled(operations);
-      if (settled.every((result) => result.status === "rejected")) {
+      const providerOperationCount = mode === "purchase_pricing_option" ? 7 : 6;
+      if (settled.slice(0, providerOperationCount).every((result) => result.status === "rejected")) {
         throw settled[0].reason;
       }
       const envelopes = settled.map((result) => result.status === "fulfilled" ? result.value : {});
@@ -345,11 +509,16 @@ export function createMindbodyClassBookingClient(options) {
         ...array(envelopes[1]?.Visits).map(visitFact),
         ...array(envelopes[2]?.Visits).map(visitFact),
       ].filter(Boolean);
-      const exactVisit = visits.find((visit) => exactFact(visit, { classId, clientId }));
+      const exactVisit = visits.find((visit) => !visit.cancelled
+        && exactFact(visit, { classId, clientId }));
       const financialInput = {
         classId,
         clientId,
         serviceProductId: input.serviceProductId,
+        saleId: input.saleId,
+        cartId: input.cartId,
+        transactionId: input.transactionId,
+        paymentId: input.paymentId,
       };
       const financialContamination = mode === "approved_unpaid"
         ? exactSaleState(envelopes[4], envelopes[5], financialInput)
@@ -374,15 +543,48 @@ export function createMindbodyClassBookingClient(options) {
           errorCode: "APPROVED_UNPAID_FINANCIAL_STATE_UNVERIFIED",
         };
       }
+      const webhookEvidence = exactWebhookEvidence(input.webhookEvidence, { classId, clientId });
+      if (mode === "purchase_pricing_option") {
+        const rosterEvidence = exactVisit?.visitId ? exactVisit : webhookEvidence;
+        const exactClientService = array(envelopes[6]?.ClientServices)
+          .map(clientServiceFact)
+          .filter(Boolean)
+          .find((service) => service.clientServiceId === rosterEvidence?.clientServiceId
+            && service.serviceProductId === text(input.serviceProductId)
+            && service.current === true
+            && service.returned === false);
+        if (rosterEvidence
+          && exactClientService
+          && text(input.saleId)
+          && text(input.cartId)
+          && text(input.transactionId)
+          && text(input.paymentId)
+          && financialEvidence?.atomicCheckoutConfirmed === true) {
+          return {
+            ...financialEvidence,
+            ...rosterEvidence,
+            clientServiceId: exactClientService.clientServiceId,
+            status: "confirmed",
+            certainty: "provider_confirmed",
+          };
+        }
+        return {
+          errorCode: "PAID_PURCHASE_AND_ROSTER_EVIDENCE_INCOMPLETE",
+          ...(rosterEvidence ?? {}),
+          ...(financialEvidence ?? {}),
+          status: "unknown",
+          certainty: "unknown",
+        };
+      }
       if (exactVisit?.visitId) {
         return { status: "confirmed", certainty: "provider_confirmed", ...exactVisit };
       }
       const waitlists = array(envelopes[3]?.WaitlistEntries).map(waitlistFact).filter(Boolean);
-      const exactWaitlist = waitlists.find((entry) => exactFact(entry, { classId, clientId }));
+      const exactWaitlist = waitlists.find((entry) => !entry.cancelled
+        && exactFact(entry, { classId, clientId }));
       if (exactWaitlist?.waitlistEntryId) {
         return { status: "waitlisted", certainty: "provider_confirmed", ...exactWaitlist };
       }
-      const webhookEvidence = exactWebhookEvidence(input.webhookEvidence, { classId, clientId });
       if (webhookEvidence) return webhookEvidence;
       if (financialEvidence) return financialEvidence;
       return { status: "unknown", certainty: "unknown" };

@@ -24,6 +24,10 @@ verify_jwt = false
 enabled = true
 verify_jwt = false
 
+[functions.complete-paid-booking]
+enabled = true
+verify_jwt = false
+
 [functions.upcoming-bookings]
 enabled = true
 verify_jwt = false

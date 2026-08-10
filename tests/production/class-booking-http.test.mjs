@@ -150,6 +150,27 @@ test("unknown outcomes return pending reconciliation and explicit failure is not
   assert.equal((await failedResponse.json()).data.booking.status, "failed");
 });
 
+test("a stored requires-action result exposes only its validated HTTPS redirect", async () => {
+  const deps = dependencies({
+    executeBooking: async () => ({
+      booking: {
+        id: "booking-action",
+        status: "requires_action",
+        priceAmount: 115,
+        currency: "ZAR",
+        redirectUrl: "https://payments.example.test/challenge",
+      },
+      attempt: { id: "attempt-action", status: "requires_action" },
+    }),
+  });
+  const response = await handleClassBooking(request(), deps);
+  assert.equal(response.status, 200);
+  const booking = (await response.json()).data.booking;
+  assert.equal(booking.status, "requires_action");
+  assert.equal(booking.redirectUrl, "https://payments.example.test/challenge");
+  assert.equal(Object.hasOwn(booking, "accessToken"), false);
+});
+
 test("unapproved origins and missing Memberstack bearer tokens stop before quote lookup", async () => {
   let lookups = 0;
   const deps = dependencies();

@@ -29,6 +29,7 @@ function booking(row) {
     providerCartId: row.provider_cart_id,
     providerTransactionId: row.provider_transaction_id,
     providerPaymentId: row.provider_payment_id,
+    redirectUrl: row.payment_action_url,
   };
 }
 
@@ -77,6 +78,7 @@ const BOOKING_COLUMNS = [
   "provider_visit_id", "provider_roster_booking_id", "provider_waitlist_entry_id",
   "provider_client_service_id", "provider_service_product_id", "provider_sale_id",
   "provider_cart_id", "provider_transaction_id", "provider_payment_id",
+  "payment_action_url",
 ].join(",");
 
 const QUOTE_COLUMNS = [
@@ -88,8 +90,84 @@ const QUOTE_COLUMNS = [
   "currency", "quote_fingerprint", "status", "expires_at",
 ].join(",");
 
+function paidCompletionMethods(supabase) {
+  return {
+    async claimCompletion({ bookingId, customerId }) {
+      const completionToken = token();
+      const { data, error } = await supabase.rpc("claim_class_paid_checkout_completion", {
+        candidate_booking_id: bookingId,
+        candidate_customer_id: customerId,
+        candidate_completion_token: completionToken,
+      });
+      if (error) {
+        if (/not found for this Customer/i.test(error.message ?? "")) {
+          throw new BookingOrchestrationError(
+            "BOOKING_NOT_FOUND",
+            "This paid Class Booking was not found for the current Revvi Customer.",
+            404,
+          );
+        }
+        if (/has expired/i.test(error.message ?? "")) {
+          throw new BookingOrchestrationError(
+            "PAYMENT_ACTION_EXPIRED",
+            "This Mindbody payment action has expired.",
+            409,
+          );
+        }
+        throw unavailable("The paid Class Booking completion could not be claimed safely.");
+      }
+      if (!data?.booking?.id || !data?.attempt?.id) throw unavailable();
+      return { ...data, completionToken: data.completionToken ?? completionToken };
+    },
+
+    async finalizeCompletion(facts) {
+      const references = facts.providerReferences ?? {};
+      const { data, error } = await supabase.rpc("finalize_class_paid_checkout_completion", {
+        candidate_business_id: facts.businessId,
+        candidate_booking_id: facts.bookingId,
+        candidate_attempt_id: facts.attemptId,
+        candidate_completion_token: facts.completionToken,
+        candidate_outcome: facts.outcome,
+        candidate_provider_visit_id: references.providerVisitId,
+        candidate_provider_roster_booking_id: references.providerRosterBookingId,
+        candidate_provider_client_service_id: references.providerClientServiceId,
+        candidate_provider_service_product_id: references.providerServiceProductId,
+        candidate_provider_sale_id: references.providerSaleId,
+        candidate_provider_cart_id: references.providerCartId,
+        candidate_provider_transaction_id: references.providerTransactionId,
+        candidate_provider_payment_id: references.providerPaymentId,
+        candidate_provider_request_id: facts.providerRequestId ?? null,
+        candidate_error_code: facts.errorCode ?? null,
+      });
+      if (error) throw unavailable("The paid Mindbody completion result could not be persisted safely.");
+      return storedPayload(data);
+    },
+
+    async recordProviderDiagnostic(facts) {
+      const { error } = await supabase.from("class_booking_provider_diagnostics").insert({
+        business_id: facts.businessId,
+        attempt_id: facts.attemptId,
+        diagnostic_kind: facts.diagnosticKind ?? "request_summary",
+        endpoint_name: facts.endpointName,
+        request_id: facts.requestId,
+        provider_request_id: facts.providerRequestId,
+        status_code: facts.statusCode,
+        duration_ms: facts.durationMs,
+        success: facts.success,
+        error_code: facts.errorCode,
+      });
+      if (error) throw unavailable("Mindbody Class Booking diagnostics could not be recorded safely.");
+    },
+  };
+}
+
+export function createClassPaidBookingCompletionCatalogue(supabase) {
+  return Object.freeze(paidCompletionMethods(supabase));
+}
+
 export function createClassBookingCatalogue(supabase, quoteCatalogue) {
   return Object.freeze({
+    ...paidCompletionMethods(supabase),
     async resolveQuoteLocator(quoteId) {
       const { data, error } = await supabase.from("class_booking_quotes")
         .select("id,business_id,offer_id,location_id,customer_id")
@@ -170,6 +248,21 @@ export function createClassBookingCatalogue(supabase, quoteCatalogue) {
 
     async completeAttempt(facts) {
       const references = facts.providerReferences ?? {};
+      if (facts.requiredAction) {
+        const { data, error: actionError } = await supabase.rpc("persist_class_booking_payment_action", {
+          candidate_business_id: facts.businessId,
+          candidate_booking_id: facts.bookingId,
+          candidate_attempt_id: facts.attemptId,
+          candidate_write_token: facts.writeToken,
+          candidate_redirect_url: facts.requiredAction.url,
+          candidate_payment_route: facts.paymentAction.route,
+          candidate_access_token_ciphertext: facts.paymentAction.ciphertext,
+          candidate_access_token_nonce: facts.paymentAction.nonce,
+          candidate_encryption_key_version: facts.paymentAction.keyVersion,
+        });
+        if (actionError) throw unavailable("The Mindbody payment action could not be persisted safely.");
+        return storedPayload(data);
+      }
       const { data, error } = await supabase.rpc("finalize_class_booking_attempt", {
         candidate_business_id: facts.businessId,
         candidate_booking_id: facts.bookingId,
@@ -250,20 +343,5 @@ export function createClassBookingCatalogue(supabase, quoteCatalogue) {
       return storedPayload(data);
     },
 
-    async recordProviderDiagnostic(facts) {
-      const { error } = await supabase.from("class_booking_provider_diagnostics").insert({
-        business_id: facts.businessId,
-        attempt_id: facts.attemptId,
-        diagnostic_kind: facts.diagnosticKind ?? "request_summary",
-        endpoint_name: facts.endpointName,
-        request_id: facts.requestId,
-        provider_request_id: facts.providerRequestId,
-        status_code: facts.statusCode,
-        duration_ms: facts.durationMs,
-        success: facts.success,
-        error_code: facts.errorCode,
-      });
-      if (error) throw unavailable("Mindbody Class Booking diagnostics could not be recorded safely.");
-    },
   });
 }

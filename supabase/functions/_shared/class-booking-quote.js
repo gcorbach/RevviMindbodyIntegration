@@ -182,13 +182,18 @@ export async function createClassBookingQuote(input, dependencies) {
   }
   let fulfilment;
   if (mode === "purchase_pricing_option") {
-    if (!input.context.mapping.providerServiceProductId) {
-      throw new BookingQuoteError("OFFER_PRODUCT_NOT_CONFIGURED", "This paid Offer has no approved Mindbody Product.", 503);
+    if (!input.context.mapping.providerServiceProductId
+      || !Number.isSafeInteger(input.context.mapping.paidCheckoutLocationId)) {
+      throw new BookingQuoteError(
+        "PAID_ROUTE_NOT_CONFIGURED",
+        "This paid Offer has no approved Mindbody Product and checkout route.",
+        503,
+      );
     }
     const calculation = await dependencies.provider.testCheckout({
       classId: input.classId,
       clientId: profile.providerClientId,
-      locationId: input.context.location.providerLocationId,
+      locationId: input.context.mapping.paidCheckoutLocationId,
       productId: input.context.mapping.providerServiceProductId,
     });
     fulfilment = {
@@ -331,11 +336,18 @@ export async function revalidateClassBookingQuoteBeforeWrite(input, dependencies
     return { changed: false, occurrence: classOccurrence };
   }
   if (quote.fulfilmentMode !== "purchase_pricing_option") return { changed: false, occurrence: classOccurrence };
+  if (!Number.isSafeInteger(context.mapping.paidCheckoutLocationId)) {
+    throw new BookingQuoteError(
+      "PAID_ROUTE_NOT_CONFIGURED",
+      "The paid Mindbody checkout route is no longer configured.",
+      503,
+    );
+  }
   const [totals, currency] = await Promise.all([
     dependencies.provider.testCheckout({
       classId: quote.classId,
       clientId: quote.providerClientId,
-      locationId: context.location.providerLocationId,
+      locationId: context.mapping.paidCheckoutLocationId,
       productId: quote.providerServiceProductId,
     }),
     dependencies.provider.getSiteCurrency(),

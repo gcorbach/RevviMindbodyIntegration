@@ -44,7 +44,7 @@ insert into public.class_offer_provider_mappings (
   '35000000-0000-4000-8000-000000000051', '35000000-0000-4000-8000-000000000001',
   '35000000-0000-4000-8000-000000000041', 'purchase_pricing_option',
   '35000000-0000-4000-8000-000000000011', '35000000-0000-4000-8000-000000000021',
-  'product-revvi', 'draft', now(), repeat('a', 64), now(), repeat('b', 64)
+  'product-revvi', 'draft', now(), repeat('a', 64), null, null
 );
 insert into public.class_offer_inventory_allowlist (business_id, mapping_id, entity_kind, provider_entity_id)
 values
@@ -53,7 +53,25 @@ values
   ('35000000-0000-4000-8000-000000000001', '35000000-0000-4000-8000-000000000051', 'class_description', '13'),
   ('35000000-0000-4000-8000-000000000001', '35000000-0000-4000-8000-000000000051', 'session_type', '23');
 update public.class_offer_provider_mappings
-set mode_verified_at = now(), mode_evidence_digest = repeat('b', 64)
+set paid_payment_route = 'mindbody_alternative_payment',
+    paid_payment_method_id = 801,
+    paid_checkout_location_id = 98
+where id = '35000000-0000-4000-8000-000000000051';
+update public.class_offer_provider_mappings set status = 'active'
+where id = '35000000-0000-4000-8000-000000000051';
+insert into public.class_paid_pricing_option_evidence (
+  business_id, mapping_id, mapping_version, evidence_kind, evidence_environment,
+  payment_route, payment_method_id, checkout_location_id, evidence_digest, verified_at
+)
+select mapping.business_id, mapping.id, mapping.mapping_version, evidence.kind, 'sandbox',
+  mapping.paid_payment_route, mapping.paid_payment_method_id, mapping.paid_checkout_location_id,
+  encode(extensions.digest(mapping.id::text || evidence.kind::text, 'sha256'), 'hex'), now()
+from public.class_offer_provider_mappings mapping
+cross join unnest(enum_range(null::public.class_paid_pricing_option_evidence_kind)) evidence(kind)
+where mapping.id = '35000000-0000-4000-8000-000000000051';
+update public.class_offer_provider_mappings
+set paid_pricing_option_enabled = true,
+    mode_verified_at = now(), mode_evidence_digest = repeat('b', 64)
 where id = '35000000-0000-4000-8000-000000000051';
 update public.class_offer_provider_mappings set status = 'active' where id = '35000000-0000-4000-8000-000000000051';
 update public.class_revvi_offers set status = 'active' where id = '35000000-0000-4000-8000-000000000041';
@@ -89,8 +107,21 @@ select is(
 update public.class_offer_provider_mappings
 set provider_service_product_id = 'product-revvi'
 where id = '35000000-0000-4000-8000-000000000051';
+update public.class_offer_provider_mappings set status = 'active'
+where id = '35000000-0000-4000-8000-000000000051';
+insert into public.class_paid_pricing_option_evidence (
+  business_id, mapping_id, mapping_version, evidence_kind, evidence_environment,
+  payment_route, payment_method_id, checkout_location_id, evidence_digest, verified_at
+)
+select mapping.business_id, mapping.id, mapping.mapping_version, evidence.kind, 'sandbox',
+  mapping.paid_payment_route, mapping.paid_payment_method_id, mapping.paid_checkout_location_id,
+  encode(extensions.digest(mapping.id::text || mapping.mapping_version::text || evidence.kind::text, 'sha256'), 'hex'), now()
+from public.class_offer_provider_mappings mapping
+cross join unnest(enum_range(null::public.class_paid_pricing_option_evidence_kind)) evidence(kind)
+where mapping.id = '35000000-0000-4000-8000-000000000051';
 update public.class_offer_provider_mappings
-set mode_verified_at = now(), mode_evidence_digest = repeat('b', 64)
+set paid_pricing_option_enabled = true,
+    mode_verified_at = now(), mode_evidence_digest = repeat('b', 64)
 where id = '35000000-0000-4000-8000-000000000051';
 update public.class_offer_provider_mappings set status = 'active'
 where id = '35000000-0000-4000-8000-000000000051';

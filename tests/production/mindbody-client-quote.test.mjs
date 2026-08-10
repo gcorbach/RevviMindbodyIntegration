@@ -62,10 +62,17 @@ test("client-aware Class re-read and paid quote send Class, Client, Product, Loc
   assert.match(requests[0].url, /class\/classes\?ClassIds=771&ClientId=rss-1&UniqueClientId=41/);
   assert.deepEqual(JSON.parse(requests[1].init.body), {
     ClientId: "rss-1",
-    LocationId: "7",
+    LocationId: 7,
     Test: true,
-    CartItems: [{ Item: { Type: "Service", Metadata: { Id: "product-revvi" } }, Quantity: 1 }],
-    ClassIds: ["771"],
+    InStore: false,
+    CalculateTax: true,
+    SendEmail: false,
+    EnforceLocationRestrictions: true,
+    Items: [{
+      Item: { Type: "Service", Metadata: { Id: "product-revvi" } },
+      Quantity: 1,
+      ClassIds: [771],
+    }],
   });
   assert.deepEqual(quote, { subtotal: 120, discountTotal: 20, taxTotal: 15, grandTotal: 115 });
 });
