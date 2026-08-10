@@ -50,7 +50,9 @@ async function postJson(fetcher, endpoint, authorization, body) {
   }
   if (!response.ok || envelope?.ok !== true || !envelope?.data) {
     throw new BookingWidgetRequestError({
-      code: typeof envelope?.code === "string" ? envelope.code : "REQUEST_FAILED",
+      code: typeof envelope?.error?.code === "string"
+        ? envelope.error.code
+        : typeof envelope?.code === "string" ? envelope.code : "REQUEST_FAILED",
       status: response.status,
       retryable: response.status === 429 || response.status >= 500,
     });
@@ -63,6 +65,8 @@ export function createBookingWidgetApi({
   availabilityEndpoint = "/functions/v1/offer-class-availability",
   quoteEndpoint = "/functions/v1/booking-quote",
   bookingEndpoint = "/functions/v1/create-booking",
+  upcomingEndpoint = "/functions/v1/upcoming-bookings",
+  cancellationEndpoint = "/functions/v1/cancel-booking",
 } = {}) {
   return Object.freeze({
     async availability(authorization, context) {
@@ -88,6 +92,18 @@ export function createBookingWidgetApi({
       bookingEndpoint,
       authorization,
       { quoteId, idempotencyKey },
+    ),
+    upcomingBookings: (authorization, limit = 20) => postJson(
+      fetcher,
+      upcomingEndpoint,
+      authorization,
+      { limit },
+    ),
+    cancelBooking: (authorization, bookingId, reason) => postJson(
+      fetcher,
+      cancellationEndpoint,
+      authorization,
+      { bookingId, reason },
     ),
   });
 }
