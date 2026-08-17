@@ -78,6 +78,7 @@ export function mountBookingWidget(root, dependencies = {}) {
     quoteEndpoint: root.dataset.quoteEndpoint,
     bookingEndpoint: root.dataset.bookingEndpoint,
     paymentCompletionEndpoint: root.dataset.paymentCompletionEndpoint,
+    demoCleanupEndpoint: root.dataset.demoCleanupEndpoint,
   });
   const authenticate = dependencies.authenticate
     ?? (() => createMemberstackAuthorizationHeader(browser));
@@ -87,6 +88,7 @@ export function mountBookingWidget(root, dependencies = {}) {
   let selectedOccurrence = null;
   let quote = null;
   let requestActive = false;
+  let activeDemoBookingId = null;
   let loadSequence = 0;
 
   function availabilityContext() {
@@ -178,6 +180,10 @@ export function mountBookingWidget(root, dependencies = {}) {
       const data = await api.createBooking(authorization, quote.quoteId, randomUuid());
       const booking = data?.booking;
       if (booking?.status === "confirmed") {
+        activeDemoBookingId = booking?.sandboxDemo?.cleanupStatus === "pending"
+          && UUID.test(booking?.sandboxDemo?.demoBookingId ?? "")
+          ? booking.sandboxDemo.demoBookingId
+          : null;
         ui.success({ ...booking, timezone: quote.occurrence?.timezone ?? selectedOccurrence?.timezone });
       } else if (booking?.status === "requires_action") {
         const redirectUrl = paymentActionUrl(booking.redirectUrl ?? data.redirectUrl);
@@ -202,6 +208,27 @@ export function mountBookingWidget(root, dependencies = {}) {
       requestActive = false;
       ui.confirmButton.disabled = false;
       void refreshAvailabilityAfterAttempt();
+    }
+  }
+
+  async function cleanupDemoBooking() {
+    if (requestActive || !activeDemoBookingId) return;
+    requestActive = true;
+    ui.cleaningDemoBooking();
+    try {
+      const data = await api.cleanupDemoBooking(authorization, activeDemoBookingId);
+      const booking = data?.booking;
+      if (booking?.status !== "confirmed"
+        || booking?.sandboxDemo?.cleanupStatus !== "confirmed"
+        || booking?.sandboxDemo?.demoBookingId !== activeDemoBookingId) {
+        throw new Error("The sandbox cleanup was not confirmed.");
+      }
+      activeDemoBookingId = null;
+      ui.success({ ...booking, timezone: quote?.occurrence?.timezone ?? selectedOccurrence?.timezone });
+    } catch {
+      ui.demoCleanupFailed();
+    } finally {
+      requestActive = false;
     }
   }
 
@@ -243,6 +270,7 @@ export function mountBookingWidget(root, dependencies = {}) {
   }
 
   ui.confirmButton.addEventListener("click", submitBooking);
+  ui.demoCleanupButton.addEventListener("click", cleanupDemoBooking);
   function resetSelection() {
     selectedOccurrence = null;
     quote = null;
