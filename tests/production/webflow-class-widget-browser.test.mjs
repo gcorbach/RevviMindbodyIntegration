@@ -39,7 +39,8 @@ function widgetMarkup(scenario = "available") {
     .replace("SUPABASE_FUNCTIONS_URL/offer-class-availability", `/functions/v1/offer-class-availability${scenarioQuery}`)
     .replace("SUPABASE_FUNCTIONS_URL/booking-quote", `/functions/v1/booking-quote${scenarioQuery}`)
     .replace("SUPABASE_FUNCTIONS_URL/create-booking", `/functions/v1/create-booking${scenarioQuery}`)
-    .replace("SUPABASE_FUNCTIONS_URL/complete-paid-booking", "/functions/v1/complete-paid-booking");
+    .replace("SUPABASE_FUNCTIONS_URL/complete-paid-booking", "/functions/v1/complete-paid-booking")
+    .replace("SUPABASE_FUNCTIONS_URL/cleanup-demo-booking", `/functions/v1/cleanup-demo-booking${scenarioQuery}`);
 }
 
 function availabilityBody() {
@@ -88,7 +89,9 @@ function availabilityBody() {
   };
 }
 
-function page({ loggedOut = false, automateBooking = false, scenario = "available" } = {}) {
+function page({
+  loggedOut = false, automateBooking = false, automateDemoCleanup = false, scenario = "available",
+} = {}) {
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/revvi-booking.css"></head><body>
     ${widgetMarkup(scenario)}
     <script>
@@ -104,7 +107,14 @@ function page({ loggedOut = false, automateBooking = false, scenario = "availabl
       }).observe(root, { attributes: true, attributeFilter: ["data-booking-state"] });
       ${automateBooking ? `
         const automation = setInterval(() => {
-          if (["success", "stale", "requires-payment-action", "pending-reconciliation", "error"].includes(root.dataset.bookingState)) { clearInterval(automation); return; }
+          if (root.dataset.demoCleanupStatus === "confirmed") { clearInterval(automation); return; }
+          if (root.dataset.bookingState === "success") {
+            ${automateDemoCleanup ? `
+              const cleanup = root.querySelector("[data-booking-demo-cleanup]:not([hidden]):not([disabled])");
+              if (cleanup) { cleanup.click(); cleanup.click(); }
+              return;` : "clearInterval(automation); return;"}
+          }
+          if (["stale", "requires-payment-action", "pending-reconciliation", "error"].includes(root.dataset.bookingState)) { clearInterval(automation); return; }
           const confirm = root.querySelector("[data-quote-confirm]");
           if (confirm && !confirm.closest("[hidden]") && !confirm.disabled) {
             confirm.click();
@@ -254,6 +264,102 @@ test("the Webflow widget shows approved Class times responsively and suppresses 
     assert.match(bookingBodies[1].idempotencyKey, /^[0-9a-f-]{36}$/i);
     assert.notEqual(bookingBodies[0].idempotencyKey, bookingBodies[1].idempotencyKey);
     assert.deepEqual([...new Set(authorizationHeaders)], ["Bearer memberstack.jwt.signature"]);
+  } finally {
+    server.closeAllConnections(); server.close();
+  }
+});
+
+test("the Site -99 demo lets the operator clean the visible sandbox Booking exactly once", { skip: !chromePath }, async () => {
+  const widget = readFileSync(new URL("../../webflow/dist/revvi-booking.js", import.meta.url), "utf8");
+  const stylesheet = readFileSync(new URL("../../webflow/dist/revvi-booking.css", import.meta.url), "utf8");
+  let cleanupCalls = 0;
+  const server = createServer(async (request, response) => {
+    if (request.url === "/revvi-booking.js") {
+      response.writeHead(200, { "content-type": "text/javascript" }); response.end(widget); return;
+    }
+    if (request.url === "/revvi-booking.css") {
+      response.writeHead(200, { "content-type": "text/css" }); response.end(stylesheet); return;
+    }
+    const url = new URL(request.url, "http://localhost");
+    if (url.pathname === "/functions/v1/offer-class-availability") {
+      response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(availabilityBody())); return;
+    }
+    if (url.pathname === "/functions/v1/booking-quote") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, data: {
+        quoteId: "quote-site-99",
+        expiresAt: "2026-08-12T15:55:00.000Z",
+        session: {
+          classId: "501", name: "Yoga Flow", startAt: "2026-08-12T16:00:00.000Z",
+          locationName: "Rosebank Studio",
+        },
+        price: { grandTotal: 13, currency: "USD" },
+      } }));
+      return;
+    }
+    if (url.pathname === "/functions/v1/create-booking") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, data: { booking: {
+        status: "confirmed",
+        className: "Yoga Flow",
+        startAt: "2026-08-12T16:00:00.000Z",
+        locationName: "Rosebank Studio",
+        sandboxDemo: {
+          demoBookingId: "40000000-0000-4000-8000-000000000060",
+          cleanupStatus: "pending",
+          autoCleanupAt: "2026-08-12T16:10:00.000Z",
+          references: {
+            clientId: "100200001",
+            clientName: "Revvi Sandbox A1B2C3D4",
+            clientEmail: "revvi-sandbox-a1b2c3d4@example.test",
+            saleId: "100170591",
+            paymentId: "168233",
+            visitId: "100343812",
+          },
+        },
+      } } }));
+      return;
+    }
+    if (url.pathname === "/functions/v1/cleanup-demo-booking") {
+      cleanupCalls += 1;
+      assert.equal(request.headers.authorization, "Bearer memberstack.jwt.signature");
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString("utf8")), {
+        demoBookingId: "40000000-0000-4000-8000-000000000060",
+      });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, data: { booking: {
+        status: "confirmed",
+        className: "Yoga Flow",
+        startAt: "2026-08-12T16:00:00.000Z",
+        locationName: "Rosebank Studio",
+        sandboxDemo: {
+          demoBookingId: "40000000-0000-4000-8000-000000000060",
+          cleanupStatus: "confirmed",
+          references: {
+            clientId: "100200001",
+            clientName: "Revvi Sandbox A1B2C3D4",
+            saleId: "100170591",
+            visitId: "100343812",
+          },
+        },
+      } } }));
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(page({ automateBooking: true, automateDemoCleanup: true, scenario: "demo-inspection" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const result = await launchChrome(`http://127.0.0.1:${server.address().port}/demo-inspection`);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(cleanupCalls, 1);
+    assert.match(result.stdout, /data-demo-cleanup-status="confirmed"/);
+    assert.match(result.stdout, /Sandbox Booking verified and removed safely/);
+    assert.match(result.stdout, /100170591/);
+    assert.match(result.stdout, /100343812/);
   } finally {
     server.closeAllConnections(); server.close();
   }

@@ -7,6 +7,17 @@ const API_BASE = `${API_ORIGIN}/public/v6`;
 const SITE_ID = "-99";
 const WRITE_CONFIRMATION = "BOOK_AND_CANCEL_SITE_-99";
 const PROVIDER_REQUEST_ID = Symbol("providerRequestId");
+const RUN_MODE_POLICIES = Object.freeze({
+  probe: Object.freeze({ outcome: "probe" }),
+  quote: Object.freeze({ outcome: "quote", quotes: true }),
+  "book-and-cancel": Object.freeze({
+    outcome: "booking", quotes: true, createsSyntheticClient: true, cleanupOnSuccess: true,
+  }),
+  "book-for-inspection": Object.freeze({
+    outcome: "booking", quotes: true, createsSyntheticClient: true, retainsInspection: true,
+  }),
+  "cleanup-inspection": Object.freeze({ outcome: "cleanup", requiresInspection: true }),
+});
 
 function text(value) {
   return value == null ? null : String(value).trim() || null;
@@ -185,6 +196,7 @@ export function createSite99Runner({
   clock = () => new Date(),
   uniqueId = () => crypto.randomUUID(),
   pollOptions,
+  exposeSyntheticClientReference = false,
 } = {}) {
   const apiKey = requiredEnvironment(environment, "MINDBODY_API_KEY");
   const username = requiredEnvironment(environment, "MINDBODY_SANDBOX_USERNAME");
@@ -201,6 +213,7 @@ export function createSite99Runner({
   const sessionTypeId = text(environment.MINDBODY_SANDBOX_SESSION_TYPE_ID ?? "250");
   const productId = text(environment.MINDBODY_SANDBOX_PRODUCT_ID ?? "1431");
   let authorization = null;
+  let pendingInspection = null;
 
   const headers = (body = false) => ({
     Accept: "application/json",
@@ -400,7 +413,17 @@ export function createSite99Runner({
     });
     clientId = id(created?.Client ?? created?.Clients?.[0]);
     if (!clientId) throw new Site99RunError("committed_client_creation", "CLIENT_ID_MISSING");
-    return { syntheticClientCreated: true, addClientTestMode: "unsupported-by-site-99" };
+    return {
+      syntheticClientCreated: true,
+      addClientTestMode: "unsupported-by-site-99",
+      ...(exposeSyntheticClientReference ? {
+        reference: {
+          clientId,
+          displayName: `${client.FirstName} ${client.LastName}`,
+          email: client.Email,
+        },
+      } : {}),
+    };
   }
 
   function evidenceWindow() {
@@ -523,7 +546,40 @@ export function createSite99Runner({
       && visit.cancelled !== true);
   }
 
-  async function cancelVisit(fixture, visitId, bookingEvidence = null) {
+  function postCancellationFacts(cancelled, bookingEvidence) {
+    const sale = cancelled.sales.find((candidate) => candidate.saleId === bookingEvidence?.saleId) ?? null;
+    const service = cancelled.clientServices
+      .find((candidate) => candidate.clientServiceId === bookingEvidence?.clientServiceId) ?? null;
+    const comparableRemaining = Number.isFinite(bookingEvidence?.clientServiceRemaining)
+      && Number.isFinite(service?.remaining);
+    return {
+      saleReturned: sale?.returned ?? null,
+      paymentStillRecorded: sale
+        ? sale.payments.some((payment) => payment.paymentId === bookingEvidence?.paymentId)
+        : null,
+      refundEvidence: sale?.returned === true ? "sale-returned" : "none-observed",
+      clientServiceCurrent: service?.current ?? null,
+      clientServiceRemaining: service?.remaining ?? null,
+      entitlementRestorationObserved: comparableRemaining
+        ? service.remaining > bookingEvidence.clientServiceRemaining
+        : null,
+    };
+  }
+
+  async function cancelledEvidence(fixture, visitId) {
+    const cancelled = await poll(
+      () => readEvidence(fixture),
+      (evidence) => ([evidence.clientVisits, evidence.rosterVisits, evidence.scheduleVisits]
+        .every((visits) => !surfaceHasVisit(visits, fixture, visitId)) ? evidence : null),
+      pollOptions,
+    );
+    if (!cancelled) throw new Site99RunError("cancellation_reconciliation", "VISIT_STILL_ACTIVE");
+    return cancelled;
+  }
+
+  async function cancelVisit(fixture, visitId, bookingEvidence = null, {
+    onCommittedWriteStarted = () => {},
+  } = {}) {
     const cancellation = {
       ClientId: clientId,
       ClassId: Number(fixture.classId),
@@ -554,25 +610,15 @@ export function createSite99Runner({
     const testPreservedAllSurfaces = [afterTest.clientVisits, afterTest.rosterVisits, afterTest.scheduleVisits]
       .every((visits) => surfaceHasVisit(visits, fixture, visitId));
     if (exactActiveVisit(afterTest, fixture)) {
+      onCommittedWriteStarted();
       committedCancellationResponse = await request("committed_cancellation", "class/removeclientfromclass", {
         method: "POST",
         body: { ...cancellation, Test: false },
       });
     }
-    const cancelled = await poll(
-      () => readEvidence(fixture),
-      (evidence) => ([evidence.clientVisits, evidence.rosterVisits, evidence.scheduleVisits]
-        .every((visits) => !surfaceHasVisit(visits, fixture, visitId)) ? evidence : null),
-      pollOptions,
-    );
-    if (!cancelled) throw new Site99RunError("cancellation_reconciliation", "VISIT_STILL_ACTIVE");
+    const cancelled = await cancelledEvidence(fixture, visitId);
     if (testCancellationError) throw testCancellationError;
     if (!testPreservedAllSurfaces) throw new Site99RunError("test_cancellation", "TEST_DID_NOT_PRESERVE_ALL_SURFACES");
-    const sale = cancelled.sales.find((candidate) => candidate.saleId === bookingEvidence?.saleId) ?? null;
-    const service = cancelled.clientServices
-      .find((candidate) => candidate.clientServiceId === bookingEvidence?.clientServiceId) ?? null;
-    const comparableRemaining = Number.isFinite(bookingEvidence?.clientServiceRemaining)
-      && Number.isFinite(service?.remaining);
     return {
       testCancellationPreservedVisit: true,
       cancellationConfirmed: true,
@@ -581,22 +627,25 @@ export function createSite99Runner({
         test: providerRequestId(testCancellationResponse),
         committed: providerRequestId(committedCancellationResponse),
       },
-      postCancellation: {
-        saleReturned: sale?.returned ?? null,
-        paymentStillRecorded: sale
-          ? sale.payments.some((payment) => payment.paymentId === bookingEvidence?.paymentId)
-          : null,
-        refundEvidence: sale?.returned === true ? "sale-returned" : "none-observed",
-        clientServiceCurrent: service?.current ?? null,
-        clientServiceRemaining: service?.remaining ?? null,
-        entitlementRestorationObserved: comparableRemaining
-          ? service.remaining > bookingEvidence.clientServiceRemaining
-          : null,
-      },
+      postCancellation: postCancellationFacts(cancelled, bookingEvidence),
     };
   }
 
-  async function bookAndCancel(fixture, quoteResult) {
+  async function cleanPendingInspection(inspection) {
+    if (inspection.cancellationWriteStarted) {
+      const cancelled = await cancelledEvidence(inspection.fixture, inspection.booking.visitId);
+      return {
+        cancellationConfirmed: true,
+        cancellationEvidence: "read-only-after-uncertain-write",
+        postCancellation: postCancellationFacts(cancelled, inspection.booking),
+      };
+    }
+    return cancelVisit(inspection.fixture, inspection.booking.visitId, inspection.booking, {
+      onCommittedWriteStarted: () => { inspection.cancellationWriteStarted = true; },
+    });
+  }
+
+  async function bookClass(fixture, quoteResult, { cleanupOnSuccess = true } = {}) {
     requireWriteConfirmation();
     const before = await readEvidence(fixture);
     let newVisit = null;
@@ -677,7 +726,7 @@ export function createSite99Runner({
       primaryError = error;
       throw error;
     } finally {
-      if (!newVisit) {
+      if (!newVisit && (primaryError || cleanupOnSuccess)) {
         try {
           newVisit = await poll(
             () => readEvidence(fixture),
@@ -688,7 +737,7 @@ export function createSite99Runner({
           // The original reconciliation error remains the truthful outcome.
         }
       }
-      if (newVisit) {
+      if (newVisit && (primaryError || cleanupOnSuccess)) {
         try {
           cleanupEvidence = await cancelVisit(fixture, newVisit.visitId, bookingEvidence);
         } catch (cleanupError) {
@@ -702,13 +751,22 @@ export function createSite99Runner({
         }
       }
     }
-    return { ...bookingEvidence, ...cleanupEvidence };
+    return cleanupOnSuccess
+      ? { ...bookingEvidence, ...cleanupEvidence }
+      : { ...bookingEvidence, inspectionStatus: "active" };
   }
 
   return Object.freeze({
     async run(mode = "probe") {
-      if (!new Set(["probe", "quote", "book-and-cancel"]).has(mode)) {
+      const policy = RUN_MODE_POLICIES[mode];
+      if (!policy) {
         throw new Site99RunError("configuration", "INVALID_MODE", null, mode);
+      }
+      if (policy.requiresInspection && !pendingInspection) {
+        throw new Site99RunError("configuration", "NO_PENDING_INSPECTION");
+      }
+      if (policy.retainsInspection && pendingInspection) {
+        throw new Site99RunError("configuration", "INSPECTION_ALREADY_ACTIVE");
       }
       let auth = null;
       try {
@@ -717,7 +775,9 @@ export function createSite99Runner({
         await discoverFixture();
         const staff = await issueStaffToken();
         let syntheticClient = { syntheticClientCreated: false };
-        if (mode === "book-and-cancel") syntheticClient = await createSyntheticClient();
+        if (policy.createsSyntheticClient) {
+          syntheticClient = await createSyntheticClient();
+        }
         const fixture = await discoverFixture({ forClient: true });
         auth = {
           ...site,
@@ -728,7 +788,20 @@ export function createSite99Runner({
           },
           staffTokenRevoked: false,
         };
-        if (mode === "probe") return { result: "passed", mode, auth, fixture };
+        if (policy.outcome === "cleanup") {
+          const inspection = pendingInspection;
+          clientId = inspection.clientId;
+          const cleanup = await cleanPendingInspection(inspection);
+          pendingInspection = null;
+          return {
+            result: "passed",
+            mode,
+            auth,
+            fixture: inspection.fixture,
+            booking: { ...inspection.booking, ...cleanup, inspectionStatus: "cleaned" },
+          };
+        }
+        if (!policy.quotes) return { result: "passed", mode, auth, fixture };
         const initialQuote = await quote(fixture);
         const immediateRequote = await quote(fixture);
         if (["subtotal", "discountTotal", "taxTotal", "grandTotal"]
@@ -747,13 +820,44 @@ export function createSite99Runner({
           },
           totalsUnchanged: true,
         };
-        if (mode === "quote") return { result: "passed", mode, auth, fixture, quote: quoteResult };
-        const booking = await bookAndCancel(fixture, quoteResult);
+        if (policy.outcome === "quote") {
+          return { result: "passed", mode, auth, fixture, quote: quoteResult };
+        }
+        const booking = await bookClass(fixture, quoteResult, {
+          cleanupOnSuccess: policy.cleanupOnSuccess === true,
+        });
+        if (policy.retainsInspection) {
+          pendingInspection = { clientId, fixture, booking };
+        }
         return { result: "passed", mode, auth, fixture, syntheticClient, quote: quoteResult, booking };
       } finally {
         if (authorization) {
-          const revoked = await revokeStaffToken();
-          if (auth) auth.staffTokenRevoked = revoked;
+          try {
+            const revoked = await revokeStaffToken();
+            if (auth) auth.staffTokenRevoked = revoked;
+          } catch (revokeError) {
+            if (policy.retainsInspection && pendingInspection) {
+              const inspection = pendingInspection;
+              try {
+                await issueStaffToken();
+                clientId = inspection.clientId;
+                await cleanPendingInspection(inspection);
+                pendingInspection = null;
+              } catch (cleanupError) {
+                throw new Site99RunError("emergency_cleanup", "CANCELLATION_FAILED", cleanupError.status, {
+                  primaryCode: revokeError.code ?? "TOKEN_REVOCATION_FAILED",
+                  cleanupCode: cleanupError.code ?? "UNEXPECTED_ERROR",
+                  classId: inspection.fixture.classId,
+                  visitId: inspection.booking.visitId,
+                });
+              } finally {
+                if (authorization) {
+                  try { await revokeStaffToken(); } catch { /* Preserve the original revocation failure. */ }
+                }
+              }
+            }
+            throw revokeError;
+          }
         }
       }
     },

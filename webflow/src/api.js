@@ -66,6 +66,7 @@ export function createBookingWidgetApi({
   quoteEndpoint = "/functions/v1/booking-quote",
   bookingEndpoint = "/functions/v1/create-booking",
   paymentCompletionEndpoint = "/functions/v1/complete-paid-booking",
+  demoCleanupEndpoint = "/functions/v1/cleanup-demo-booking",
   upcomingEndpoint = "/functions/v1/upcoming-bookings",
   cancellationEndpoint = "/functions/v1/cancel-booking",
 } = {}) {
@@ -99,6 +100,12 @@ export function createBookingWidgetApi({
       paymentCompletionEndpoint,
       authorization,
       { bookingId },
+    ),
+    cleanupDemoBooking: (authorization, demoBookingId) => postJson(
+      fetcher,
+      demoCleanupEndpoint,
+      authorization,
+      { demoBookingId },
     ),
     upcomingBookings: (authorization, limit = 20) => postJson(
       fetcher,

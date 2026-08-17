@@ -12,6 +12,7 @@
   data-quote-endpoint="SUPABASE_FUNCTIONS_URL/booking-quote"
   data-booking-endpoint="SUPABASE_FUNCTIONS_URL/create-booking"
   data-payment-completion-endpoint="SUPABASE_FUNCTIONS_URL/complete-paid-booking"
+  data-demo-cleanup-endpoint="SUPABASE_FUNCTIONS_URL/cleanup-demo-booking"
 >
   <header data-booking-context>
     <span data-booking-offer></span>
@@ -52,7 +53,11 @@
     <a data-booking-payment-link rel="noopener noreferrer">Continue secure payment</a>
   </section>
   <p data-booking-reconciliation hidden></p>
-  <section data-booking-confirmation hidden></section>
+  <section data-booking-confirmation hidden>
+    <p data-booking-confirmation-message></p>
+    <p data-booking-demo-cleanup-message hidden></p>
+    <button type="button" data-booking-demo-cleanup hidden>Clean up demo Booking</button>
+  </section>
 
   <template data-booking-occurrence-template>
     <article data-booking-occurrence>

@@ -43,6 +43,29 @@ function formatMoney(amount, currency) {
   }
 }
 
+export function bookingConfirmationText(booking, fallbackLocationName) {
+  const locationName = booking.locationName ?? fallbackLocationName;
+  const references = booking?.sandboxDemo?.references;
+  const searchableReferences = references
+    && typeof references.clientId === "string"
+    && typeof references.clientName === "string"
+    && typeof references.saleId === "string"
+    && typeof references.visitId === "string";
+  if (booking?.sandboxDemo?.cleanupStatus === "pending" && searchableReferences) {
+    const cleanupTime = formatDateTime(booking.sandboxDemo.autoCleanupAt, booking.timezone);
+    return `Sandbox Booking is active for inspection: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} — ${locationName}. In Mindbody Business, search Clients for ${references.clientName} (Client ${references.clientId}) and open the Client schedule or visits. Cash Sale ${references.saleId} and Visit ${references.visitId} are the exact evidence. Use Clean up demo Booking when finished; otherwise it will be automatically cleaned at ${cleanupTime}.`;
+  }
+  if (booking?.sandboxDemo?.cleanupStatus === "confirmed" && searchableReferences) {
+    const restoration = booking.sandboxDemo.entitlementRestorationObserved === true
+      ? "Entitlement restoration was confirmed."
+      : booking.sandboxDemo.entitlementRestorationObserved === false
+        ? "Entitlement restoration was not observed."
+        : "Entitlement restoration remains unknown.";
+    return `Sandbox Booking verified and removed safely: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} — ${locationName}. Search Mindbody for ${references.clientName} (Client ${references.clientId}); the retained Cash Sale is ${references.saleId}, and Visit ${references.visitId} was removed. ${restoration}`;
+  }
+  return `Booking confirmed: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} — ${locationName}.`;
+}
+
 function availabilityPresentation(occurrence) {
   switch (occurrence.availabilityState) {
     case "available": return { label: "Available", bookable: true };
@@ -171,8 +194,33 @@ export function createBookingWidgetUi(root) {
       freshness.textContent = "Class times are stale and could not yet be refreshed.";
     },
     success(booking) {
-      views.confirmation.textContent = `Booking confirmed: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} — ${booking.locationName ?? root.dataset.locationName}.`;
+      setText(root, "[data-booking-confirmation-message]", bookingConfirmationText(booking, root.dataset.locationName));
+      const cleanupButton = element(root, "[data-booking-demo-cleanup]");
+      const cleanupMessage = element(root, "[data-booking-demo-cleanup-message]");
+      const cleanupStatus = booking?.sandboxDemo?.cleanupStatus;
+      root.dataset.demoCleanupStatus = cleanupStatus ?? "not-applicable";
+      cleanupButton.hidden = cleanupStatus !== "pending";
+      cleanupButton.disabled = false;
+      cleanupButton.textContent = "Clean up demo Booking";
+      cleanupMessage.hidden = true;
+      cleanupMessage.textContent = "";
       show("success", "confirmation");
+    },
+    cleaningDemoBooking() {
+      const cleanupButton = element(root, "[data-booking-demo-cleanup]");
+      const cleanupMessage = element(root, "[data-booking-demo-cleanup-message]");
+      cleanupButton.disabled = true;
+      cleanupButton.textContent = "Cleaning up…";
+      cleanupMessage.hidden = false;
+      cleanupMessage.textContent = "Removing the exact sandbox Booking from Mindbody…";
+    },
+    demoCleanupFailed() {
+      const cleanupButton = element(root, "[data-booking-demo-cleanup]");
+      const cleanupMessage = element(root, "[data-booking-demo-cleanup-message]");
+      cleanupButton.disabled = false;
+      cleanupButton.textContent = "Retry demo cleanup";
+      cleanupMessage.hidden = false;
+      cleanupMessage.textContent = "Cleanup is not yet confirmed. Retry before closing this demo.";
     },
     error(message, retryable = false) {
       views.error.textContent = retryable ? `${message} Please try again.` : message;
@@ -181,5 +229,6 @@ export function createBookingWidgetUi(root) {
     confirmButton: element(root, "[data-quote-confirm]"),
     backButton: element(root, "[data-quote-back]"),
     refreshButton: element(root, "[data-booking-refresh]"),
+    demoCleanupButton: element(root, "[data-booking-demo-cleanup]"),
   });
 }

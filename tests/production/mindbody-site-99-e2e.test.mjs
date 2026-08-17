@@ -19,13 +19,19 @@ function json(body, status = 200) {
 }
 
 function sandboxProvider({
-  omitSale = false, ambiguousCheckout = false, delayedVisitReads = 0, revokeFails = false,
+  omitSale = false,
+  ambiguousCheckout = false,
+  delayedVisitReads = 0,
+  revokeFails = false,
+  ambiguousCancellation = false,
+  cancellationLagReads = 0,
 } = {}) {
   const requests = [];
   let clientId = "client-shared";
   let visitActive = false;
   let saleCreated = false;
   let hiddenVisitReads = 0;
+  let remainingCancellationLagReads = 0;
   const fetchImpl = async (urlValue, init) => {
     const url = new URL(urlValue);
     const body = init.body ? JSON.parse(init.body) : null;
@@ -84,6 +90,10 @@ function sandboxProvider({
     }
     const visit = { Id: 100343801, ClassId: 19364, ClientId: clientId, ServiceId: 7001 };
     const visitVisible = () => {
+      if (!visitActive && remainingCancellationLagReads > 0) {
+        remainingCancellationLagReads -= 1;
+        return true;
+      }
       if (!visitActive) return false;
       if (hiddenVisitReads > 0) {
         hiddenVisitReads -= 1;
@@ -133,7 +143,11 @@ function sandboxProvider({
       });
     }
     if (path === "class/removeclientfromclass") {
-      if (body.Test === false) visitActive = false;
+      if (body.Test === false) {
+        visitActive = false;
+        remainingCancellationLagReads = cancellationLagReads;
+        if (ambiguousCancellation) throw new TypeError("connection reset after cancellation acceptance");
+      }
       return json({});
     }
     return json({ Error: { Code: "UnexpectedEndpoint" } }, 404);
@@ -279,6 +293,61 @@ test("committed mode waits for every evidence surface, proves exact facts, and a
   assert.deepEqual(cancellationBodies.map((body) => body.Test), [true, false]);
 });
 
+test("inspection mode leaves the exact evidenced Visit active until cleanup", async () => {
+  const provider = sandboxProvider({ delayedVisitReads: 6 });
+  const result = await runner(provider, {
+    environment: { ...environment, MINDBODY_SANDBOX_WRITE_CONFIRM: "BOOK_AND_CANCEL_SITE_-99" },
+    pollOptions: { attempts: 3, intervalMs: 0 },
+  }).run("book-for-inspection");
+
+  assert.equal(result.result, "passed");
+  assert.equal(result.booking.inspectionStatus, "active");
+  assert.equal(result.booking.visitId, "100343801");
+  assert.equal(provider.state().visitActive, true);
+  assert.equal(provider.requests.some((request) => request.url.pathname.endsWith("removeclientfromclass")), false);
+});
+
+test("inspection cleanup removes the exact pending Visit and proves the result", async () => {
+  const provider = sandboxProvider({ delayedVisitReads: 6 });
+  const site99 = runner(provider, {
+    environment: { ...environment, MINDBODY_SANDBOX_WRITE_CONFIRM: "BOOK_AND_CANCEL_SITE_-99" },
+    pollOptions: { attempts: 3, intervalMs: 0 },
+  });
+  const active = await site99.run("book-for-inspection");
+
+  const cleaned = await site99.run("cleanup-inspection");
+
+  assert.equal(active.booking.visitId, "100343801");
+  assert.equal(cleaned.booking.visitId, active.booking.visitId);
+  assert.equal(cleaned.booking.inspectionStatus, "cleaned");
+  assert.equal(cleaned.booking.cancellationConfirmed, true);
+  assert.equal(provider.state().visitActive, false);
+  const cancellationBodies = provider.requests
+    .filter((request) => request.url.pathname.endsWith("removeclientfromclass"))
+    .map((request) => request.body);
+  assert.deepEqual(cancellationBodies.map((body) => body.Test), [true, false]);
+});
+
+test("ambiguous inspection cancellation is reconciled through reads without replaying the write", async () => {
+  const provider = sandboxProvider({ ambiguousCancellation: true, cancellationLagReads: 5 });
+  const site99 = runner(provider, {
+    environment: { ...environment, MINDBODY_SANDBOX_WRITE_CONFIRM: "BOOK_AND_CANCEL_SITE_-99" },
+    pollOptions: { attempts: 3, intervalMs: 0 },
+  });
+  await site99.run("book-for-inspection");
+  await assert.rejects(
+    () => site99.run("cleanup-inspection"),
+    (error) => error instanceof Site99RunError && error.code === "NETWORK_ERROR",
+  );
+
+  const reconciled = await site99.run("cleanup-inspection");
+
+  assert.equal(reconciled.booking.cancellationConfirmed, true);
+  const committedCancellations = provider.requests.filter((request) => request.url.pathname.endsWith("removeclientfromclass")
+    && request.body.Test === false);
+  assert.equal(committedCancellations.length, 1);
+});
+
 test("a missing post-checkout Sale is unknown but still triggers targeted cleanup", async () => {
   const provider = sandboxProvider({ omitSale: true });
   await assert.rejects(
@@ -327,4 +396,20 @@ test("a staff-token revocation failure prevents a passed result", async () => {
     () => runner(provider).run("quote"),
     (error) => error instanceof Site99RunError && error.code === "TokenRevokeFailed",
   );
+});
+
+test("a token-revocation failure after inspection Booking cannot orphan the active Visit", async () => {
+  const provider = sandboxProvider({ revokeFails: true });
+
+  await assert.rejects(
+    () => runner(provider, {
+      environment: { ...environment, MINDBODY_SANDBOX_WRITE_CONFIRM: "BOOK_AND_CANCEL_SITE_-99" },
+    }).run("book-for-inspection"),
+    (error) => error instanceof Site99RunError && error.code === "TokenRevokeFailed",
+  );
+
+  assert.equal(provider.state().visitActive, false);
+  const committedCancellations = provider.requests.filter((request) => request.url.pathname.endsWith("removeclientfromclass")
+    && request.body.Test === false);
+  assert.equal(committedCancellations.length, 1);
 });

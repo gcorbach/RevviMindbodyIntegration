@@ -89,6 +89,7 @@ var RevviBooking = (() => {
     quoteEndpoint = "/functions/v1/booking-quote",
     bookingEndpoint = "/functions/v1/create-booking",
     paymentCompletionEndpoint = "/functions/v1/complete-paid-booking",
+    demoCleanupEndpoint = "/functions/v1/cleanup-demo-booking",
     upcomingEndpoint = "/functions/v1/upcoming-bookings",
     cancellationEndpoint = "/functions/v1/cancel-booking"
   } = {}) {
@@ -122,6 +123,12 @@ var RevviBooking = (() => {
         paymentCompletionEndpoint,
         authorization,
         { bookingId }
+      ),
+      cleanupDemoBooking: (authorization, demoBookingId) => postJson(
+        fetcher,
+        demoCleanupEndpoint,
+        authorization,
+        { demoBookingId }
       ),
       upcomingBookings: (authorization, limit = 20) => postJson(
         fetcher,
@@ -242,6 +249,20 @@ var RevviBooking = (() => {
     } catch {
       return `${currency} ${amount.toFixed(2)}`;
     }
+  }
+  function bookingConfirmationText(booking, fallbackLocationName) {
+    const locationName = booking.locationName ?? fallbackLocationName;
+    const references = booking?.sandboxDemo?.references;
+    const searchableReferences = references && typeof references.clientId === "string" && typeof references.clientName === "string" && typeof references.saleId === "string" && typeof references.visitId === "string";
+    if (booking?.sandboxDemo?.cleanupStatus === "pending" && searchableReferences) {
+      const cleanupTime = formatDateTime(booking.sandboxDemo.autoCleanupAt, booking.timezone);
+      return `Sandbox Booking is active for inspection: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${locationName}. In Mindbody Business, search Clients for ${references.clientName} (Client ${references.clientId}) and open the Client schedule or visits. Cash Sale ${references.saleId} and Visit ${references.visitId} are the exact evidence. Use Clean up demo Booking when finished; otherwise it will be automatically cleaned at ${cleanupTime}.`;
+    }
+    if (booking?.sandboxDemo?.cleanupStatus === "confirmed" && searchableReferences) {
+      const restoration = booking.sandboxDemo.entitlementRestorationObserved === true ? "Entitlement restoration was confirmed." : booking.sandboxDemo.entitlementRestorationObserved === false ? "Entitlement restoration was not observed." : "Entitlement restoration remains unknown.";
+      return `Sandbox Booking verified and removed safely: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${locationName}. Search Mindbody for ${references.clientName} (Client ${references.clientId}); the retained Cash Sale is ${references.saleId}, and Visit ${references.visitId} was removed. ${restoration}`;
+    }
+    return `Booking confirmed: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${locationName}.`;
   }
   function availabilityPresentation(occurrence) {
     switch (occurrence.availabilityState) {
@@ -372,8 +393,33 @@ var RevviBooking = (() => {
         freshness.textContent = "Class times are stale and could not yet be refreshed.";
       },
       success(booking) {
-        views.confirmation.textContent = `Booking confirmed: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${booking.locationName ?? root.dataset.locationName}.`;
+        setText(root, "[data-booking-confirmation-message]", bookingConfirmationText(booking, root.dataset.locationName));
+        const cleanupButton = element(root, "[data-booking-demo-cleanup]");
+        const cleanupMessage = element(root, "[data-booking-demo-cleanup-message]");
+        const cleanupStatus = booking?.sandboxDemo?.cleanupStatus;
+        root.dataset.demoCleanupStatus = cleanupStatus ?? "not-applicable";
+        cleanupButton.hidden = cleanupStatus !== "pending";
+        cleanupButton.disabled = false;
+        cleanupButton.textContent = "Clean up demo Booking";
+        cleanupMessage.hidden = true;
+        cleanupMessage.textContent = "";
         show("success", "confirmation");
+      },
+      cleaningDemoBooking() {
+        const cleanupButton = element(root, "[data-booking-demo-cleanup]");
+        const cleanupMessage = element(root, "[data-booking-demo-cleanup-message]");
+        cleanupButton.disabled = true;
+        cleanupButton.textContent = "Cleaning up\u2026";
+        cleanupMessage.hidden = false;
+        cleanupMessage.textContent = "Removing the exact sandbox Booking from Mindbody\u2026";
+      },
+      demoCleanupFailed() {
+        const cleanupButton = element(root, "[data-booking-demo-cleanup]");
+        const cleanupMessage = element(root, "[data-booking-demo-cleanup-message]");
+        cleanupButton.disabled = false;
+        cleanupButton.textContent = "Retry demo cleanup";
+        cleanupMessage.hidden = false;
+        cleanupMessage.textContent = "Cleanup is not yet confirmed. Retry before closing this demo.";
       },
       error(message, retryable = false) {
         views.error.textContent = retryable ? `${message} Please try again.` : message;
@@ -381,7 +427,8 @@ var RevviBooking = (() => {
       },
       confirmButton: element(root, "[data-quote-confirm]"),
       backButton: element(root, "[data-quote-back]"),
-      refreshButton: element(root, "[data-booking-refresh]")
+      refreshButton: element(root, "[data-booking-refresh]"),
+      demoCleanupButton: element(root, "[data-booking-demo-cleanup]")
     });
   }
 
@@ -443,7 +490,8 @@ var RevviBooking = (() => {
       availabilityEndpoint: root.dataset.availabilityEndpoint,
       quoteEndpoint: root.dataset.quoteEndpoint,
       bookingEndpoint: root.dataset.bookingEndpoint,
-      paymentCompletionEndpoint: root.dataset.paymentCompletionEndpoint
+      paymentCompletionEndpoint: root.dataset.paymentCompletionEndpoint,
+      demoCleanupEndpoint: root.dataset.demoCleanupEndpoint
     });
     const authenticate = dependencies.authenticate ?? (() => createMemberstackAuthorizationHeader(browser));
     const randomUuid = dependencies.randomUuid ?? (() => browser.crypto.randomUUID());
@@ -452,6 +500,7 @@ var RevviBooking = (() => {
     let selectedOccurrence = null;
     let quote = null;
     let requestActive = false;
+    let activeDemoBookingId = null;
     let loadSequence = 0;
     function availabilityContext() {
       const startDate = dateInput.value?.trim();
@@ -538,6 +587,7 @@ var RevviBooking = (() => {
         const data = await api.createBooking(authorization, quote.quoteId, randomUuid());
         const booking = data?.booking;
         if (booking?.status === "confirmed") {
+          activeDemoBookingId = booking?.sandboxDemo?.cleanupStatus === "pending" && UUID.test(booking?.sandboxDemo?.demoBookingId ?? "") ? booking.sandboxDemo.demoBookingId : null;
           ui.success({ ...booking, timezone: quote.occurrence?.timezone ?? selectedOccurrence?.timezone });
         } else if (booking?.status === "requires_action") {
           const redirectUrl = paymentActionUrl(booking.redirectUrl ?? data.redirectUrl);
@@ -562,6 +612,24 @@ var RevviBooking = (() => {
         requestActive = false;
         ui.confirmButton.disabled = false;
         void refreshAvailabilityAfterAttempt();
+      }
+    }
+    async function cleanupDemoBooking() {
+      if (requestActive || !activeDemoBookingId) return;
+      requestActive = true;
+      ui.cleaningDemoBooking();
+      try {
+        const data = await api.cleanupDemoBooking(authorization, activeDemoBookingId);
+        const booking = data?.booking;
+        if (booking?.status !== "confirmed" || booking?.sandboxDemo?.cleanupStatus !== "confirmed" || booking?.sandboxDemo?.demoBookingId !== activeDemoBookingId) {
+          throw new Error("The sandbox cleanup was not confirmed.");
+        }
+        activeDemoBookingId = null;
+        ui.success({ ...booking, timezone: quote?.occurrence?.timezone ?? selectedOccurrence?.timezone });
+      } catch {
+        ui.demoCleanupFailed();
+      } finally {
+        requestActive = false;
       }
     }
     async function completeReturnedPayment() {
@@ -601,6 +669,7 @@ var RevviBooking = (() => {
       return true;
     }
     ui.confirmButton.addEventListener("click", submitBooking);
+    ui.demoCleanupButton.addEventListener("click", cleanupDemoBooking);
     function resetSelection() {
       selectedOccurrence = null;
       quote = null;
