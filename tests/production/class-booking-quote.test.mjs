@@ -71,7 +71,9 @@ test("an exact resolved client receives a short-lived provider-calculated paid q
   assert.equal(deps.saved[0].mappingVersion, 4);
   assert.equal(deps.saved[0].providerClientUniqueId, "41");
   assert.equal(deps.saved[0].status, "open");
-  assert.equal(checkoutFacts.locationId, 98);
+  assert.equal(checkoutFacts.siteId, "-99");
+  assert.equal(checkoutFacts.checkoutLocationId, 98);
+  assert.equal(checkoutFacts.classLocationId, "7");
 });
 
 test("ambiguous exact identities create support work and stop before Class or cart operations", async () => {

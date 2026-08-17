@@ -109,6 +109,44 @@ export function createMindbodyClientQuoteClient(options) {
     });
   }
 
+  async function quotePaymentAmount({ classId, checkoutLocationId, classLocationId, productId }) {
+    const services = await getAll("sale/services", {
+      ClassId: classId,
+      LocationId: checkoutLocationId,
+      SellOnline: true,
+      HideRelatedPrograms: false,
+      IncludeDiscontinued: false,
+    }, "Services");
+    const matchingPricingOptions = services.filter((service) => String(service?.ProductId ?? "").trim() === productId
+      && service?.SellOnline !== false
+      && service?.Discontinued !== true);
+    if (matchingPricingOptions.length !== 1) {
+      throw new MindbodyClientQuoteError("The configured Mindbody pricing option could not be quoted uniquely.", {
+        endpointName: "sale/services", statusCode: 200,
+        errorCode: matchingPricingOptions.length === 0 ? "SERVICE_NOT_FOUND" : "SERVICE_NOT_UNIQUE",
+      });
+    }
+    const pricingOption = matchingPricingOptions[0];
+    const includesLocation = (ids, selectedLocationId) => Array.isArray(ids)
+      && ids.map(String).includes(String(selectedLocationId));
+    if (!includesLocation(pricingOption.SellAtLocationIds, checkoutLocationId)
+      || !includesLocation(pricingOption.UseAtLocationIds, classLocationId)) {
+      throw new MindbodyClientQuoteError("The configured Mindbody pricing option is not valid at the required sale and use Locations.", {
+        endpointName: "sale/services", statusCode: 200, errorCode: "SERVICE_LOCATION_NOT_APPROVED",
+      });
+    }
+    const onlinePrice = Number(pricingOption.OnlinePrice);
+    const taxRate = Number(pricingOption.TaxRate ?? 0);
+    const taxIncluded = pricingOption.TaxIncluded === true || pricingOption.TaxIncluded === 1;
+    if (!Number.isFinite(onlinePrice) || onlinePrice < 0
+      || !Number.isFinite(taxRate) || taxRate < 0 || taxRate > 1) {
+      throw new MindbodyClientQuoteError("Mindbody returned invalid pricing-option seed totals.", {
+        endpointName: "sale/services", statusCode: 200, errorCode: "INVALID_SERVICE_PRICE",
+      });
+    }
+    return Number((taxIncluded ? onlinePrice : onlinePrice * (1 + taxRate)).toFixed(2));
+  }
+
   return Object.freeze({
     getSiteCurrency: async () => {
       const sites = await request("site/sites", { collection: "Sites" });
@@ -197,22 +235,48 @@ export function createMindbodyClientQuoteClient(options) {
       { ClientId: requiredMindbodyText(clientId, "clientId"), ClassId: requiredMindbodyText(classId, "classId") },
       "ClientServices",
     )).map(entitlementFact),
-    testCheckout: async ({ classId, clientId, locationId, productId }) => {
+    testCheckout: async ({
+      siteId: operationSiteId,
+      classId,
+      clientId,
+      checkoutLocationId,
+      classLocationId,
+      productId,
+    }) => {
+      const selectedSiteId = requiredMindbodyText(operationSiteId, "siteId");
+      if (selectedSiteId !== siteId) {
+        throw new MindbodyClientQuoteError("The quote Site does not match the configured Mindbody client.", {
+          endpointName: "sale/checkoutshoppingcart", statusCode: null, errorCode: "SITE_CONTEXT_MISMATCH",
+        });
+      }
       const selectedClassId = requiredMindbodyInteger(classId, "classId");
+      const selectedCheckoutLocationId = requiredMindbodyInteger(checkoutLocationId, "checkoutLocationId");
+      const selectedClassLocationId = requiredMindbodyInteger(classLocationId, "classLocationId");
+      const selectedProductId = requiredMindbodyText(productId, "productId");
+      const paymentAmount = await quotePaymentAmount({
+        classId: selectedClassId,
+        checkoutLocationId: selectedCheckoutLocationId,
+        classLocationId: selectedClassLocationId,
+        productId: selectedProductId,
+      });
       const envelope = await request("sale/checkoutshoppingcart", {
         method: "POST",
         body: {
           ClientId: requiredMindbodyText(clientId, "clientId"),
-          LocationId: requiredMindbodyInteger(locationId, "locationId"),
+          LocationId: selectedCheckoutLocationId,
           Test: true,
           InStore: false,
           CalculateTax: true,
           SendEmail: false,
           EnforceLocationRestrictions: true,
           Items: [{
-            Item: { Type: "Service", Metadata: { Id: requiredMindbodyText(productId, "productId") } },
+            Item: { Type: "Service", Metadata: { Id: selectedProductId } },
             Quantity: 1,
             ClassIds: [selectedClassId],
+          }],
+          Payments: [{
+            Type: "Cash",
+            MetaData: { Amount: paymentAmount, Notes: "Revvi Test quote" },
           }],
         },
       });

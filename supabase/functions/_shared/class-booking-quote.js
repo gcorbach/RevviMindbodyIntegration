@@ -191,9 +191,11 @@ export async function createClassBookingQuote(input, dependencies) {
       );
     }
     const calculation = await dependencies.provider.testCheckout({
+      siteId: input.context.integration.providerSiteId,
       classId: input.classId,
       clientId: profile.providerClientId,
-      locationId: input.context.mapping.paidCheckoutLocationId,
+      checkoutLocationId: input.context.mapping.paidCheckoutLocationId,
+      classLocationId: input.context.location.providerLocationId,
       productId: input.context.mapping.providerServiceProductId,
     });
     fulfilment = {
@@ -345,9 +347,11 @@ export async function revalidateClassBookingQuoteBeforeWrite(input, dependencies
   }
   const [totals, currency] = await Promise.all([
     dependencies.provider.testCheckout({
+      siteId: context.integration.providerSiteId,
       classId: quote.classId,
       clientId: quote.providerClientId,
-      locationId: context.mapping.paidCheckoutLocationId,
+      checkoutLocationId: context.mapping.paidCheckoutLocationId,
+      classLocationId: context.location.providerLocationId,
       productId: quote.providerServiceProductId,
     }),
     dependencies.provider.getSiteCurrency(),

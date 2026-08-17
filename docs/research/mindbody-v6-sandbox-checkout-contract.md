@@ -1,6 +1,6 @@
 # Mindbody Public API V6 sandbox checkout contract
 
-Researched: 2026-07-21  
+Researched: 2026-07-21; sandbox contract updated 2026-08-17
 Scope: Mindbody-owned Public API V6 documentation, release notes, and the repository's recorded sandbox observations. This replaces neither a real sandbox checkout execution nor production certification.
 
 ## Decision
@@ -26,18 +26,19 @@ Do not send a real PAN/CVV. Implement the request model only from the current po
 These are local, historical observations—not claims made by Mindbody documentation.
 
 - A sandbox request to `POST /appointment/addappointment` with only `Api-Key` and `SiteId` headers (no user token), a single appointment object, and `Test: true` succeeded. The obsolete `AddAppointmentRequests` wrapper was rejected. [Sandbox validation record](../testing/mindbody-sandbox-payment-validation.md)
-- The repository has **not** executed `CheckoutShoppingCart`; therefore no checkout cart shape, tender, SCA response, appointment linkage, or `Test: true` result is sandbox-proven yet. [Sandbox validation record](../testing/mindbody-sandbox-payment-validation.md)
+- On 2026-08-17, a controlled request against public Business sandbox Site `-99` obtained a temporary staff token in memory and exercised `POST /sale/checkoutshoppingcart` with `Test: true`. Omitting `Payments` returned HTTP 400 `MissingRequiredFields`; an empty array and `{ PaymentMethodId, Amount }` entries were also rejected. The accepted non-settling quote shape was `Payments: [{ Type: "Cash", MetaData: { Amount, Notes } }]`, where `Amount` exactly matched the selected online Service price including tax. The response was HTTP 200 with the expected cart total. No credential or token was persisted.
+- The same sandbox contains a usable classes-only fixture: Site `-99` (`LastSpot`), Location `1` (`Clubville`), Program `27` (`Yoga`), Class Description `223` (`Yoga`), Session Type `250` (`Hatha Yoga`), Schedule `2152`, and online Product `1431`. These are shared fictitious sandbox identifiers, not partner-production configuration.
+- This verifies only the `Test: true` cart used to calculate and validate a quote. It does not approve `Cash` as a live payment route, prove a merchant processor, or satisfy SCA/alternative-payment activation.
 
 ## Explicitly unknown from official V6 material
 
 1. Supported sandbox PAN, CVV, expiry, stored-card fixture, and any test-only payment-method ID.
 2. Whether the sandbox Site's merchant configuration accepts a card/alternative payment in `Test: true` mode.
-3. The exact current checkout `PaymentInfo`/payment-item shape and mandatory fields without reading the live portal operation schema; release notes are not a substitute for that schema.
+3. The production payment-item shape for the selected merchant-approved no-card route. The sandbox quote validator's typed `Cash` payment is test-only and must never be reused for a live checkout.
 4. Whether `Api-Key` + `SiteId` alone is sufficient for customer checkout, and which permissions/token are required if it is not.
 5. An API-supported browser tokenisation, hosted-fields, or generic hosted-checkout mechanism that keeps PAN/CVV out of Revvi.
 6. The exact correct sequence for **paid appointments** (create appointment before sale, sale before appointment, or a single cart link) and its atomicity.
 
 ## Sandbox next step
 
-Use the V6 portal's current generated request example as the fixture source; make one `Test: true` checkout only after selecting a sandbox-supported non-sensitive payment method. Record redacted headers, request keys/types (never values for secrets or card data), response, and whether `Transactions` requires the SCA second call. If the portal does not supply a usable sandbox tender fixture, retain paid checkout as disabled: the V6 sources do not license inventing one.
-
+Use the verified typed-payment test-cart contract for quote calculation and revalidation. Before each test cart, read the exact applicable online Service, calculate the payment seed from `OnlinePrice`, `TaxRate`, and `TaxIncluded`, then let Mindbody accept or reject the amount. Treat any mismatch as a fail-closed quote failure; never infer a new total from provider error text. Paid checkout remains disabled until the portal and Mindbody approval supply a usable production no-card route and controlled SCA evidence.
