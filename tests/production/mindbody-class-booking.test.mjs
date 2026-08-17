@@ -24,6 +24,28 @@ function options(fetchImpl) {
   };
 }
 
+test("booking reconciliation uses Mindbody's nested ClientSchedule and ClassVisits query contracts", async () => {
+  const urls = [];
+  const client = createMindbodyClassBookingClient(options(async (url) => {
+    urls.push(String(url));
+    return response({
+      Classes: [], Visits: [], WaitlistEntries: [], Sales: [], Transactions: [],
+      PaginationResponse: { TotalResults: 0 },
+    });
+  }));
+
+  await client.reconcileBooking({
+    mode: "approved_unpaid", classId: "771", clientId: "rss-1", serviceProductId: "1431",
+  });
+
+  const scheduleUrl = urls.find((url) => url.includes("/client/clientschedule"));
+  assert.match(scheduleUrl, /request\.clientId=rss-1/);
+  assert.doesNotMatch(scheduleUrl, /ClientIds=/);
+  const classVisitsUrl = urls.find((url) => url.includes("/class/classvisits"));
+  assert.match(classVisitsUrl, /request\.classID=771/);
+  assert.doesNotMatch(classVisitsUrl, /[?&]ClassId=/);
+});
+
 test("existing entitlement booking sends the exact ClientService and confirms only from Visit evidence", async () => {
   let request;
   const client = createMindbodyClassBookingClient(options(async (url, init) => {
@@ -428,6 +450,67 @@ test("paid reconciliation requires exact roster and Sale/Transaction evidence to
     });
     assert.equal(incomplete.status, "unknown", `${evidenceToOmit} evidence must be required`);
   }
+});
+
+test("paid reconciliation accepts the Site -99 Class.Visits and PurchasedItems response shapes", async () => {
+  const requests = [];
+  const client = createMindbodyClassBookingClient({
+    ...options(async (url) => {
+      const parsed = new URL(url);
+      requests.push(parsed);
+      const path = parsed.pathname;
+      if (path.endsWith("/class/classvisits")) return response({
+        Class: {
+          Id: 771,
+          Visits: [{
+            Id: "visit-live",
+            ClassId: 771,
+            ClientId: "rss-1",
+            ServiceId: "client-service-1",
+          }],
+        },
+      });
+      if (path.endsWith("/client/clientservices")) return response({ ClientServices: [{
+        Id: "client-service-1", ProductId: "product-1", Current: true, Returned: false,
+      }] });
+      if (path.endsWith("/sale/sales")) return response({ Sales: [{
+        Id: "sale-live",
+        ClientId: "rss-1",
+        PurchasedItems: [{ Id: "product-1", SaleDetailId: "detail-live", Returned: false }],
+        Payments: [{ Id: "payment-live", Amount: 13, Type: "Apple Pay" }],
+      }] });
+      if (path.endsWith("/sale/transactions")) return response({ Transactions: [{
+        Id: "transaction-live",
+        SaleId: "sale-live",
+        PaymentId: "payment-live",
+        CartId: "cart-live",
+        Status: "Approved",
+      }] });
+      return response({});
+    }),
+    now: () => new Date("2026-08-17T12:00:00Z"),
+  });
+
+  const result = await client.reconcileBooking({
+    mode: "purchase_pricing_option",
+    classId: "771",
+    clientId: "rss-1",
+    serviceProductId: "product-1",
+    saleId: "sale-live",
+    cartId: "cart-live",
+    transactionId: "transaction-live",
+    paymentId: "payment-live",
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.visitId, "visit-live");
+  assert.equal(result.saleId, "sale-live");
+  assert.equal(result.paymentId, "payment-live");
+  const clientVisitRequest = requests.find((request) => request.pathname.endsWith("/client/clientvisits"));
+  assert.equal(clientVisitRequest.searchParams.get("StartDate"), "2026-08-10");
+  assert.equal(clientVisitRequest.searchParams.get("EndDate"), "2026-09-17");
+  const classVisitRequest = requests.find((request) => request.pathname.endsWith("/class/classvisits"));
+  assert.equal(classVisitRequest.searchParams.get("request.classID"), "771");
 });
 
 test("paid reconciliation never confirms a cancelled Visit", async () => {

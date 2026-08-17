@@ -88,7 +88,7 @@ test("provider failures expose only an allowlisted diagnostic summary", async ()
     siteId: "-99",
     baseUrl: "https://api.mindbodyonline.com",
     fetchImpl: async () => jsonResponse({ Error: { Message: "raw provider secret details" } }, 429, {
-      "x-request-id": "provider-request-33",
+      "apim-request-id": "provider-request-33",
     }),
   });
 

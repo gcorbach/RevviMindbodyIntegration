@@ -10,6 +10,7 @@
     "supabase": "supabase",
     "prototype:appointment": "node docs/prototypes/serve-booking-prototype.mjs",
     "prototype:appointment:functions": "node tools/serve-appointment-prototype-functions.mjs",
+    "sandbox:mindbody": "node tools/mindbody-site-99-e2e.mjs",
     "test": "node --test --test-concurrency=1 tests/production/**/*.test.mjs",
     "test:prototype:appointment": "node tests/run-appointment-prototype.mjs"
   },

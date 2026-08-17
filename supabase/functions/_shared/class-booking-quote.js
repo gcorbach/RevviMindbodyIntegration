@@ -93,7 +93,6 @@ async function resolveProviderProfile(input, dependencies) {
       throw new BookingQuoteError("CLIENT_REQUIRED_FIELDS_UNSUPPORTED", "This Business requires additional consented Client information before booking.", 422);
     }
     const payload = { FirstName: identity.firstName, LastName: identity.lastName, Email: identity.email };
-    await dependencies.provider.addClient({ client: payload, test: true });
     client = providerClientFromAdd(await dependencies.provider.addClient({ client: payload, test: false }));
   }
   return dependencies.catalogue.persistProviderProfile({
