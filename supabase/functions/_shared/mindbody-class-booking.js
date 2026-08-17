@@ -115,7 +115,11 @@ function paginationTotal(envelope) {
 
 function scheduleVisits(envelope) {
   const facts = [];
-  for (const occurrence of array(envelope?.Classes)) {
+  const occurrences = [
+    ...array(envelope?.Classes),
+    ...(envelope?.Class && typeof envelope.Class === "object" ? [envelope.Class] : []),
+  ];
+  for (const occurrence of occurrences) {
     for (const client of array(occurrence?.Clients)) {
       const visit = visitFact({
         ...client,
@@ -140,13 +144,14 @@ const SUCCESSFUL_TRANSACTION_STATUSES = new Set([
 
 function saleFact(value) {
   if (!value || typeof value !== "object") return null;
+  const purchasedItems = array(value.PurchasedItems ?? value.Items);
   const classIds = [
     ...array(value.ClassIds),
     ...array(value.Classes).map((entry) => entry?.Id ?? entry),
-    ...array(value.Items).flatMap((item) => [item?.ClassId, item?.Class?.Id]),
+    ...purchasedItems.flatMap((item) => [item?.ClassId, item?.Class?.Id]),
   ].map(text).filter(Boolean);
-  const productIds = array(value.Items)
-    .flatMap((item) => [item?.ProductId, item?.Product?.Id])
+  const productIds = purchasedItems
+    .flatMap((item) => [item?.ProductId, item?.Product?.Id, item?.Id])
     .map(text)
     .filter(Boolean);
   return {
@@ -192,8 +197,12 @@ function exactSaleState(salesEnvelope, transactionsEnvelope, input) {
     .find((sale) => sale.saleId
       && (!expectedSaleId || sale.saleId === expectedSaleId)
       && sale.clientId === String(input.clientId)
-      && sale.classIds.includes(String(input.classId))
-      && (!expectedProductId || sale.productIds.includes(expectedProductId)));
+      && (!expectedProductId || sale.productIds.includes(expectedProductId))
+      && (sale.classIds.includes(String(input.classId))
+        || (Boolean(expectedSaleId)
+          && sale.saleId === expectedSaleId
+          && Boolean(expectedProductId)
+          && sale.productIds.includes(expectedProductId))));
   if (!exactSale) return null;
   const matchingTransactions = array(transactionsEnvelope?.Transactions)
     .map(transactionFact)
@@ -293,6 +302,20 @@ export function createMindbodyClassBookingClient(options) {
     searchParams: queryParameters(query),
     body,
   });
+
+  const now = options?.now ?? (() => new Date());
+  function clientVisitWindow() {
+    const observedAt = now();
+    if (!(observedAt instanceof Date) || Number.isNaN(observedAt.getTime())) {
+      throw new TypeError("now must return a valid Date.");
+    }
+    const start = new Date(observedAt.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const end = new Date(observedAt.getTime() + 31 * 24 * 60 * 60 * 1000);
+    return {
+      StartDate: start.toISOString().slice(0, 10),
+      EndDate: end.toISOString().slice(0, 10),
+    };
+  }
 
   async function getAll(path, query, collection) {
     const items = [];
@@ -488,9 +511,11 @@ export function createMindbodyClassBookingClient(options) {
       const clientId = requiredMindbodyText(input?.clientId, "clientId");
       const mode = text(input?.mode);
       const operations = [
-        request("client/clientschedule", { query: { ClientIds: [clientId] } }),
-        request("client/clientvisits", { query: { ClientId: clientId } }),
-        request("class/classvisits", { query: { ClassId: classId } }),
+        request("client/clientschedule", { query: { "request.clientId": clientId } }),
+        request("client/clientvisits", {
+          query: { ClientId: clientId, ...clientVisitWindow() },
+        }),
+        request("class/classvisits", { query: { "request.classID": classId } }),
         request("class/waitlistentries", { query: { ClassIds: [classId], ClientIds: [clientId] } }),
         request("sale/sales", { query: { ClientId: clientId } }),
         request("sale/transactions", { query: { ClientId: clientId } }),
@@ -508,6 +533,8 @@ export function createMindbodyClassBookingClient(options) {
         ...scheduleVisits(envelopes[0]),
         ...array(envelopes[1]?.Visits).map(visitFact),
         ...array(envelopes[2]?.Visits).map(visitFact),
+        ...array(envelopes[2]?.Class?.Visits).map(visitFact),
+        ...scheduleVisits(envelopes[2]),
       ].filter(Boolean);
       const exactVisit = visits.find((visit) => !visit.cancelled
         && exactFact(visit, { classId, clientId }));
@@ -656,9 +683,13 @@ export function createMindbodyClassBookingClient(options) {
       if (removalType !== "roster") throw new TypeError("removalType must be roster or waitlist.");
       const visitId = requiredMindbodyText(input?.visitId, "visitId");
       const settled = await Promise.allSettled([
-        getAll("client/clientschedule", { ClientIds: [clientId] }, "Classes"),
-        getAll("client/clientvisits", { ClientId: clientId }, "Visits"),
-        getAll("class/classvisits", { ClassId: classId }, "Visits"),
+        getAll("client/clientschedule", { "request.clientId": clientId }, "Classes"),
+        getAll(
+          "client/clientvisits",
+          { ClientId: clientId, ...clientVisitWindow() },
+          "Visits",
+        ),
+        request("class/classvisits", { query: { "request.classID": classId } }),
       ]);
       if (settled.some((result) => result.status !== "fulfilled")) {
         return {
@@ -670,7 +701,8 @@ export function createMindbodyClassBookingClient(options) {
       const exactVisits = [
         ...scheduleVisits({ Classes: settled[0].value }),
         ...settled[1].value.map(visitFact),
-        ...settled[2].value.map(visitFact),
+        ...array(settled[2].value?.Visits).map(visitFact),
+        ...array(settled[2].value?.Class?.Visits).map(visitFact),
       ].filter((visit) => visit && visit.visitId === visitId
         && exactFact(visit, { classId, clientId }));
       if (exactVisits.some((visit) => !visit.cancelled)) {

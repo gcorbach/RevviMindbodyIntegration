@@ -45,7 +45,10 @@ export function createMindbodyJsonTransport(options) {
         throw options.createError(options.unavailableMessage, {
           endpointName: path,
           statusCode: response.status,
-          providerRequestId: response.headers.get("x-request-id") ?? response.headers.get("request-id"),
+          providerRequestId: response.headers.get("x-request-id")
+            ?? response.headers.get("request-id")
+            ?? response.headers.get("apim-request-id")
+            ?? response.headers.get("x-ms-request-id"),
           errorCode: `HTTP_${response.status}`,
         });
       }
@@ -55,7 +58,10 @@ export function createMindbodyJsonTransport(options) {
         throw options.createError(options.invalidMessage, {
           endpointName: path,
           statusCode: response.status,
-          providerRequestId: response.headers.get("x-request-id") ?? response.headers.get("request-id"),
+          providerRequestId: response.headers.get("x-request-id")
+            ?? response.headers.get("request-id")
+            ?? response.headers.get("apim-request-id")
+            ?? response.headers.get("x-ms-request-id"),
           errorCode: "INVALID_JSON",
         }, cause);
       }

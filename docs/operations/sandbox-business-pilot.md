@@ -2,6 +2,8 @@
 
 This runbook activates one Revvi Offer for one Mindbody Business, Location, environment, fulfilment mode, and mapping version. It never activates the retained Appointment prototype. Mindbody remains authoritative for Class inventory, roster, Visit, entitlement, sale, and cancellation results.
 
+Before Mindbody go-live approval, use the [Site -99 end-to-end runner](site-99-e2e.md) to collect the public-sandbox provider evidence. A production Business Site is not required for that pre-approval milestone.
+
 ## What activation does
 
 Availability and client-aware quotes may be tested while a pilot is inactive. A new Mindbody Booking write is allowed only when `class_offer_provider_mappings.pilot_write_enabled` is true and the provider-write boundary can re-prove all of the following:

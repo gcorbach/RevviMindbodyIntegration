@@ -151,7 +151,9 @@ export function createMindbodyClientQuoteClient(options) {
     getSiteCurrency: async () => {
       const sites = await request("site/sites", { collection: "Sites" });
       const selected = sites.find((site) => String(site?.Id) === siteId) ?? (sites.length === 1 ? sites[0] : null);
-      const currency = String(selected?.CurrencyCode ?? selected?.Currency?.Code ?? "").trim().toUpperCase();
+      const currency = String(
+        selected?.CurrencyIsoCode ?? selected?.CurrencyCode ?? selected?.Currency?.Code ?? "",
+      ).trim().toUpperCase();
       if (!/^[A-Z]{3}$/.test(currency)) {
         throw new MindbodyClientQuoteError("Mindbody returned an invalid Site currency.", {
           endpointName: "site/sites", statusCode: 200, errorCode: "INVALID_CURRENCY",
@@ -186,7 +188,7 @@ export function createMindbodyClientQuoteClient(options) {
     addClient: async ({ client, test }) => {
       const envelope = await request("client/addclient", {
         method: "POST",
-        body: { Client: client, Test: test === true },
+        body: { ...client, Test: test === true },
       });
       if (test === true) return null;
       return clientFact(envelope?.Client ?? envelope?.Clients?.[0]);

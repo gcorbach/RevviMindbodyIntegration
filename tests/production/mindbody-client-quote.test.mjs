@@ -170,6 +170,41 @@ test("quote currency is read from the configured Mindbody Site", async () => {
   assert.equal(await client.getSiteCurrency(), "ZAR");
 });
 
+test("Mindbody AddClient sends the current root request shape without a Client wrapper", async () => {
+  let body;
+  const client = createMindbodyClientQuoteClient({
+    apiKey: "api-key",
+    siteId: "-99",
+    userToken: "staff-token",
+    fetchImpl: async (_url, init) => {
+      body = JSON.parse(init.body);
+      return response({ Client: { Id: "rss-new", UniqueId: 71, Email: "member@example.com" } });
+    },
+  });
+
+  const created = await client.addClient({
+    client: { FirstName: "Ava", LastName: "Ndlovu", Email: "member@example.com" },
+    test: false,
+  });
+
+  assert.deepEqual(body, {
+    FirstName: "Ava", LastName: "Ndlovu", Email: "member@example.com", Test: false,
+  });
+  assert.deepEqual(created, {
+    id: "rss-new", uniqueId: "71", email: "member@example.com", firstName: "", lastName: "",
+  });
+});
+
+test("quote currency accepts the CurrencyIsoCode field returned by Site -99", async () => {
+  const client = createMindbodyClientQuoteClient({
+    apiKey: "api-key",
+    siteId: "-99",
+    userToken: "staff-token",
+    fetchImpl: async () => response({ Sites: [{ Id: -99, CurrencyIsoCode: "USD" }] }),
+  });
+  assert.equal(await client.getSiteCurrency(), "USD");
+});
+
 test("every client and quote operation records only bounded provider diagnostics", async () => {
   const diagnostics = [];
   const provider = instrumentClientQuoteProvider({ searchClients: async () => [] }, {
