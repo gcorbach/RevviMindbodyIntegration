@@ -11,6 +11,7 @@ const SUPPORTED_WEBHOOK_EVENTS = new Set([
   "member.plan.canceled",
 ]);
 const ROOT_MEMBER_ID_WEBHOOK_EVENTS = new Set([
+  "member.created",
   "member.updated",
 ]);
 
