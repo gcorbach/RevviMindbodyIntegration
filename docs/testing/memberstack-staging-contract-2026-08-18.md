@@ -4,7 +4,7 @@
 
 This bundle records controlled Memberstack test-mode contract evidence for Supabase staging project `hqjgsqlniuhphvhyeejm` and GitHub issue #57. It does not establish a live Memberstack or production Mindbody pilot.
 
-The test Customer identifier is represented only by SHA-256 digest `987ec9c95b2a83ef7f474d31c0110847f332b0f3c88b06aa9c7ffb92d272038c`. The source email and raw Memberstack Customer identifier are intentionally omitted.
+The original test Customer identifier is represented only by SHA-256 digest `987ec9c95b2a83ef7f474d31c0110847f332b0f3c88b06aa9c7ffb92d272038c`. The later fresh Customer is identified in this bundle only by its redacted request sequence. Source emails and raw Memberstack Customer identifiers are intentionally omitted.
 
 ## Captured test-mode envelopes
 
@@ -36,7 +36,7 @@ The staging secret digest identifies this evidence bundle.
 
 - [x] Signed test-mode delivery `msg_3I5epbP1hjWo1fmR1mD9WPSBH3v` passed whole-envelope verification, authoritative current-Customer retrieval, and durable event handling with HTTP `200` (`duplicate: false`, request `8fe0593f-28d3-405b-8cd7-833a68dfd263`).
 - [x] The same delivery was safely acknowledged as a duplicate with HTTP `200` (`duplicate: true`, request `903ae06a-0a9f-44d9-a135-2cdb9b1b1a41`).
-- [ ] The resulting redacted Customer snapshot contains the active test plan. The captured update delivery may have been intentionally marked `ignored` because the test-mode webhook endpoint was created after the original Customer; replay the original `member.created` and `member.plan.added` deliveries in order before claiming snapshot onboarding.
+- [x] A fresh test Customer completed the ordered hosted sequence: `member.created` (`408ab713-42da-49ae-8e95-df2a5d0ab66e`), name `member.updated` (`8fe64a76-aa5e-451a-b2f0-13aafaa7c61f`), verified `member.updated` (`31320cf5-0746-415d-b2c1-978a84699407`), and `member.plan.added` (`d78ff810-f4c0-4954-a3fd-59bb3d14c635`). Every delivery returned HTTP `200` with `duplicate: false`. The ordered responses prove Customer onboarding followed by authoritative snapshot refresh; exact active-plan eligibility remains pending the fresh Admin read in the hosted Webflow acceptance test.
 - [ ] Webflow browser JWT and Offer-eligibility acceptance passes using the verified test Customer.
 
 The successful delivery required the Memberstack test-mode server key (`sk_sb_...`) and test-mode endpoint signing secret; a live-mode server key correctly could not retrieve the test Customer.
