@@ -39,14 +39,39 @@ export async function cancelClassBooking(input, dependencies) {
   if (claim.shouldWrite !== true) return storedCancellation(claim);
   const reconciliationInput = cancellationInput(claim);
   let restorationBaseline = null;
-  const finalize = (facts) => dependencies.catalogue.finalizeCancellation({
+  const finalizeLedger = (facts, restorationRequired = false) => dependencies.catalogue.finalizeCancellation({
     businessId: claim.booking.businessId,
     bookingId: claim.booking.id,
     attemptId: claim.attempt.id,
     writeToken: claim.writeToken,
-    restorationStatus: claim.booking.fulfilmentMode === "existing_entitlement" ? "unknown" : null,
+    restorationStatus: restorationRequired ? "unknown" : null,
     ...facts,
   });
+  let sandboxDemoRestoration = false;
+  try {
+    sandboxDemoRestoration = claim.booking.fulfilmentMode === "purchase_pricing_option"
+      && typeof dependencies.requiresEntitlementRestoration === "function"
+      && await dependencies.requiresEntitlementRestoration(claim);
+  } catch (error) {
+    return finalizeLedger({
+      outcome: "unknown",
+      authoritativeCancelled: false,
+      errorCode: error?.code ?? "CANCELLATION_RESTORATION_SCOPE_UNKNOWN",
+    });
+  }
+  const restorationRequired = claim.booking.fulfilmentMode === "existing_entitlement"
+    || sandboxDemoRestoration;
+  const finalize = async (facts) => {
+    const cancellation = await finalizeLedger(facts, restorationRequired);
+    if (!sandboxDemoRestoration || facts.outcome !== "confirmed") return cancellation;
+    return dependencies.catalogue.recordSandboxDemoRestoration({
+      businessId: claim.booking.businessId,
+      bookingId: claim.booking.id,
+      restorationStatus: facts.restorationStatus ?? "unknown",
+      restorationErrorCode: facts.restorationErrorCode ?? null,
+      cancellation,
+    });
+  };
 
   let provider;
   try {
@@ -60,7 +85,7 @@ export async function cancelClassBooking(input, dependencies) {
   }
 
   const restoration = async () => {
-    if (claim.booking.fulfilmentMode !== "existing_entitlement") return null;
+    if (!restorationRequired) return null;
     try {
       return await provider.reconcileEntitlementRestoration({
         classId: claim.booking.providerClassId,
@@ -103,7 +128,7 @@ export async function cancelClassBooking(input, dependencies) {
     });
   }
 
-  if (claim.booking.fulfilmentMode === "existing_entitlement") {
+  if (restorationRequired) {
     try {
       const baseline = await provider.readEntitlementState({
         classId: claim.booking.providerClassId,
@@ -112,7 +137,10 @@ export async function cancelClassBooking(input, dependencies) {
       });
       restorationBaseline = baseline?.status === "observed" ? baseline : null;
       if (restorationBaseline) {
-        await dependencies.catalogue.persistEntitlementRestorationBaseline({
+        const persistBaseline = sandboxDemoRestoration
+          ? dependencies.catalogue.persistSandboxDemoRestorationBaseline
+          : dependencies.catalogue.persistEntitlementRestorationBaseline;
+        await persistBaseline({
           businessId: claim.booking.businessId,
           bookingId: claim.booking.id,
           attemptId: claim.attempt.id,

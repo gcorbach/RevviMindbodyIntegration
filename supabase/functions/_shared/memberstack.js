@@ -10,6 +10,10 @@ const SUPPORTED_WEBHOOK_EVENTS = new Set([
   "member.plan.updated",
   "member.plan.canceled",
 ]);
+const ROOT_MEMBER_ID_WEBHOOK_EVENTS = new Set([
+  "member.created",
+  "member.updated",
+]);
 
 export class MemberstackAuthenticationError extends Error {
   constructor(code, message) {
@@ -327,6 +331,9 @@ export function parseMemberstackWebhookEnvelope(envelope) {
   const candidateMemberIds = [
     envelope?.payload?.member?.id,
     envelope?.data?.member?.id,
+    ...(ROOT_MEMBER_ID_WEBHOOK_EVENTS.has(externalEventType)
+      ? [envelope?.payload?.id]
+      : []),
   ].filter((value) => typeof value === "string" && value.length > 0);
   const distinctMemberIds = [...new Set(candidateMemberIds)];
   if (!externalEventType || distinctMemberIds.length > 1) {

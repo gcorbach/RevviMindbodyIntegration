@@ -422,6 +422,104 @@ test("paid confirmation requires the exact pricing option, roster, ClientService
   assert.equal(confirmed.booking.status, "confirmed");
 });
 
+test("Site -99 fictitious Cash may confirm without fabricating a Transaction ID", async () => {
+  const paidQuote = {
+    ...quote,
+    fulfilmentMode: "purchase_pricing_option",
+    providerClientServiceId: null,
+    providerServiceProductId: "1431",
+    providerLocationId: "1",
+    grandTotal: 13,
+    currency: "USD",
+  };
+  const paidContext = {
+    ...context,
+    location: { ...context.location, providerLocationId: "1" },
+    offer: { ...context.offer, fulfilmentMode: "purchase_pricing_option" },
+    integration: { ...context.integration, environment: "sandbox", providerSiteId: "-99" },
+    mapping: {
+      ...context.mapping,
+      paidPaymentRoute: "mindbody_sandbox_cash",
+      sandboxDemoWriteEnabled: true,
+      sandboxDemoCustomerId: "customer-a",
+    },
+  };
+  const deps = dependencies();
+  deps.provider.createBooking = async () => ({
+    status: "confirmed",
+    certainty: "provider_confirmed",
+    visitId: "visit-1",
+    clientServiceId: "client-service-1",
+    serviceProductId: "1431",
+    saleId: "sale-1",
+    cartId: "cart-1",
+    transactionId: null,
+    paymentId: "payment-1",
+    paymentType: "Cash",
+    atomicCheckoutConfirmed: true,
+  });
+  const confirmed = await createClassBooking({
+    ...input,
+    quote: paidQuote,
+    context: paidContext,
+    idempotencyKey: crypto.randomUUID(),
+  }, deps);
+  assert.equal(confirmed.booking.status, "confirmed");
+  assert.equal(deps.calls.completions[0].providerReferences.providerTransactionId, null);
+});
+
+test("post-write Site -99 token cleanup failure stays unknown while retaining reconciliation references", async () => {
+  const error = Object.assign(new Error("staff token revocation failed"), {
+    certainty: "unknown",
+    code: "SITE_99_STAFF_TOKEN_REVOKE_FAILED",
+    providerResult: {
+      status: "confirmed",
+      certainty: "provider_confirmed",
+      visitId: "visit-cash",
+      rosterBookingId: "roster-cash",
+      clientServiceId: "client-service-cash",
+      serviceProductId: "product-paid",
+      saleId: "sale-cash",
+      cartId: "cart-cash",
+      transactionId: null,
+      paymentId: "payment-cash",
+      paymentType: "Cash",
+      atomicCheckoutConfirmed: true,
+    },
+  });
+  const paidQuote = {
+    ...quote,
+    fulfilmentMode: "purchase_pricing_option",
+    providerClientServiceId: null,
+    providerServiceProductId: "product-paid",
+    providerLocationId: "1",
+    grandTotal: 13,
+    currency: "USD",
+  };
+  const paidContext = {
+    ...context,
+    location: { ...context.location, providerLocationId: "1" },
+    offer: { ...context.offer, fulfilmentMode: "purchase_pricing_option" },
+    integration: { ...context.integration, environment: "sandbox", providerSiteId: "-99" },
+    mapping: {
+      ...context.mapping,
+      paidPaymentRoute: "mindbody_sandbox_cash",
+      sandboxDemoWriteEnabled: true,
+      sandboxDemoCustomerId: "customer-a",
+    },
+  };
+  const deps = dependencies();
+  deps.provider.createBooking = async () => { throw error; };
+  const result = await createClassBooking({
+    ...input, quote: paidQuote, context: paidContext, idempotencyKey: crypto.randomUUID(),
+  }, deps);
+  assert.equal(result.booking.status, "unknown");
+  assert.equal(deps.calls.completions[0].providerReferences.providerVisitId, "visit-cash");
+  assert.equal(deps.calls.completions[0].providerReferences.providerSaleId, "sale-cash");
+  assert.equal(deps.calls.completions[0].providerReferences.providerPaymentId, "payment-cash");
+  assert.equal(deps.calls.queued.length, 1);
+});
+
 test("approved unpaid never turns Mindbody entitlement, sale, payment, or waitlist evidence into an approved-unpaid Booking confirmation", async () => {
   const unpaidQuote = {
     ...quote,

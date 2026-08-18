@@ -85,6 +85,39 @@ test("cancellation writes once and confirms only after an authoritative provider
   assert.deepEqual(order, ["persist-baseline", "write"]);
 });
 
+test("the Site -99 Cash demo records exact ClientService restoration separately from cancellation", async () => {
+  const paidClaim = claim({ fulfilmentMode: "purchase_pricing_option" });
+  const provider = {
+    reconcileCancellation: (() => {
+      let reads = 0;
+      return async () => (++reads === 1
+        ? { status: "active" }
+        : { status: "cancelled", authoritativeCancelled: true });
+    })(),
+    readEntitlementState: async () => ({
+      status: "observed", clientServiceId: "service-39", current: false,
+      returned: false, unlimited: false, remaining: 0, observedAt: "2026-08-10T11:59:00Z",
+    }),
+    reconcileEntitlementRestoration: async ({ baseline }) => {
+      assert.equal(baseline.remaining, 0);
+      return { status: "confirmed", clientServiceId: "service-39" };
+    },
+    cancelBooking: async () => ({ status: "accepted" }),
+  };
+  const { dependencies } = cancellationDependencies(provider, paidClaim);
+  const calls = [];
+  dependencies.requiresEntitlementRestoration = async () => true;
+  dependencies.catalogue.persistSandboxDemoRestorationBaseline = async () => calls.push("baseline");
+  dependencies.catalogue.recordSandboxDemoRestoration = async (facts) => {
+    calls.push(facts.restorationStatus);
+    return { ...facts.cancellation, passRestoration: "restored" };
+  };
+  const result = await cancelClassBooking({ bookingId }, dependencies);
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.passRestoration, "restored");
+  assert.deepEqual(calls, ["baseline", "confirmed"]);
+});
+
 test("a baseline persistence failure prevents the provider cancellation write", async () => {
   let writes = 0;
   const provider = {
@@ -297,6 +330,41 @@ test("the lifecycle worker re-reads and records the exact entitlement after canc
         assert.equal(input.baseline.remaining, 0);
         return { status: "confirmed", clientServiceId: input.clientServiceId };
       },
+    }),
+  });
+  assert.deepEqual(calls, ["confirmed", "completed"]);
+  assert.equal(result.reconciliations[0].status, "completed");
+});
+
+test("the lifecycle worker reconciles Site -99 Cash ClientService restoration without replaying cancellation", async () => {
+  const calls = [];
+  const work = {
+    id: "queue-sandbox-restoration-57", businessId: "business-39", bookingId,
+    purpose: "cancellation", source: "manual", attemptCount: 1,
+  };
+  const context = {
+    work,
+    booking: {
+      id: bookingId, businessId: "business-39", status: "cancelled",
+      cancellationStatus: "confirmed", fulfilmentMode: "purchase_pricing_option",
+      sandboxDemoRestoration: true, classId: "771", clientId: "rss-39",
+      clientServiceId: "service-39",
+      restorationBaseline: {
+        status: "observed", clientServiceId: "service-39", current: false,
+        returned: false, unlimited: false, remaining: 0,
+      },
+    },
+    attempt: { id: "attempt-39", type: "cancellation" },
+  };
+  const result = await runClassLifecycleWorker({
+    catalogue: {
+      claimWebhookBatch: async () => [], claimLifecycleBatch: async () => [work],
+      resolveLifecycleContext: async () => context,
+      recordEntitlementRestoration: async (_context, observation) => calls.push(observation.status),
+      finishLifecycle: async (facts) => calls.push(facts.status),
+    },
+    createProvider: async () => ({
+      reconcileEntitlementRestoration: async () => ({ status: "confirmed", clientServiceId: "service-39" }),
     }),
   });
   assert.deepEqual(calls, ["confirmed", "completed"]);

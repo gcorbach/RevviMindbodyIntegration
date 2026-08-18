@@ -52,8 +52,10 @@ export function bookingConfirmationText(booking, fallbackLocationName) {
     && typeof references.saleId === "string"
     && typeof references.visitId === "string";
   if (booking?.sandboxDemo?.cleanupStatus === "pending" && searchableReferences) {
-    const cleanupTime = formatDateTime(booking.sandboxDemo.autoCleanupAt, booking.timezone);
-    return `Sandbox Booking is active for inspection: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} — ${locationName}. In Mindbody Business, search Clients for ${references.clientName} (Client ${references.clientId}) and open the Client schedule or visits. Cash Sale ${references.saleId} and Visit ${references.visitId} are the exact evidence. Use Clean up demo Booking when finished; otherwise it will be automatically cleaned at ${cleanupTime}.`;
+    const automaticCleanup = booking.sandboxDemo.autoCleanupAt
+      ? `; otherwise it will be automatically cleaned at ${formatDateTime(booking.sandboxDemo.autoCleanupAt, booking.timezone)}`
+      : "";
+    return `Sandbox Booking is active for inspection: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} — ${locationName}. In Mindbody Business, search Clients for ${references.clientName} (Client ${references.clientId}) and open the Client schedule or visits. Cash Sale ${references.saleId} and Visit ${references.visitId} are the exact evidence. Use Clean up demo Booking when finished${automaticCleanup}.`;
   }
   if (booking?.sandboxDemo?.cleanupStatus === "confirmed" && searchableReferences) {
     const restoration = booking.sandboxDemo.entitlementRestorationObserved === true

@@ -20,6 +20,11 @@ import {
   instrumentClientQuoteProvider,
 } from "../_shared/mindbody-client-quote.js";
 import { sealPaymentActionToken } from "../_shared/payment-action-crypto.js";
+import {
+  createMindbodyRuntimeProvider,
+  mindbodyStaffRuntimeConfigured,
+  parseMindbodyStaffTokens,
+} from "../_shared/mindbody-runtime-provider.js";
 
 const requiredEnvironment = [
   "SUPABASE_URL",
@@ -28,27 +33,20 @@ const requiredEnvironment = [
   "MEMBERSTACK_SECRET_KEY",
   "MEMBERSTACK_CONTRACT_EVIDENCE_DIGEST",
   "MINDBODY_API_KEY",
-  "MINDBODY_STAFF_TOKENS_JSON",
 ] as const;
 
 function staffTokens() {
-  try {
-    const parsed = JSON.parse(Deno.env.get("MINDBODY_STAFF_TOKENS_JSON") ?? "");
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    for (const [integrationId, token] of Object.entries(parsed)) {
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(integrationId)
-        || typeof token !== "string" || token.trim().length < 16) return null;
-    }
-    return parsed as Record<string, string>;
-  } catch {
-    return null;
-  }
+  return parseMindbodyStaffTokens(Deno.env.get("MINDBODY_STAFF_TOKENS_JSON")) as Record<string, string> | null;
 }
 
 function configured() {
   if (requiredEnvironment.some((name) => !Deno.env.get(name))) return false;
   return /^[a-f0-9]{64}$/i.test(Deno.env.get("MEMBERSTACK_CONTRACT_EVIDENCE_DIGEST") ?? "")
-    && staffTokens() !== null;
+    && mindbodyStaffRuntimeConfigured({
+      staffTokens: staffTokens(),
+      sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
+      sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
+    });
 }
 
 function paymentActionConfiguration() {
@@ -81,6 +79,59 @@ function configurationError(request: Request) {
   });
 }
 
+function decorateHostedSandboxBooking({
+  booking,
+  authorization,
+  resolved,
+}: {
+  booking: Record<string, any>;
+  authorization: { customer: { id: string; identity?: { firstName?: string; lastName?: string } } };
+  resolved: {
+    quote: { providerClientId?: string | null };
+    context: {
+      integration?: { environment?: string; providerSiteId?: string };
+      location?: { providerLocationId?: string };
+      mapping?: {
+        paidPaymentRoute?: string | null;
+        sandboxDemoWriteEnabled?: boolean;
+        sandboxDemoCustomerId?: string | null;
+      };
+    };
+  };
+}) {
+  const context = resolved.context;
+  const sandboxDemo = booking.status === "confirmed"
+    && context.integration?.environment === "sandbox"
+    && context.integration.providerSiteId === "-99"
+    && context.location?.providerLocationId === "1"
+    && context.mapping?.paidPaymentRoute === "mindbody_sandbox_cash"
+    && context.mapping.sandboxDemoWriteEnabled === true
+    && context.mapping.sandboxDemoCustomerId === authorization.customer.id;
+  if (!sandboxDemo) return booking;
+  const references = booking.providerReferences ?? {};
+  const clientName = [
+    authorization.customer.identity?.firstName,
+    authorization.customer.identity?.lastName,
+  ].filter((value) => typeof value === "string" && value.trim()).join(" ")
+    || "Revvi sandbox Customer";
+  return {
+    ...booking,
+    sandboxDemo: {
+      paymentType: "Fictitious Cash",
+      providerEvidenceConfirmed: true,
+      demoBookingId: booking.id,
+      cleanupStatus: "pending",
+      references: {
+        clientId: resolved.quote.providerClientId,
+        clientName,
+        saleId: references.saleId,
+        paymentId: references.paymentId,
+        visitId: references.visitId ?? references.rosterBookingId,
+      },
+    },
+  };
+}
+
 Deno.serve(async (request) => {
   if (!configured()) return configurationError(request);
   const now = () => new Date();
@@ -104,16 +155,17 @@ Deno.serve(async (request) => {
   const providerOptions = (
     context: {
       integration: { id: string; providerSiteId: string };
+      location?: { providerLocationId?: string };
       mapping?: {
         paidPaymentRoute?: string | null;
         paidPaymentMethodId?: number | null;
         paidCheckoutLocationId?: number | null;
+        sandboxDemoWriteEnabled?: boolean;
+        sandboxDemoCustomerId?: string | null;
       };
     },
     operation?: { bookingId?: string },
   ) => {
-    const userToken = configuredStaffTokens[context.integration.id];
-    if (!userToken) throw new Error("No staff token is configured for the selected integration.");
     const paymentAction = paymentActionConfiguration();
     let paidRoute = null;
     if (paymentAction
@@ -132,8 +184,6 @@ Deno.serve(async (request) => {
     }
     return {
       apiKey: Deno.env.get("MINDBODY_API_KEY")!,
-      siteId: context.integration.providerSiteId,
-      userToken,
       baseUrl: Deno.env.get("MINDBODY_BASE_URL") ?? "https://api.mindbodyonline.com",
       requestTimeoutMs: Number(Deno.env.get("MINDBODY_REQUEST_TIMEOUT_MS") ?? 10_000),
       ...(paidRoute ? { paidRoute } : {}),
@@ -161,7 +211,13 @@ Deno.serve(async (request) => {
       },
       operation: { requestId: string; customerId: string },
     ) => instrumentClientQuoteProvider(
-      createMindbodyClientQuoteClient(providerOptions(context)),
+      createMindbodyRuntimeProvider({
+        ...providerOptions(context), context, customerId: operation.customerId,
+        staffTokens: configuredStaffTokens,
+        sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
+        sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
+        createProvider: createMindbodyClientQuoteClient,
+      }),
       {
         context: {
           businessId: context.business.id,
@@ -178,17 +234,26 @@ Deno.serve(async (request) => {
       context: {
         business: { id: string };
         integration: { id: string; providerSiteId: string };
+        location: { providerLocationId: string };
         mapping: {
           paidPaymentRoute?: string | null;
           paidPaymentMethodId?: number | null;
           paidCheckoutLocationId?: number | null;
+          sandboxDemoWriteEnabled?: boolean;
+          sandboxDemoCustomerId?: string | null;
         };
       },
-      operation: { requestId: string; bookingId: string; attemptId: string },
+      operation: { requestId: string; customerId: string; bookingId: string; attemptId: string },
     ) => instrumentClassBookingProvider(
-      createMindbodyClassBookingClient(providerOptions(context, {
-        bookingId: operation.bookingId,
-      })),
+      createMindbodyRuntimeProvider({
+        ...providerOptions(context, { bookingId: operation.bookingId }),
+        context,
+        customerId: operation.customerId,
+        staffTokens: configuredStaffTokens,
+        sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
+        sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
+        createProvider: createMindbodyClassBookingClient,
+      }),
       {
         context: { businessId: context.business.id, attemptId: operation.attemptId },
         requestId: operation.requestId,
@@ -196,6 +261,7 @@ Deno.serve(async (request) => {
       },
     ),
     executeBooking: createClassBooking,
+    decorateBooking: decorateHostedSandboxBooking,
     revalidateQuote: revalidateClassBookingQuoteBeforeWrite,
     validateWriteConfiguration: ({ quote, context }: {
       quote: { fulfilmentMode: string };
@@ -208,6 +274,7 @@ Deno.serve(async (request) => {
       };
     }) => {
       if (quote.fulfilmentMode === "purchase_pricing_option"
+        && context.mapping.paidPaymentRoute !== "mindbody_sandbox_cash"
         && (!paymentActionConfiguration()
           || context.mapping.paidPaymentRoute !== "mindbody_alternative_payment"
           || !Number.isSafeInteger(context.mapping.paidPaymentMethodId)

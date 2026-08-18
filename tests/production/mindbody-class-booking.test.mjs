@@ -185,6 +185,73 @@ test("an evidenced alternative-payment route initiates one atomic Class checkout
   assert.equal(result.serviceProductId, "product-1");
 });
 
+test("the hard-locked Site -99 Cash route confirms only after exact purchase and three-surface roster evidence", async () => {
+  let checkoutBody;
+  const visit = { Id: 901, ClassId: 771, ClientId: "rss-1", ServiceId: 611 };
+  const client = createMindbodyClassBookingClient({
+    ...options(async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/sale/checkoutshoppingcart")) {
+        checkoutBody = JSON.parse(init.body);
+        return response({ ShoppingCart: { Id: "cart-1", Sales: [{ Id: 501 }] } });
+      }
+      if (path.endsWith("/client/clientschedule")) {
+        return response({ Classes: [{ Id: 771, Clients: [{ Id: "rss-1", VisitId: 901, ServiceId: 611 }] }] });
+      }
+      if (path.endsWith("/client/clientvisits")) return response({ Visits: [visit] });
+      if (path.endsWith("/class/classvisits")) return response({ Class: { Id: 771, Visits: [visit] } });
+      if (path.endsWith("/sale/sales")) return response({ Sales: [{
+        Id: 501,
+        ClientId: "rss-1",
+        ShoppingCartId: "cart-1",
+        Returned: false,
+        PurchasedItems: [{ ProductId: 1431, ClassId: 771 }],
+        Payments: [{ Id: 701, Type: "Cash", Amount: 13 }],
+      }] });
+      if (path.endsWith("/sale/transactions")) return response({ Transactions: [] });
+      if (path.endsWith("/client/clientservices")) return response({ ClientServices: [{
+        Id: 611, ProductId: 1431, Current: false, Returned: false, Remaining: 0,
+      }] });
+      throw new Error(`Unexpected endpoint ${path}`);
+    }),
+    sandboxCashRoute: true,
+    reconciliationAttempts: 1,
+    reconciliationDelayMs: 0,
+  });
+
+  const result = await client.createBooking({
+    mode: "purchase_pricing_option",
+    locationId: "1",
+    classId: "771",
+    clientId: "rss-1",
+    serviceProductId: "1431",
+    priceAmount: 13,
+    currency: "USD",
+  });
+
+  assert.deepEqual(checkoutBody, {
+    ClientId: "rss-1",
+    LocationId: 1,
+    Test: false,
+    InStore: false,
+    CalculateTax: true,
+    SendEmail: false,
+    EnforceLocationRestrictions: true,
+    Items: [{
+      Item: { Type: "Service", Metadata: { Id: "1431" } },
+      Quantity: 1,
+      ClassIds: [771],
+    }],
+    Payments: [{ Type: "Cash", MetaData: { Amount: 13, Notes: "Revvi hosted Site -99 demo" } }],
+  });
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.atomicCheckoutConfirmed, true);
+  assert.equal(result.paymentType, "Cash");
+  assert.equal(result.transactionId, null);
+  assert.equal(result.visitId, "901");
+  assert.equal(result.clientServiceId, "611");
+});
+
 test("paid return completes the exact initiated cart but never treats the callback response as success", async () => {
   let request;
   const client = createMindbodyClassBookingClient({
@@ -513,6 +580,43 @@ test("paid reconciliation accepts the Site -99 Class.Visits and PurchasedItems r
   assert.equal(classVisitRequest.searchParams.get("request.classID"), "771");
 });
 
+test("Site -99 Cash reconciliation confirms without a fabricated Transaction", async () => {
+  const client = createMindbodyClassBookingClient({
+    ...options(async (url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/class/classvisits")) return response({ Class: { Visits: [{
+        Id: "visit-cash", ClassId: 771, ClientId: "rss-1", ServiceId: "client-service-cash",
+      }] } });
+      if (path.endsWith("/client/clientservices")) return response({ ClientServices: [{
+        Id: "client-service-cash", ProductId: "1431", Current: false, Returned: false, Remaining: 0,
+      }] });
+      if (path.endsWith("/sale/sales")) return response({ Sales: [{
+        Id: "sale-cash", ClientId: "rss-1", ClassIds: ["771"],
+        PurchasedItems: [{ Id: "1431", Returned: false }],
+        Payments: [{ Id: "payment-cash", Amount: 13, Type: "Cash" }],
+      }] });
+      if (path.endsWith("/sale/transactions")) return response({ Transactions: [] });
+      return response({});
+    }),
+    siteId: "-99",
+    sandboxCashRoute: true,
+  });
+  const result = await client.reconcileBooking({
+    mode: "purchase_pricing_option",
+    classId: "771",
+    clientId: "rss-1",
+    serviceProductId: "1431",
+    saleId: "sale-cash",
+    cartId: "cart-cash",
+    transactionId: null,
+    paymentId: "payment-cash",
+  });
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.paymentType, "Cash");
+  assert.equal(result.transactionId, null);
+  assert.equal(result.clientServiceId, "client-service-cash");
+});
+
 test("paid reconciliation never confirms a cancelled Visit", async () => {
   const client = createMindbodyClassBookingClient(options(async (url) => {
     const path = new URL(url).pathname;
@@ -773,6 +877,34 @@ test("entitlement restoration re-reads only the exact ClientService", async () =
 
   const missingBaseline = await client.reconcileEntitlementRestoration(input);
   assert.equal(missingBaseline.status, "unknown");
+});
+
+test("Site -99 Cash restoration confirms activation and a finite balance increase on the purchased ClientService", async () => {
+  let service = {
+    Id: "service-cash",
+    ProductId: 1431,
+    Current: false,
+    Returned: false,
+    Unlimited: false,
+    Remaining: 0,
+  };
+  const client = createMindbodyClassBookingClient({
+    ...options(async () => response({
+      ClientServices: [service],
+      PaginationResponse: { TotalResults: 1 },
+    })),
+    sandboxCashRoute: true,
+  });
+  const input = { classId: "771", clientId: "rss-1", clientServiceId: "service-cash" };
+  const baseline = await client.readEntitlementState(input);
+  assert.equal(baseline.current, false);
+  assert.equal(baseline.remaining, 0);
+
+  service = { ...service, Current: true, Remaining: 1 };
+  const restored = await client.reconcileEntitlementRestoration({ ...input, baseline });
+  assert.equal(restored.status, "confirmed");
+  assert.equal(restored.remainingBefore, 0);
+  assert.equal(restored.remainingAfter, 1);
 });
 
 test("waitlist reconciliation confirms removal only after the exact entry disappears", async () => {

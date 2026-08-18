@@ -161,6 +161,13 @@ function saleFact(value) {
     paymentId: text(value.PaymentId ?? value.Payment?.Id ?? value.Payments?.[0]?.Id),
     classIds,
     productIds,
+    returned: value.Returned === true,
+    payments: array(value.Payments).map((payment) => ({
+      paymentId: id(payment),
+      type: text(payment?.Type ?? payment?.PaymentType),
+      amount: Number(payment?.Amount ?? payment?.MetaData?.Amount),
+      transactionId: text(payment?.TransactionId),
+    })),
   };
 }
 
@@ -182,6 +189,7 @@ function clientServiceFact(value) {
     serviceProductId: text(value.ProductId ?? value.Product?.Id),
     current: value.Current === true,
     returned: value.Returned === true,
+    remaining: value.Remaining == null ? null : Number(value.Remaining),
   };
 }
 
@@ -243,6 +251,35 @@ function exactFinancialEvidence(salesEnvelope, transactionsEnvelope, input) {
   };
 }
 
+function exactSandboxCashFinancialEvidence(salesEnvelope, input) {
+  const saleId = text(input.saleId);
+  const cartId = text(input.cartId);
+  const paymentId = text(input.paymentId);
+  const serviceProductId = text(input.serviceProductId);
+  if (!saleId || !cartId || !paymentId || !serviceProductId) return null;
+  const sale = array(salesEnvelope?.Sales).map(saleFact).filter(Boolean)
+    .find((candidate) => candidate.saleId === saleId
+      && candidate.clientId === String(input.clientId)
+      && candidate.returned === false
+      && candidate.productIds.includes(serviceProductId)
+      && candidate.classIds.includes(String(input.classId)));
+  const payment = sale?.payments.find((candidate) => candidate.paymentId === paymentId
+    && candidate.type?.toLowerCase() === "cash"
+    && Number.isFinite(candidate.amount));
+  if (!sale || !payment) return null;
+  return {
+    status: "confirmed",
+    certainty: "provider_confirmed",
+    atomicCheckoutConfirmed: true,
+    paymentType: "Cash",
+    saleId,
+    cartId,
+    transactionId: null,
+    paymentId,
+    serviceProductId,
+  };
+}
+
 function exactWebhookEvidence(values, input) {
   for (const value of array(values)) {
     if (value?.verified !== true
@@ -287,6 +324,8 @@ export function createMindbodyClassBookingClient(options) {
       callbackUrl: httpsUrl(options.paidRoute.callbackUrl),
     })
     : null;
+  const configuredSandboxCashRoute = options?.sandboxCashRoute === true
+    && String(options?.siteId) === "-99";
   const configuredPaidCompletionRoute = options?.paidCompletionRoute === "mindbody_alternative_payment"
     ? options.paidCompletionRoute
     : configuredPaidRoute?.type ?? null;
@@ -338,6 +377,86 @@ export function createMindbodyClassBookingClient(options) {
     );
   }
 
+  async function readSandboxCashEvidence(input, expected) {
+    const [schedule, visits, roster, sales, transactions, services] = await Promise.all([
+      request("client/clientschedule", { query: { "request.clientId": input.clientId } }),
+      request("client/clientvisits", { query: { ClientId: input.clientId, ...clientVisitWindow() } }),
+      request("class/classvisits", { query: { "request.classID": input.classId } }),
+      request("sale/sales", { query: { ClientId: input.clientId } }),
+      request("sale/transactions", { query: { ClientId: input.clientId } }),
+      request("client/clientservices", { query: { ClientId: input.clientId, ClassId: input.classId } }),
+    ]);
+    const surfaceVisits = [
+      scheduleVisits(schedule),
+      array(visits?.Visits).map(visitFact).filter(Boolean),
+      [
+        ...array(roster?.Visits).map(visitFact),
+        ...array(roster?.Class?.Visits).map(visitFact),
+        ...scheduleVisits(roster),
+      ].filter(Boolean),
+    ];
+    const clientVisit = surfaceVisits[1].find((visit) => !visit.cancelled && exactFact(visit, input));
+    if (!clientVisit?.visitId || !surfaceVisits[0].some((visit) => visit.visitId === clientVisit.visitId)
+      || !surfaceVisits[2].some((visit) => visit.visitId === clientVisit.visitId)) return null;
+    const sale = array(sales?.Sales).map(saleFact).filter(Boolean).find((candidate) => (
+      candidate.saleId === expected.saleId
+      && candidate.clientId === String(input.clientId)
+      && candidate.returned === false
+      && candidate.productIds.includes(String(input.serviceProductId))
+      && candidate.classIds.includes(String(input.classId))
+    ));
+    const payment = sale?.payments.find((candidate) => candidate.paymentId
+      && candidate.type?.toLowerCase() === "cash"
+      && candidate.amount === Number(input.priceAmount));
+    const service = array(services?.ClientServices).map(clientServiceFact).filter(Boolean)
+      .find((candidate) => candidate.clientServiceId === clientVisit.clientServiceId
+        && candidate.serviceProductId === String(input.serviceProductId)
+        && candidate.returned === false);
+    if (!sale || !payment || !service) return null;
+    const transaction = array(transactions?.Transactions).map(transactionFact).filter(Boolean)
+      .find((candidate) => candidate.saleId === sale.saleId
+        || candidate.paymentId === payment.paymentId) ?? null;
+    return {
+      status: "confirmed",
+      certainty: "provider_confirmed",
+      atomicCheckoutConfirmed: true,
+      paymentStatus: "paid",
+      paymentType: "Cash",
+      visitId: clientVisit.visitId,
+      rosterBookingId: clientVisit.rosterBookingId,
+      clientServiceId: service.clientServiceId,
+      serviceProductId: String(input.serviceProductId),
+      saleId: sale.saleId,
+      cartId: expected.cartId,
+      transactionId: transaction?.transactionId ?? payment.transactionId ?? null,
+      paymentId: payment.paymentId,
+    };
+  }
+
+  async function reconcileSandboxCashCheckout(input, expected) {
+    const attempts = Number(options?.reconciliationAttempts ?? 5);
+    const delayMs = Number(options?.reconciliationDelayMs ?? 750);
+    if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 10
+      || !Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 5_000) {
+      throw new TypeError("Sandbox reconciliation settings are invalid.");
+    }
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const evidence = await readSandboxCashEvidence(input, expected);
+      if (evidence) return evidence;
+      if (attempt + 1 < attempts && delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+    return {
+      status: "unknown",
+      certainty: "unknown",
+      serviceProductId: String(input.serviceProductId),
+      saleId: expected.saleId,
+      cartId: expected.cartId,
+      errorCode: "SANDBOX_CASH_EVIDENCE_INCOMPLETE",
+    };
+  }
+
   async function readEntitlementState(input) {
     const classId = requiredMindbodyText(input?.classId, "classId");
     const clientId = requiredMindbodyText(input?.clientId, "clientId");
@@ -376,6 +495,57 @@ export function createMindbodyClassBookingClient(options) {
       const classId = requiredMindbodyText(input?.classId, "classId");
       const clientId = requiredMindbodyText(input?.clientId, "clientId");
       if (mode === "purchase_pricing_option") {
+        if (configuredSandboxCashRoute) {
+          const selectedClassId = positiveInteger(classId, "classId");
+          const locationId = positiveInteger(input?.locationId, "locationId");
+          if (locationId !== 1) throw new TypeError("Site -99 sandbox Cash requires Location 1.");
+          const serviceProductId = requiredMindbodyText(input?.serviceProductId, "serviceProductId");
+          const priceAmount = money(input?.priceAmount, "priceAmount");
+          if (requiredMindbodyText(input?.currency, "currency") !== "USD") {
+            throw new TypeError("Site -99 sandbox Cash requires USD.");
+          }
+          const envelope = await request("sale/checkoutshoppingcart", {
+            method: "POST",
+            body: {
+              ClientId: clientId,
+              LocationId: locationId,
+              Test: false,
+              InStore: false,
+              CalculateTax: true,
+              SendEmail: false,
+              EnforceLocationRestrictions: true,
+              Items: [{
+                Item: { Type: "Service", Metadata: { Id: serviceProductId } },
+                Quantity: 1,
+                ClassIds: [selectedClassId],
+              }],
+              Payments: [{
+                Type: "Cash",
+                MetaData: { Amount: priceAmount, Notes: "Revvi hosted Site -99 demo" },
+              }],
+            },
+          });
+          const cart = envelope?.ShoppingCart ?? envelope?.Cart;
+          const cartId = id(cart);
+          const saleId = id(envelope?.Sale ?? envelope?.Sales?.[0] ?? cart?.Sale ?? cart?.Sales?.[0]);
+          if (!cartId || !saleId) {
+            return {
+              status: "unknown",
+              certainty: "unknown",
+              serviceProductId,
+              cartId,
+              saleId,
+              errorCode: "SANDBOX_CASH_CHECKOUT_REFERENCE_MISSING",
+            };
+          }
+          return reconcileSandboxCashCheckout({
+            ...input,
+            classId,
+            clientId,
+            serviceProductId,
+            priceAmount,
+          }, { cartId, saleId });
+        }
         if (!configuredPaidRoute) {
           throw new MindbodyClassBookingError(
             "No approved no-card Mindbody payment route is configured.",
@@ -552,7 +722,9 @@ export function createMindbodyClassBookingClient(options) {
         : null;
       const financialEvidence = mode === "approved_unpaid"
         ? null
-        : exactFinancialEvidence(envelopes[4], envelopes[5], financialInput);
+        : configuredSandboxCashRoute && mode === "purchase_pricing_option"
+          ? exactSandboxCashFinancialEvidence(envelopes[4], financialInput)
+          : exactFinancialEvidence(envelopes[4], envelopes[5], financialInput);
       if (financialContamination) {
         return {
           status: "unknown",
@@ -578,13 +750,13 @@ export function createMindbodyClassBookingClient(options) {
           .filter(Boolean)
           .find((service) => service.clientServiceId === rosterEvidence?.clientServiceId
             && service.serviceProductId === text(input.serviceProductId)
-            && service.current === true
+            && (configuredSandboxCashRoute || service.current === true)
             && service.returned === false);
         if (rosterEvidence
           && exactClientService
           && text(input.saleId)
           && text(input.cartId)
-          && text(input.transactionId)
+          && (configuredSandboxCashRoute || text(input.transactionId))
           && text(input.paymentId)
           && financialEvidence?.atomicCheckoutConfirmed === true) {
           return {
@@ -724,7 +896,10 @@ export function createMindbodyClassBookingClient(options) {
       const comparable = baseline?.status === "observed"
         && after.status === "observed"
         && baseline.clientServiceId === after.clientServiceId
-        && baseline.current === true
+        && (baseline.current === true
+          || (configuredSandboxCashRoute
+            && baseline.current === false
+            && after.current === true))
         && baseline.returned === false
         && after.current === true
         && after.returned === false

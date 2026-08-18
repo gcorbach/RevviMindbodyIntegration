@@ -40,7 +40,7 @@ function widgetMarkup(scenario = "available") {
     .replace("SUPABASE_FUNCTIONS_URL/booking-quote", `/functions/v1/booking-quote${scenarioQuery}`)
     .replace("SUPABASE_FUNCTIONS_URL/create-booking", `/functions/v1/create-booking${scenarioQuery}`)
     .replace("SUPABASE_FUNCTIONS_URL/complete-paid-booking", "/functions/v1/complete-paid-booking")
-    .replace("SUPABASE_FUNCTIONS_URL/cleanup-demo-booking", `/functions/v1/cleanup-demo-booking${scenarioQuery}`);
+    .replace("SUPABASE_FUNCTIONS_URL/cancel-booking", `/functions/v1/cancel-booking${scenarioQuery}`);
 }
 
 function availabilityBody() {
@@ -320,31 +320,21 @@ test("the Site -99 demo lets the operator clean the visible sandbox Booking exac
       } } }));
       return;
     }
-    if (url.pathname === "/functions/v1/cleanup-demo-booking") {
+    if (url.pathname === "/functions/v1/cancel-booking") {
       cleanupCalls += 1;
       assert.equal(request.headers.authorization, "Bearer memberstack.jwt.signature");
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString("utf8")), {
-        demoBookingId: "40000000-0000-4000-8000-000000000060",
+        bookingId: "40000000-0000-4000-8000-000000000060",
+        reason: "Revvi hosted sandbox demonstration cleanup",
       });
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: true, data: { booking: {
-        status: "confirmed",
-        className: "Yoga Flow",
-        startAt: "2026-08-12T16:00:00.000Z",
-        locationName: "Rosebank Studio",
-        sandboxDemo: {
-          demoBookingId: "40000000-0000-4000-8000-000000000060",
-          cleanupStatus: "confirmed",
-          references: {
-            clientId: "100200001",
-            clientName: "Revvi Sandbox A1B2C3D4",
-            saleId: "100170591",
-            visitId: "100343812",
-          },
-        },
-      } } }));
+      response.end(JSON.stringify({ ok: true, data: {
+        bookingId: "40000000-0000-4000-8000-000000000060",
+        status: "cancelled",
+        passRestoration: "not_required",
+      } }));
       return;
     }
     response.writeHead(200, { "content-type": "text/html" });

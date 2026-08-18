@@ -13,18 +13,20 @@ import {
   createMindbodyClassBookingClient,
   instrumentClassBookingProvider,
 } from "../_shared/mindbody-class-booking.js";
+import {
+  createMindbodyRuntimeProvider,
+  mindbodyStaffRuntimeConfigured,
+  parseMindbodyStaffTokens,
+} from "../_shared/mindbody-runtime-provider.js";
 
 const requiredEnvironment = [
   "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "MEMBERSTACK_APP_ID",
   "MEMBERSTACK_SECRET_KEY", "MEMBERSTACK_CONTRACT_EVIDENCE_DIGEST",
-  "MINDBODY_API_KEY", "MINDBODY_STAFF_TOKENS_JSON",
+  "MINDBODY_API_KEY",
 ] as const;
 
 function staffTokens() {
-  try {
-    const value = JSON.parse(Deno.env.get("MINDBODY_STAFF_TOKENS_JSON") ?? "");
-    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, string> : null;
-  } catch { return null; }
+  return parseMindbodyStaffTokens(Deno.env.get("MINDBODY_STAFF_TOKENS_JSON")) as Record<string, string> | null;
 }
 
 function configurationError(request: Request) {
@@ -38,7 +40,12 @@ function configurationError(request: Request) {
 
 Deno.serve((request) => {
   const configuredTokens = staffTokens();
-  if (requiredEnvironment.some((name) => !Deno.env.get(name)) || !configuredTokens
+  if (requiredEnvironment.some((name) => !Deno.env.get(name))
+    || !mindbodyStaffRuntimeConfigured({
+      staffTokens: configuredTokens,
+      sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
+      sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
+    })
     || !/^[a-f0-9]{64}$/i.test(Deno.env.get("MEMBERSTACK_CONTRACT_EVIDENCE_DIGEST") ?? "")) {
     return configurationError(request);
   }
@@ -64,16 +71,27 @@ Deno.serve((request) => {
       input, { memberstack, catalogue, now },
     ),
     cancelBooking: cancelClassBooking,
-    createProvider: async (claim: { booking: { integrationId: string; businessId: string }; attempt: { id: string } }) => {
-      const integration = await catalogue.resolveIntegration(claim.booking.integrationId);
-      const userToken = configuredTokens[integration.id];
-      if (typeof userToken !== "string" || userToken.trim().length < 16) {
-        throw new Error("No staff token is configured for the selected Mindbody integration.");
-      }
-      return instrumentClassBookingProvider(createMindbodyClassBookingClient({
-        apiKey: Deno.env.get("MINDBODY_API_KEY")!, siteId: integration.providerSiteId,
-        userToken, baseUrl: Deno.env.get("MINDBODY_BASE_URL") ?? "https://api.mindbodyonline.com",
+    requiresEntitlementRestoration: async (claim: { booking: { id: string } }) => {
+      const providerContext = await catalogue.resolveBookingProviderContext(claim.booking.id);
+      return providerContext.integration.environment === "sandbox"
+        && providerContext.integration.providerSiteId === "-99"
+        && providerContext.location.providerLocationId === "1"
+        && providerContext.mapping.paidPaymentRoute === "mindbody_sandbox_cash"
+        && providerContext.mapping.sandboxDemoWriteEnabled === true
+        && providerContext.mapping.sandboxDemoCustomerId === providerContext.customerId;
+    },
+    createProvider: async (claim: { booking: { id: string; integrationId: string; businessId: string }; attempt: { id: string } }) => {
+      const providerContext = await catalogue.resolveBookingProviderContext(claim.booking.id);
+      return instrumentClassBookingProvider(createMindbodyRuntimeProvider({
+        context: providerContext,
+        customerId: providerContext.customerId,
+        apiKey: Deno.env.get("MINDBODY_API_KEY")!,
+        staffTokens: configuredTokens,
+        sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
+        sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
+        baseUrl: Deno.env.get("MINDBODY_BASE_URL") ?? "https://api.mindbodyonline.com",
         requestTimeoutMs: Number(Deno.env.get("MINDBODY_REQUEST_TIMEOUT_MS") ?? 10_000),
+        createProvider: createMindbodyClassBookingClient,
       }), {
         context: { businessId: claim.booking.businessId, attemptId: claim.attempt.id },
         requestId,

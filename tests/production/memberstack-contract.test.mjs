@@ -357,6 +357,24 @@ test("the pinned official Memberstack SDK accepts a current signed fixture and r
 
 test("supported webhook envelopes resolve one current Memberstack member", () => {
   assert.deepEqual(parseMemberstackWebhookEnvelope({
+    event: "member.created",
+    payload: { id: "member-a", planConnections: [] },
+  }), {
+    eventType: "member.created",
+    externalEventType: "member.created",
+    memberId: "member-a",
+  });
+
+  assert.deepEqual(parseMemberstackWebhookEnvelope({
+    event: "member.updated",
+    payload: { id: "member-a" },
+  }), {
+    eventType: "member.updated",
+    externalEventType: "member.updated",
+    memberId: "member-a",
+  });
+
+  assert.deepEqual(parseMemberstackWebhookEnvelope({
     event: "member.plan.updated",
     payload: { member: { id: "member-a" } },
   }), {
@@ -376,6 +394,15 @@ test("supported webhook envelopes resolve one current Memberstack member", () =>
 });
 
 test("ambiguous webhook identities fail closed and unknown events cannot grant eligibility", () => {
+  assert.throws(
+    () => parseMemberstackWebhookEnvelope({
+      event: "member.updated",
+      data: { id: "member-a" },
+    }),
+    (error) => error instanceof MemberstackServiceError
+      && error.code === "MEMBERSTACK_WEBHOOK_CONTRACT_INVALID",
+  );
+
   assert.throws(
     () => parseMemberstackWebhookEnvelope({
       event: "member.updated",
