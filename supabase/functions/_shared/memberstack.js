@@ -332,7 +332,7 @@ export function parseMemberstackWebhookEnvelope(envelope) {
     envelope?.payload?.member?.id,
     envelope?.data?.member?.id,
     ...(ROOT_MEMBER_ID_WEBHOOK_EVENTS.has(externalEventType)
-      ? [envelope?.payload?.id, envelope?.data?.id]
+      ? [envelope?.payload?.id]
       : []),
   ].filter((value) => typeof value === "string" && value.length > 0);
   const distinctMemberIds = [...new Set(candidateMemberIds)];

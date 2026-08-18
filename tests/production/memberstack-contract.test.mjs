@@ -397,6 +397,15 @@ test("ambiguous webhook identities fail closed and unknown events cannot grant e
   assert.throws(
     () => parseMemberstackWebhookEnvelope({
       event: "member.updated",
+      data: { id: "member-a" },
+    }),
+    (error) => error instanceof MemberstackServiceError
+      && error.code === "MEMBERSTACK_WEBHOOK_CONTRACT_INVALID",
+  );
+
+  assert.throws(
+    () => parseMemberstackWebhookEnvelope({
+      event: "member.updated",
       payload: { member: { id: "member-a" } },
       data: { member: { id: "member-b" } },
     }),
