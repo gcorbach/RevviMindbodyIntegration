@@ -14,6 +14,7 @@ The Memberstack dashboard emitted these real test-mode contracts in order:
 2. `member.plan.added` at `1787057249004`: Customer identity is at `payload.member.id`; `payload.planConnection.planId` was `pln_test-plan-0tv40j5v` and status was `ACTIVE`.
 3. `member.updated` at `1787058090372`: Customer identity is at `payload.id`; reason was `customFields.updated` and the required first/last-name fields were present.
 4. `member.updated` at `1787058176558`: Customer identity is at `payload.id`; reason was `verified` and `payload.verified` was true.
+5. The hosted Webflow test-mode browser JWT used `RS256`, the official issuer, the configured app audience, a future expiry, and root `id`; it contained neither `sub` nor `data.id`. The raw JWT and Customer identifier are omitted.
 
 The production parser accepts the captured root `payload.id` identity contract only for `member.created` and `member.updated`, and the captured nested identity contract for supported plan events. Unevidenced root `data.id` and `member.deleted` forms remain fail-closed.
 
@@ -23,7 +24,7 @@ The production parser accepts the captured root `payload.id` identity contract o
 
 The Memberstack-focused suite also covers:
 
-- exact RS256 issuer, audience, expiry, signature, and key selection;
+- exact RS256 issuer, audience, expiry, signature, key selection, and the captured root `id` identity claim;
 - wrong-audience, expired, and modified browser tokens;
 - current, inactive, multiple-plan, and removed-Customer admission behavior;
 - whole-envelope verification through pinned `@memberstack/admin@1.6.0`;
