@@ -24,9 +24,12 @@ const exactContext = Object.freeze({
   },
 });
 
+const withStaffOperationLease = (operation) => operation();
+
 test("hosted Site -99 provider issues and revokes a temporary staff token around one operation", async () => {
   const requests = [];
   const provider = createSite99SandboxProvider({
+    withStaffOperationLease,
     context: exactContext,
     customerId: "customer-demo",
     apiKey: "api-key",
@@ -60,8 +63,99 @@ test("hosted Site -99 provider issues and revokes a temporary staff token around
   assert.equal(requests.at(-1).init.headers.Authorization, "Bearer temporary-staff-token");
 });
 
+test("hosted Site -99 serializes parallel operations so temporary staff tokens cannot invalidate each other", async () => {
+  const events = [];
+  let issued = 0;
+  let releaseFirst;
+  const firstOperation = new Promise((resolve) => { releaseFirst = resolve; });
+  const provider = createSite99SandboxProvider({
+    withStaffOperationLease,
+    context: exactContext,
+    customerId: "customer-demo",
+    apiKey: "api-key",
+    username: "sandbox-staff",
+    password: "sandbox-password",
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/usertoken/issue")) {
+        issued += 1;
+        events.push(`issue-${issued}`);
+        return json({ AccessToken: `token-${issued}` });
+      }
+      if (String(url).endsWith("/usertoken/revoke")) {
+        events.push("revoke");
+        return json({});
+      }
+      throw new Error("unexpected request");
+    },
+    createProvider: ({ userToken }) => ({
+      probe: async (name) => {
+        events.push(`${name}-${userToken}`);
+        if (name === "first") await firstOperation;
+        return name;
+      },
+    }),
+  });
+
+  const first = provider.probe("first");
+  const second = provider.probe("second");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(events, ["issue-1", "first-token-1"]);
+  releaseFirst();
+  assert.deepEqual(await Promise.all([first, second]), ["first", "second"]);
+  assert.deepEqual(events, [
+    "issue-1", "first-token-1", "revoke",
+    "issue-2", "second-token-2", "revoke",
+  ]);
+});
+
+test("hosted Site -99 supplies only its proven fictitious Client defaults", async () => {
+  const providerCalls = [];
+  const provider = createSite99SandboxProvider({
+    withStaffOperationLease,
+    context: exactContext,
+    customerId: "customer-demo",
+    apiKey: "api-key",
+    username: "sandbox-staff",
+    password: "sandbox-password",
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/usertoken/issue")) {
+        return json({ AccessToken: "temporary-staff-token" });
+      }
+      if (String(url).endsWith("/site/genders")) {
+        return json({ GenderOptions: [{ Id: 1, Name: "None", IsActive: true, IsDefault: true }] });
+      }
+      return json({});
+    },
+    createProvider: () => ({
+      getRequiredClientFields: async () => ["AddressLine1", "BirthDate", "Email", "IsMale"],
+      addClient: async (input) => {
+        providerCalls.push(input);
+        return { id: "client-99", uniqueId: 99 };
+      },
+    }),
+  });
+
+  assert.deepEqual(await provider.getRequiredClientFields(), ["Email"]);
+  assert.deepEqual(await provider.addClient({
+    client: { FirstName: "Test", LastName: "Customer", Email: "test@example.test" },
+    test: false,
+  }), { id: "client-99", uniqueId: 99 });
+  assert.deepEqual(providerCalls, [{
+    client: {
+      FirstName: "Test",
+      LastName: "Customer",
+      Email: "test@example.test",
+      AddressLine1: "123 Sandbox Way",
+      BirthDate: "1990-01-01T00:00:00",
+      Gender: "None",
+    },
+    test: false,
+  }]);
+});
+
 test("hosted Site -99 provider rejects production, another Site, or another Customer before authentication", () => {
   const base = {
+    withStaffOperationLease,
     context: exactContext,
     customerId: "customer-demo",
     apiKey: "api-key",
@@ -85,6 +179,7 @@ test("hosted Site -99 provider rejects production, another Site, or another Cust
 test("a revoke failure after an accepted operation preserves evidence and remains unknown", async () => {
   const accepted = { status: "confirmed", visitId: "visit-99", saleId: "sale-99" };
   const provider = createSite99SandboxProvider({
+    withStaffOperationLease,
     context: exactContext,
     customerId: "customer-demo",
     apiKey: "api-key",

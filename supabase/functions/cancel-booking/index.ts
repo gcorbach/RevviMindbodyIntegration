@@ -18,6 +18,7 @@ import {
   mindbodyStaffRuntimeConfigured,
   parseMindbodyStaffTokens,
 } from "../_shared/mindbody-runtime-provider.js";
+import { createSite99StaffOperationLease } from "../_shared/site-99-staff-operation-lease.js";
 
 const requiredEnvironment = [
   "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "MEMBERSTACK_APP_ID",
@@ -54,6 +55,7 @@ Deno.serve((request) => {
     Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     { auth: { autoRefreshToken: false, persistSession: false } },
   );
+  const withSite99StaffOperationLease = createSite99StaffOperationLease(supabase);
   const customerCatalogue = createClassOfferCatalogue(supabase);
   const catalogue = createClassLifecycleCatalogue(supabase, customerCatalogue);
   const admitMemberstackRequest = createSupabaseMemberstackAdmission(supabase);
@@ -95,6 +97,7 @@ Deno.serve((request) => {
         staffTokens: configuredTokens,
         sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
         sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
+        withSite99StaffOperationLease,
         baseUrl: Deno.env.get("MINDBODY_BASE_URL") ?? "https://api.mindbodyonline.com",
         requestTimeoutMs: Number(Deno.env.get("MINDBODY_REQUEST_TIMEOUT_MS") ?? 10_000),
         createProvider: createMindbodyClassBookingClient,

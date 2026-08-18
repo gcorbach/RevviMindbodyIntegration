@@ -23,7 +23,7 @@ test("Mindbody client lookup uses exact documented client and duplicate boundari
       requests.push({ url: String(url), init });
       return requests.length === 1
         ? response({ Clients: [{ Id: "rss-1", UniqueId: 41, Email: " Member@Example.com ", FirstName: "Ava", LastName: "Ndlovu" }], PaginationResponse: { TotalResults: 1, PageSize: 100, RequestedOffset: 0 } })
-        : response({ Clients: [{ Id: "rss-1", UniqueId: 41 }], PaginationResponse: { TotalResults: 1, PageSize: 100, RequestedOffset: 0 } });
+        : response({ ClientDuplicates: [{ Id: "rss-1", UniqueId: 41 }], PaginationResponse: { TotalResults: 1, PageSize: 100, RequestedOffset: 0 } });
     },
   });
 
@@ -43,6 +43,7 @@ test("client-aware Class re-read and paid quote send Class, Client, Product, Loc
     apiKey: "api-key",
     siteId: "-99",
     userToken: "staff-token",
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
     fetchImpl: async (url, init) => {
       requests.push({ url: String(url), init });
       if (requests.length === 1) {
@@ -72,7 +73,10 @@ test("client-aware Class re-read and paid quote send Class, Client, Product, Loc
     name: "Revvi Yoga", startAt: "2026-08-11T08:00:00.000Z", locationId: "7", locationName: "Rosebank",
     isAvailable: true, isCanceled: false,
   });
-  assert.match(requests[0].url, /class\/classes\?ClassIds=771&ClientId=rss-1&UniqueClientId=41/);
+  assert.match(requests[0].url, /class\/classes\?ClassIds=771/);
+  assert.match(requests[0].url, /StartDateTime=2026-08-09T22%3A00%3A00\.000Z/);
+  assert.match(requests[0].url, /EndDateTime=2026-08-23T21%3A59%3A59\.999Z/);
+  assert.match(requests[0].url, /ClientId=rss-1&UniqueClientId=41/);
   assert.match(requests[1].url, /sale\/services\?/);
   assert.match(requests[1].url, /ClassId=771/);
   assert.match(requests[1].url, /LocationId=98/);

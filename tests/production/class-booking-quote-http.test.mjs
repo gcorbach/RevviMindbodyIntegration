@@ -28,6 +28,7 @@ function dependencies(overrides = {}) {
     },
     authorizeRequest: async (input) => {
       assert.deepEqual(input.selectedContext, { businessId: "business-a", locationId: "location-a", offerId });
+      assert.equal(input.purpose, "provider_write");
       return { customer: { id: "customer-a", identity: { email: "member@example.com", firstName: "Ava", lastName: "Ndlovu", emailVerified: true } } };
     },
     createProvider: () => ({ marker: "provider" }),

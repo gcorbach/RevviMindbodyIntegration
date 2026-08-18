@@ -87,7 +87,10 @@ export async function handleClassBookingQuote(request, dependencies) {
     const locator = await dependencies.catalogue.resolveOfferLocator(input.offerId);
     const authorization = await dependencies.authorizeRequest({
       browserToken,
-      purpose: "quote",
+      // A quote may create the missing Mindbody Client, so it must use the
+      // persisted provider-write authorization purpose rather than inventing
+      // a read-only purpose outside the database contract.
+      purpose: "provider_write",
       selectedContext: locator,
     });
     if (!authorization.customer.identity || authorization.customer.identity.emailVerified !== true) {

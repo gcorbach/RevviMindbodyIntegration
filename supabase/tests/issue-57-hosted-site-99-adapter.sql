@@ -1,6 +1,6 @@
 begin;
 
-select plan(11);
+select plan(17);
 
 select ok(
   'mindbody_sandbox_cash' = any(enum_range(null::public.class_paid_payment_route)::text[]),
@@ -16,6 +16,27 @@ select has_function('public', 'persist_class_sandbox_demo_restoration_baseline',
   'the exact pre-cancellation sandbox ClientService state has a durable write boundary');
 select has_function('public', 'record_class_sandbox_demo_restoration',
   'sandbox ClientService restoration is recorded separately from cancellation');
+select has_table('public', 'class_site_99_staff_operation_leases',
+  'Site -99 temporary staff-token operations use a durable cross-request lease');
+select has_function('public', 'claim_site_99_staff_operation_lease',
+  'the durable Site -99 staff-operation lease has an atomic claim boundary');
+select has_function('public', 'release_site_99_staff_operation_lease',
+  'the durable Site -99 staff-operation lease has a holder-bound release boundary');
+select is(
+  public.claim_site_99_staff_operation_lease('57000000-0000-4000-8000-000000000071', 90),
+  true,
+  'the first Edge request claims the Site -99 staff-operation lease'
+);
+select is(
+  public.claim_site_99_staff_operation_lease('57000000-0000-4000-8000-000000000072', 90),
+  false,
+  'a concurrent Edge request cannot replace an active Site -99 staff-operation lease'
+);
+select is(
+  public.release_site_99_staff_operation_lease('57000000-0000-4000-8000-000000000071'),
+  true,
+  'only the holder can release the Site -99 staff-operation lease'
+);
 
 insert into auth.users (
   id, aud, role, email, encrypted_password, email_confirmed_at,
