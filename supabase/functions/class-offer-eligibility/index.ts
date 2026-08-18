@@ -73,11 +73,16 @@ Deno.serve(async (request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
       { auth: { autoRefreshToken: false, persistSession: false } },
     );
+    const admitMemberstackRequest = createSupabaseMemberstackAdmission(supabase);
     const memberstack = {
-      ...createMemberstackJwtVerifier({ appId: Deno.env.get("MEMBERSTACK_APP_ID")! }),
+      ...createMemberstackJwtVerifier({
+        appId: Deno.env.get("MEMBERSTACK_APP_ID")!,
+        secretKey: Deno.env.get("MEMBERSTACK_SECRET_KEY")!,
+        admitRequest: admitMemberstackRequest,
+      }),
       ...createMemberstackAdminClient({
         secretKey: Deno.env.get("MEMBERSTACK_SECRET_KEY")!,
-        admitRequest: createSupabaseMemberstackAdmission(supabase),
+        admitRequest: admitMemberstackRequest,
       }),
     };
     const catalogue = createClassOfferCatalogue(supabase);

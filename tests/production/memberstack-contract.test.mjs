@@ -76,6 +76,7 @@ test("Memberstack bearer JWTs require the official RS256/JWKS identity contract"
   const fixture = await memberstackKeyFixture();
   const token = await signedToken(fixture.privateKey, {
     id: "member-a",
+    type: "member",
     iss: "https://api.memberstack.com",
     aud: "app_revvi",
     iat: 1_786_363_100,
@@ -107,6 +108,7 @@ test("Memberstack bearer identity requires the captured root id claim", async ()
     }),
   });
   const common = {
+    type: "member",
     iss: "https://api.memberstack.com",
     aud: "app_revvi",
     iat: 1_786_363_100,
@@ -124,6 +126,242 @@ test("Memberstack bearer identity requires the captured root id claim", async ()
       (error) => error instanceof MemberstackAuthenticationError
         && error.code === "AUTHENTICATION_INVALID",
     );
+  }
+});
+
+test("an unknown Memberstack test-mode signing key uses the official Admin REST verifier", async () => {
+  const fixture = await memberstackKeyFixture();
+  const token = await signedToken(fixture.privateKey, {
+    id: "member-a",
+    type: "member",
+    iss: "https://api.memberstack.com",
+    aud: "app_revvi",
+    iat: 1_786_363_100,
+    exp: 1_786_366_700,
+  });
+  let remoteVerification;
+  const verifier = createMemberstackJwtVerifier({
+    appId: "app_revvi",
+    secretKey: "sk_sb_memberstack_test",
+    admitRequest: async () => true,
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+    fetchImpl: async (url, init = {}) => {
+      if (url === "https://auth.memberstack.com/jwks") {
+        return new Response(JSON.stringify({
+          keys: [{ ...fixture.publicJwk, kid: "different-live-key" }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      assert.equal(url, "https://admin.memberstack.com/members/verify-token");
+      remoteVerification = { init, body: JSON.parse(init.body) };
+      return new Response(JSON.stringify({ data: {
+        id: "member-a",
+        type: "member",
+        iss: "https://api.memberstack.com",
+        aud: "app_revvi",
+        iat: 1_786_363_100,
+        exp: 1_786_366_700,
+      } }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  assert.deepEqual(await verifier.verifyBrowserToken(token), { memberId: "member-a" });
+  assert.equal(remoteVerification.init.method, "POST");
+  assert.equal(remoteVerification.init.headers["X-API-KEY"], "sk_sb_memberstack_test");
+  assert.deepEqual(remoteVerification.body, { token });
+});
+
+test("the Admin REST fallback cannot bypass known-key signatures or substitute another member", async () => {
+  const signedFixture = await memberstackKeyFixture();
+  const otherFixture = await memberstackKeyFixture();
+  const claims = {
+    id: "member-a",
+    type: "member",
+    iss: "https://api.memberstack.com",
+    aud: "app_revvi",
+    iat: 1_786_363_100,
+    exp: 1_786_366_700,
+  };
+  const token = await signedToken(signedFixture.privateKey, claims);
+  let remoteCalls = 0;
+  const knownKeyVerifier = createMemberstackJwtVerifier({
+    appId: "app_revvi",
+    secretKey: "sk_sb_memberstack_test",
+    admitRequest: async () => true,
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+    fetchImpl: async (url) => {
+      if (url === "https://auth.memberstack.com/jwks") {
+        return new Response(JSON.stringify({ keys: [otherFixture.publicJwk] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      remoteCalls += 1;
+      return new Response(JSON.stringify({ data: claims }), { status: 200 });
+    },
+  });
+  await assert.rejects(
+    knownKeyVerifier.verifyBrowserToken(token),
+    (error) => error instanceof MemberstackAuthenticationError
+      && error.code === "AUTHENTICATION_INVALID",
+  );
+  assert.equal(remoteCalls, 0);
+
+  const unknownKeyVerifier = createMemberstackJwtVerifier({
+    appId: "app_revvi",
+    secretKey: "sk_sb_memberstack_test",
+    admitRequest: async () => true,
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+    fetchImpl: async (url) => {
+      if (url === "https://auth.memberstack.com/jwks") {
+        return new Response(JSON.stringify({
+          keys: [{ ...otherFixture.publicJwk, kid: "different-live-key" }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ data: { ...claims, id: "member-b" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  await assert.rejects(
+    unknownKeyVerifier.verifyBrowserToken(token),
+    (error) => error instanceof MemberstackAuthenticationError
+      && error.code === "AUTHENTICATION_INVALID",
+  );
+});
+
+test("both Memberstack verification paths enforce the same typed claims", async () => {
+  const fixture = await memberstackKeyFixture();
+  const validClaims = {
+    id: "member-a",
+    type: "member",
+    iss: "https://api.memberstack.com",
+    aud: "app_revvi",
+    iat: 1_786_363_100,
+    exp: 1_786_366_700,
+  };
+  const invalidClaims = [
+    { ...validClaims, type: "admin" },
+    { ...validClaims, type: undefined },
+    { ...validClaims, iss: "https://attacker.test" },
+    { ...validClaims, aud: "app_other" },
+    { ...validClaims, iat: "1786363100" },
+    { ...validClaims, exp: 1_786_363_000 },
+  ];
+
+  for (const claims of invalidClaims) {
+    const token = await signedToken(fixture.privateKey, claims);
+    for (const publishedKey of [true, false]) {
+      let remoteCalls = 0;
+      const verifier = createMemberstackJwtVerifier({
+        appId: "app_revvi",
+        secretKey: "sk_sb_memberstack_test",
+        admitRequest: async () => true,
+        now: () => new Date("2026-08-10T12:00:00.000Z"),
+        fetchImpl: async (url) => {
+          if (url === "https://auth.memberstack.com/jwks") {
+            return new Response(JSON.stringify({ keys: publishedKey
+              ? [fixture.publicJwk]
+              : [{ ...fixture.publicJwk, kid: "another-key" }] }), { status: 200 });
+          }
+          remoteCalls += 1;
+          return new Response(JSON.stringify({ data: claims }), { status: 200 });
+        },
+      });
+      await assert.rejects(
+        verifier.verifyBrowserToken(token),
+        (error) => error instanceof MemberstackAuthenticationError
+          && error.code === "AUTHENTICATION_INVALID",
+      );
+      assert.equal(remoteCalls, 0);
+    }
+  }
+});
+
+test("the Admin REST fallback rejects mismatched returned claims", async () => {
+  const fixture = await memberstackKeyFixture();
+  const claims = {
+    id: "member-a",
+    type: "member",
+    iss: "https://api.memberstack.com",
+    aud: "app_revvi",
+    iat: 1_786_363_100,
+    exp: 1_786_366_700,
+  };
+  const token = await signedToken(fixture.privateKey, claims);
+  const invalidResponses = [
+    { ...claims, type: "admin" },
+    { ...claims, type: undefined },
+    { ...claims, iss: "https://attacker.test" },
+    { ...claims, aud: "app_other" },
+    { ...claims, iat: claims.iat + 1 },
+    { ...claims, exp: claims.exp + 1 },
+  ];
+
+  for (const returnedClaims of invalidResponses) {
+    let remoteCalls = 0;
+    const verifier = createMemberstackJwtVerifier({
+      appId: "app_revvi",
+      secretKey: "sk_sb_memberstack_test",
+      admitRequest: async () => true,
+      now: () => new Date("2026-08-10T12:00:00.000Z"),
+      fetchImpl: async (url) => {
+        if (url === "https://auth.memberstack.com/jwks") {
+          return new Response(JSON.stringify({
+            keys: [{ ...fixture.publicJwk, kid: "another-key" }],
+          }), { status: 200 });
+        }
+        remoteCalls += 1;
+        return new Response(JSON.stringify({ data: returnedClaims }), { status: 200 });
+      },
+    });
+    await assert.rejects(
+      verifier.verifyBrowserToken(token),
+      (error) => error instanceof MemberstackAuthenticationError
+        && error.code === "AUTHENTICATION_INVALID",
+    );
+    assert.equal(remoteCalls, 1);
+  }
+});
+
+test("the Admin REST fallback fails closed for admission and provider errors", async () => {
+  const fixture = await memberstackKeyFixture();
+  const claims = {
+    id: "member-a",
+    type: "member",
+    iss: "https://api.memberstack.com",
+    aud: "app_revvi",
+    iat: 1_786_363_100,
+    exp: 1_786_366_700,
+  };
+  const token = await signedToken(fixture.privateKey, claims);
+
+  for (const scenario of [
+    { admitted: false, status: 200, expectedCode: "MEMBERSTACK_RATE_LIMITED" },
+    { admitted: true, status: 400, expectedCode: "AUTHENTICATION_INVALID" },
+    { admitted: true, status: 503, expectedCode: "MEMBERSTACK_UNAVAILABLE" },
+  ]) {
+    let remoteCalls = 0;
+    const verifier = createMemberstackJwtVerifier({
+      appId: "app_revvi",
+      secretKey: "sk_sb_memberstack_test",
+      admitRequest: async () => scenario.admitted,
+      now: () => new Date("2026-08-10T12:00:00.000Z"),
+      fetchImpl: async (url) => {
+        if (url === "https://auth.memberstack.com/jwks") {
+          return new Response(JSON.stringify({
+            keys: [{ ...fixture.publicJwk, kid: "another-key" }],
+          }), { status: 200 });
+        }
+        remoteCalls += 1;
+        return new Response(JSON.stringify({ data: claims }), { status: scenario.status });
+      },
+    });
+    await assert.rejects(
+      verifier.verifyBrowserToken(token),
+      (error) => error.code === scenario.expectedCode,
+    );
+    assert.equal(remoteCalls, scenario.admitted ? 1 : 0);
   }
 });
 
@@ -239,6 +477,7 @@ test("wrong-audience, expired, and modified Memberstack JWTs fail closed", async
   });
   const common = {
     id: "member-a",
+    type: "member",
     iss: "https://api.memberstack.com",
     aud: "app_revvi",
     iat: 1_786_363_100,
@@ -267,8 +506,10 @@ test("a Memberstack JWKS outage remains retryable instead of blaming the Custome
   const fixture = await memberstackKeyFixture();
   const token = await signedToken(fixture.privateKey, {
     id: "member-a",
+    type: "member",
     iss: "https://api.memberstack.com",
     aud: "app_revvi",
+    iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + 300,
   });
   const verifier = createMemberstackJwtVerifier({
@@ -468,6 +709,22 @@ test("production routes pin the selected Memberstack contracts", () => {
   assert.match(eligibility, /MEMBERSTACK_CONTRACT_EVIDENCE_DIGEST/);
   assert.doesNotMatch(eligibility, /verifyToken/);
   assert.doesNotMatch(eligibility, /customerId:\s*context\.customer\.id/);
+
+  for (const route of [
+    "offer-class-availability",
+    "booking-quote",
+    "create-booking",
+    "cancel-booking",
+    "upcoming-bookings",
+    "complete-paid-booking",
+    "class-offer-eligibility",
+  ]) {
+    const source = readFileSync(
+      resolve(projectRoot, `supabase/functions/${route}/index.ts`),
+      "utf8",
+    );
+    assert.match(source, /createMemberstackJwtVerifier\(\{[\s\S]*?secretKey:[\s\S]*?admitRequest:/);
+  }
 
   const webhook = readFileSync(
     resolve(projectRoot, "supabase/functions/memberstack-webhook/index.ts"),

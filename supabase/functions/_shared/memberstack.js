@@ -81,15 +81,25 @@ function invalidToken() {
   );
 }
 
+class MemberstackSigningKeyNotFoundError extends Error {}
+
 export function createMemberstackJwtVerifier({
   appId,
+  secretKey,
+  admitRequest,
   fetchImpl = fetch,
   now = () => new Date(),
   jwksUrl = MEMBERSTACK_JWKS_URL,
+  adminBaseUrl = "https://admin.memberstack.com",
   cacheTtlMs = 24 * 60 * 60 * 1000,
 }) {
   if (typeof appId !== "string" || !appId.startsWith("app_")) {
     throw new Error("A Memberstack app ID is required.");
+  }
+  if (secretKey !== undefined && (typeof secretKey !== "string"
+    || !/^sk(?:_sb)?_/.test(secretKey)
+    || typeof admitRequest !== "function")) {
+    throw new Error("Memberstack Admin token verification is not configured.");
   }
 
   let cachedJwks = null;
@@ -143,7 +153,8 @@ export function createMemberstackJwtVerifier({
       keys = await loadJwks(true);
       key = keys.find((candidate) => candidate?.kid === kid);
     }
-    if (!key || key.kty !== "RSA" || (key.alg && key.alg !== "RS256")) throw invalidToken();
+    if (!key) throw new MemberstackSigningKeyNotFoundError();
+    if (key.kty !== "RSA" || (key.alg && key.alg !== "RS256")) throw invalidToken();
     return crypto.subtle.importKey(
       "jwk",
       key,
@@ -151,6 +162,77 @@ export function createMemberstackJwtVerifier({
       false,
       ["verify"],
     );
+  }
+
+  function hasValidMemberClaims(claims) {
+    return claims?.type === "member"
+      && claims.iss === MEMBERSTACK_ISSUER
+      && claims.aud === appId
+      && typeof claims.iat === "number"
+      && typeof claims.exp === "number"
+      && claims.exp * 1000 > now().getTime()
+      && typeof claims.id === "string"
+      && claims.id.length > 0
+      && !(typeof claims.sub === "string" && claims.sub !== claims.id)
+      && !(typeof claims.data?.id === "string" && claims.data.id !== claims.id);
+  }
+
+  async function verifyThroughAdminApi(token, decodedClaims) {
+    if (!secretKey) throw invalidToken();
+    if (await admitRequest() !== true) {
+      throw new MemberstackServiceError(
+        "MEMBERSTACK_RATE_LIMITED",
+        "Memberstack identity verification is temporarily busy.",
+      );
+    }
+    let response;
+    try {
+      response = await fetchImpl(`${adminBaseUrl}/members/verify-token`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-API-KEY": secretKey,
+        },
+        body: JSON.stringify({ token }),
+      });
+    } catch {
+      throw new MemberstackServiceError(
+        "MEMBERSTACK_UNAVAILABLE",
+        "Memberstack identity verification is temporarily unavailable.",
+      );
+    }
+    if (response.status === 400) throw invalidToken();
+    if (!response.ok) {
+      throw new MemberstackServiceError(
+        "MEMBERSTACK_UNAVAILABLE",
+        "Memberstack identity verification is temporarily unavailable.",
+      );
+    }
+    let verified;
+    try {
+      verified = (await response.json())?.data;
+    } catch {
+      throw new MemberstackServiceError(
+        "MEMBERSTACK_UNAVAILABLE",
+        "Memberstack identity verification is temporarily unavailable.",
+      );
+    }
+    if (!hasValidMemberClaims(verified)
+      || verified.id !== decodedClaims?.id
+      || verified.type !== decodedClaims?.type
+      || verified.iss !== MEMBERSTACK_ISSUER
+      || verified.iss !== decodedClaims?.iss
+      || verified.aud !== appId
+      || verified.aud !== decodedClaims?.aud
+      || typeof verified.iat !== "number"
+      || verified.iat !== decodedClaims?.iat
+      || typeof verified.exp !== "number"
+      || verified.exp !== decodedClaims?.exp
+      || verified.exp * 1000 <= now().getTime()) {
+      throw invalidToken();
+    }
+    return { memberId: verified.id };
   }
 
   return {
@@ -167,24 +249,23 @@ export function createMemberstackJwtVerifier({
         if (header?.alg !== "RS256" || typeof header.kid !== "string" || header.kid.length === 0) {
           throw invalidToken();
         }
-        const key = await keyFor(header.kid);
+        if (!hasValidMemberClaims(claims)) throw invalidToken();
+        let key;
+        try {
+          key = await keyFor(header.kid);
+        } catch (error) {
+          if (error instanceof MemberstackSigningKeyNotFoundError) {
+            return await verifyThroughAdminApi(token, claims);
+          }
+          throw error;
+        }
         const validSignature = await crypto.subtle.verify(
           "RSASSA-PKCS1-v1_5",
           key,
           decodeBase64url(encodedSignature),
           encoder.encode(`${encodedHeader}.${encodedPayload}`),
         );
-        if (!validSignature
-          || claims?.iss !== MEMBERSTACK_ISSUER
-          || claims?.aud !== appId
-          || typeof claims.exp !== "number"
-          || claims.exp * 1000 <= now().getTime()
-          || typeof claims.id !== "string"
-          || claims.id.length === 0
-          || (typeof claims.sub === "string" && claims.sub !== claims.id)
-          || (typeof claims.data?.id === "string" && claims.data.id !== claims.id)) {
-          throw invalidToken();
-        }
+        if (!validSignature) throw invalidToken();
         return { memberId: claims.id };
       } catch (error) {
         if (error instanceof MemberstackAuthenticationError
