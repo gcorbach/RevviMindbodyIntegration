@@ -18,6 +18,7 @@ import {
   mindbodyStaffRuntimeConfigured,
   parseMindbodyStaffTokens,
 } from "../_shared/mindbody-runtime-provider.js";
+import { createSite99StaffOperationLease } from "../_shared/site-99-staff-operation-lease.js";
 
 const requiredEnvironment = [
   "SUPABASE_URL",
@@ -86,6 +87,7 @@ Deno.serve(async (request) => {
     }),
   };
   const configuredStaffTokens = staffTokens()!;
+  const withSite99StaffOperationLease = createSite99StaffOperationLease(supabase);
   return handleClassBookingQuote(request, {
     allowedOrigins: new Set(
       (Deno.env.get("ALLOWED_ORIGINS") ?? "")
@@ -115,6 +117,7 @@ Deno.serve(async (request) => {
         staffTokens: configuredStaffTokens,
         sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
         sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
+        withSite99StaffOperationLease,
         baseUrl: Deno.env.get("MINDBODY_BASE_URL") ?? "https://api.mindbodyonline.com",
         requestTimeoutMs: Number(Deno.env.get("MINDBODY_REQUEST_TIMEOUT_MS") ?? 10_000),
         createProvider: createMindbodyClientQuoteClient,

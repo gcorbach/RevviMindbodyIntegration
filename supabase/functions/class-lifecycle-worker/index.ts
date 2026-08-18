@@ -11,6 +11,7 @@ import {
   mindbodyStaffRuntimeConfigured,
   parseMindbodyStaffTokens,
 } from "../_shared/mindbody-runtime-provider.js";
+import { createSite99StaffOperationLease } from "../_shared/site-99-staff-operation-lease.js";
 
 function staffTokens() {
   return parseMindbodyStaffTokens(Deno.env.get("MINDBODY_STAFF_TOKENS_JSON")) as Record<string, string> | null;
@@ -42,6 +43,7 @@ Deno.serve(async (request) => {
     { auth: { autoRefreshToken: false, persistSession: false } },
   );
   const catalogue = createClassLifecycleCatalogue(supabase, createClassOfferCatalogue(supabase));
+  const withSite99StaffOperationLease = createSite99StaffOperationLease(supabase);
   try {
     const result = await runClassLifecycleWorker({
       catalogue,
@@ -54,6 +56,7 @@ Deno.serve(async (request) => {
           staffTokens: configuredTokens,
           sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
           sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
+          withSite99StaffOperationLease,
           baseUrl: Deno.env.get("MINDBODY_BASE_URL") ?? "https://api.mindbodyonline.com",
           requestTimeoutMs: Number(Deno.env.get("MINDBODY_REQUEST_TIMEOUT_MS") ?? 10_000),
           createProvider: createMindbodyClassBookingClient,

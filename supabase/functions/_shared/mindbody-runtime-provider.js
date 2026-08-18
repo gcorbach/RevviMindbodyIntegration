@@ -35,6 +35,7 @@ export function createMindbodyRuntimeProvider(options) {
       requestTimeoutMs: options.requestTimeoutMs,
       fetchImpl: options.fetchImpl,
       createProvider: options.createProvider,
+      withStaffOperationLease: options.withSite99StaffOperationLease,
     });
   }
   const userToken = options?.staffTokens?.[options?.context?.integration?.id];

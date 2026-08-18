@@ -152,7 +152,13 @@ function cartId(envelope) {
 }
 
 function checkoutSaleId(envelope) {
-  return id(envelope?.Sale ?? envelope?.Sales?.[0]);
+  return id(
+    envelope?.Sale
+      ?? envelope?.Sales?.[0]
+      ?? envelope?.ShoppingCart?.Sale
+      ?? envelope?.ShoppingCart?.Sales?.[0]
+      ?? envelope?.ShoppingCart?.SaleId,
+  );
 }
 
 function sameEvidence(left, right) {
@@ -211,7 +217,7 @@ export function createSite99Runner({
   const programId = text(environment.MINDBODY_SANDBOX_PROGRAM_ID ?? "27");
   const classDescriptionId = text(environment.MINDBODY_SANDBOX_CLASS_DESCRIPTION_ID ?? "223");
   const sessionTypeId = text(environment.MINDBODY_SANDBOX_SESSION_TYPE_ID ?? "250");
-  const productId = text(environment.MINDBODY_SANDBOX_PRODUCT_ID ?? "1431");
+  const productId = text(environment.MINDBODY_SANDBOX_PRODUCT_ID ?? "1424");
   let authorization = null;
   let pendingInspection = null;
 
@@ -390,8 +396,17 @@ export function createSite99Runner({
     const requiredFields = array(required?.RequiredClientFields ?? required?.RequiredFields)
       .map((field) => text(field?.FieldName ?? field))
       .filter(Boolean);
+    const genders = await request("gender_options", "site/genders");
+    const defaultGenderOptions = array(genders?.GenderOptions)
+      .filter((option) => option?.IsActive === true && option?.IsDefault === true);
+    const genderOptionId = id(defaultGenderOptions[0]);
+    const gender = text(defaultGenderOptions[0]?.Name);
+    if (defaultGenderOptions.length !== 1 || !genderOptionId || !gender) {
+      throw new Site99RunError("gender_options", "DEFAULT_GENDER_OPTION_NOT_UNIQUE");
+    }
     const supportedFields = new Set([
       "FirstName", "LastName", "Email", "BirthDate", "AddressLine1", "City", "State", "PostalCode", "MobilePhone",
+      "IsMale",
     ]);
     if (requiredFields.some((field) => !supportedFields.has(field))) {
       throw new Site99RunError("required_client_fields", "UNSUPPORTED_REQUIRED_FIELD");
@@ -406,6 +421,7 @@ export function createSite99Runner({
       State: "CA",
       PostalCode: "93401",
       MobilePhone: "5555550100",
+      Gender: gender,
     };
     const created = await request("committed_client_creation", "client/addclient", {
       method: "POST",

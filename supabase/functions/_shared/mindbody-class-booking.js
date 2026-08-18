@@ -356,11 +356,25 @@ export function createMindbodyClassBookingClient(options) {
     };
   }
 
-  async function getAll(path, query, collection) {
+  function clientScheduleWindow() {
+    const window = clientVisitWindow();
+    return {
+      "request.startDate": new Date(`${window.StartDate}T00:00:00.000Z`).toISOString(),
+      "request.endDate": new Date(`${window.EndDate}T23:59:59.999Z`).toISOString(),
+    };
+  }
+
+  async function getAll(path, query, collection, paginationPrefix = "") {
     const items = [];
+    const limitName = paginationPrefix ? `${paginationPrefix}limit` : "Limit";
+    const offsetName = paginationPrefix ? `${paginationPrefix}offset` : "Offset";
     for (let page = 0; page < 10; page += 1) {
       const envelope = await request(path, {
-        query: { ...query, Limit: 100, Offset: page * 100 },
+        query: {
+          ...query,
+          [limitName]: 100,
+          [offsetName]: page * 100,
+        },
       });
       const pageItems = array(envelope?.[collection]);
       items.push(...pageItems);
@@ -377,18 +391,56 @@ export function createMindbodyClassBookingClient(options) {
     );
   }
 
-  async function readSandboxCashEvidence(input, expected) {
+  async function readSandboxCashBaseline(input) {
+    const [visits, services] = await Promise.all([
+      getAll(
+        "client/clientvisits",
+        { ClientId: input.clientId, ...clientVisitWindow() },
+        "Visits",
+      ),
+      getAll(
+        "client/clientservices",
+        { ClientId: input.clientId, ClassId: input.classId },
+        "ClientServices",
+      ),
+    ]);
+    return Object.freeze({
+      visitIds: new Set(visits.map(visitFact).filter(Boolean)
+        .filter((visit) => !visit.cancelled && exactFact(visit, input) && visit.visitId)
+        .map((visit) => visit.visitId)),
+      clientServiceIds: new Set(services.map(clientServiceFact).filter(Boolean)
+        .filter((service) => service.clientServiceId
+          && service.serviceProductId === String(input.serviceProductId))
+        .map((service) => service.clientServiceId)),
+    });
+  }
+
+  async function readSandboxCashEvidence(input, expected, baseline) {
     const [schedule, visits, roster, sales, transactions, services] = await Promise.all([
-      request("client/clientschedule", { query: { "request.clientId": input.clientId } }),
-      request("client/clientvisits", { query: { ClientId: input.clientId, ...clientVisitWindow() } }),
+      request("client/clientschedule", {
+        query: {
+          "request.clientId": input.clientId,
+          ...clientScheduleWindow(),
+          "request.limit": 200,
+        },
+      }),
+      getAll(
+        "client/clientvisits",
+        { ClientId: input.clientId, ...clientVisitWindow() },
+        "Visits",
+      ),
       request("class/classvisits", { query: { "request.classID": input.classId } }),
       request("sale/sales", { query: { ClientId: input.clientId } }),
       request("sale/transactions", { query: { ClientId: input.clientId } }),
-      request("client/clientservices", { query: { ClientId: input.clientId, ClassId: input.classId } }),
+      getAll(
+        "client/clientservices",
+        { ClientId: input.clientId, ClassId: input.classId },
+        "ClientServices",
+      ),
     ]);
     const surfaceVisits = [
       scheduleVisits(schedule),
-      array(visits?.Visits).map(visitFact).filter(Boolean),
+      visits.map(visitFact).filter(Boolean),
       [
         ...array(roster?.Visits).map(visitFact),
         ...array(roster?.Class?.Visits).map(visitFact),
@@ -396,20 +448,21 @@ export function createMindbodyClassBookingClient(options) {
       ].filter(Boolean),
     ];
     const clientVisit = surfaceVisits[1].find((visit) => !visit.cancelled && exactFact(visit, input));
-    if (!clientVisit?.visitId || !surfaceVisits[0].some((visit) => visit.visitId === clientVisit.visitId)
+    if (!clientVisit?.visitId
+      || baseline.visitIds.has(clientVisit.visitId)
       || !surfaceVisits[2].some((visit) => visit.visitId === clientVisit.visitId)) return null;
     const sale = array(sales?.Sales).map(saleFact).filter(Boolean).find((candidate) => (
       candidate.saleId === expected.saleId
       && candidate.clientId === String(input.clientId)
       && candidate.returned === false
       && candidate.productIds.includes(String(input.serviceProductId))
-      && candidate.classIds.includes(String(input.classId))
     ));
     const payment = sale?.payments.find((candidate) => candidate.paymentId
       && candidate.type?.toLowerCase() === "cash"
       && candidate.amount === Number(input.priceAmount));
-    const service = array(services?.ClientServices).map(clientServiceFact).filter(Boolean)
+    const service = services.map(clientServiceFact).filter(Boolean)
       .find((candidate) => candidate.clientServiceId === clientVisit.clientServiceId
+        && !baseline.clientServiceIds.has(candidate.clientServiceId)
         && candidate.serviceProductId === String(input.serviceProductId)
         && candidate.returned === false);
     if (!sale || !payment || !service) return null;
@@ -433,7 +486,7 @@ export function createMindbodyClassBookingClient(options) {
     };
   }
 
-  async function reconcileSandboxCashCheckout(input, expected) {
+  async function reconcileSandboxCashCheckout(input, expected, baseline) {
     const attempts = Number(options?.reconciliationAttempts ?? 5);
     const delayMs = Number(options?.reconciliationDelayMs ?? 750);
     if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 10
@@ -441,7 +494,7 @@ export function createMindbodyClassBookingClient(options) {
       throw new TypeError("Sandbox reconciliation settings are invalid.");
     }
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-      const evidence = await readSandboxCashEvidence(input, expected);
+      const evidence = await readSandboxCashEvidence(input, expected, baseline);
       if (evidence) return evidence;
       if (attempt + 1 < attempts && delayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -504,6 +557,12 @@ export function createMindbodyClassBookingClient(options) {
           if (requiredMindbodyText(input?.currency, "currency") !== "USD") {
             throw new TypeError("Site -99 sandbox Cash requires USD.");
           }
+          const baseline = await readSandboxCashBaseline({
+            ...input,
+            classId,
+            clientId,
+            serviceProductId,
+          });
           const envelope = await request("sale/checkoutshoppingcart", {
             method: "POST",
             body: {
@@ -527,7 +586,13 @@ export function createMindbodyClassBookingClient(options) {
           });
           const cart = envelope?.ShoppingCart ?? envelope?.Cart;
           const cartId = id(cart);
-          const saleId = id(envelope?.Sale ?? envelope?.Sales?.[0] ?? cart?.Sale ?? cart?.Sales?.[0]);
+          const saleId = id(
+            envelope?.Sale
+              ?? envelope?.Sales?.[0]
+              ?? cart?.Sale
+              ?? cart?.Sales?.[0]
+              ?? cart?.SaleId,
+          );
           if (!cartId || !saleId) {
             return {
               status: "unknown",
@@ -544,7 +609,7 @@ export function createMindbodyClassBookingClient(options) {
             clientId,
             serviceProductId,
             priceAmount,
-          }, { cartId, saleId });
+          }, { cartId, saleId }, baseline);
         }
         if (!configuredPaidRoute) {
           throw new MindbodyClassBookingError(
@@ -681,7 +746,13 @@ export function createMindbodyClassBookingClient(options) {
       const clientId = requiredMindbodyText(input?.clientId, "clientId");
       const mode = text(input?.mode);
       const operations = [
-        request("client/clientschedule", { query: { "request.clientId": clientId } }),
+        request("client/clientschedule", {
+          query: {
+            "request.clientId": clientId,
+            ...clientScheduleWindow(),
+            "request.limit": 200,
+          },
+        }),
         request("client/clientvisits", {
           query: { ClientId: clientId, ...clientVisitWindow() },
         }),
@@ -855,7 +926,12 @@ export function createMindbodyClassBookingClient(options) {
       if (removalType !== "roster") throw new TypeError("removalType must be roster or waitlist.");
       const visitId = requiredMindbodyText(input?.visitId, "visitId");
       const settled = await Promise.allSettled([
-        getAll("client/clientschedule", { "request.clientId": clientId }, "Classes"),
+        getAll(
+          "client/clientschedule",
+          { "request.clientId": clientId, ...clientScheduleWindow() },
+          "Classes",
+          "request.",
+        ),
         getAll(
           "client/clientvisits",
           { ClientId: clientId, ...clientVisitWindow() },

@@ -1,4 +1,7 @@
-import { normalizeMindbodyDateTime } from "./class-availability-request.js";
+import {
+  normalizeMindbodyDateTime,
+  resolveClassAvailabilityDateRange,
+} from "./class-availability-request.js";
 import {
   createMindbodyJsonTransport,
   instrumentMindbodyProvider,
@@ -68,6 +71,7 @@ function requiredMindbodyInteger(value, name) {
 export function createMindbodyClientQuoteClient(options) {
   const siteId = requiredMindbodyText(options?.siteId, "siteId");
   requiredMindbodyText(options?.userToken, "userToken");
+  const now = typeof options?.now === "function" ? options.now : () => new Date();
   const transport = createMindbodyJsonTransport({
     ...options,
     unavailableMessage: "Mindbody client-aware pricing is temporarily unavailable.",
@@ -173,7 +177,7 @@ export function createMindbodyClientQuoteClient(options) {
         LastName: requiredMindbodyText(lastName, "lastName"),
         Email: requiredMindbodyText(email, "email"),
       },
-      "Clients",
+      "ClientDuplicates",
     )).map(clientFact),
     getRequiredClientFields: async () => {
       const envelope = await request("client/requiredclientfields");
@@ -194,9 +198,16 @@ export function createMindbodyClientQuoteClient(options) {
       return clientFact(envelope?.Client ?? envelope?.Clients?.[0]);
     },
     getClassForClient: async ({ classId, clientId, uniqueClientId, timezone }) => {
+      const locationTimezone = requiredMindbodyText(timezone, "timezone");
+      const dateRange = resolveClassAvailabilityDateRange({
+        timezone: locationTimezone,
+        now: now(),
+      });
       const classes = await request("class/classes", {
         query: {
           ClassIds: [requiredMindbodyText(classId, "classId")],
+          StartDateTime: dateRange.startAt,
+          EndDateTime: dateRange.endAt,
           ClientId: requiredMindbodyText(clientId, "clientId"),
           UniqueClientId: uniqueClientId == null ? undefined : requiredMindbodyText(String(uniqueClientId), "uniqueClientId"),
         },
@@ -208,7 +219,7 @@ export function createMindbodyClientQuoteClient(options) {
         });
       }
       const occurrence = classes[0];
-      const startAt = normalizeMindbodyDateTime(occurrence?.StartDateTime, requiredMindbodyText(timezone, "timezone"));
+      const startAt = normalizeMindbodyDateTime(occurrence?.StartDateTime, locationTimezone);
       if (!startAt) {
         throw new MindbodyClientQuoteError("Mindbody returned an invalid Class time.", {
           endpointName: "class/classes", statusCode: 200, errorCode: "INVALID_CLASS_TIME",
@@ -224,7 +235,7 @@ export function createMindbodyClientQuoteClient(options) {
         ...(occurrence.Staff?.Name == null ? {} : { staffName: String(occurrence.Staff.Name) }),
         startAt,
         ...(occurrence?.EndDateTime == null ? {} : {
-          endAt: normalizeMindbodyDateTime(occurrence.EndDateTime, requiredMindbodyText(timezone, "timezone")),
+          endAt: normalizeMindbodyDateTime(occurrence.EndDateTime, locationTimezone),
         }),
         locationId: String(occurrence.Location?.Id ?? ""),
         locationName: String(occurrence.Location?.Name ?? ""),

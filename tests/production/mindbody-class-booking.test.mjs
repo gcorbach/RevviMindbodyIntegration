@@ -39,7 +39,11 @@ test("booking reconciliation uses Mindbody's nested ClientSchedule and ClassVisi
   });
 
   const scheduleUrl = urls.find((url) => url.includes("/client/clientschedule"));
-  assert.match(scheduleUrl, /request\.clientId=rss-1/);
+  const scheduleQuery = new URL(scheduleUrl).searchParams;
+  assert.equal(scheduleQuery.get("request.clientId"), "rss-1");
+  assert.match(scheduleQuery.get("request.startDate"), /^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
+  assert.match(scheduleQuery.get("request.endDate"), /^\d{4}-\d{2}-\d{2}T23:59:59\.999Z$/);
+  assert.equal(scheduleQuery.get("request.limit"), "200");
   assert.doesNotMatch(scheduleUrl, /ClientIds=/);
   const classVisitsUrl = urls.find((url) => url.includes("/class/classvisits"));
   assert.match(classVisitsUrl, /request\.classID=771/);
@@ -185,33 +189,43 @@ test("an evidenced alternative-payment route initiates one atomic Class checkout
   assert.equal(result.serviceProductId, "product-1");
 });
 
-test("the hard-locked Site -99 Cash route confirms only after exact purchase and three-surface roster evidence", async () => {
+test("the hard-locked Site -99 Cash route confirms only from exact live purchase, Visit, roster and ClientService evidence", async () => {
   let checkoutBody;
+  let scheduleUrl;
+  let clientVisitReads = 0;
+  let clientServiceReads = 0;
   const visit = { Id: 901, ClassId: 771, ClientId: "rss-1", ServiceId: 611 };
   const client = createMindbodyClassBookingClient({
     ...options(async (url, init = {}) => {
       const path = new URL(url).pathname;
       if (path.endsWith("/sale/checkoutshoppingcart")) {
         checkoutBody = JSON.parse(init.body);
-        return response({ ShoppingCart: { Id: "cart-1", Sales: [{ Id: 501 }] } });
+        return response({ ShoppingCart: { Id: "cart-1", SaleId: 501 } });
       }
       if (path.endsWith("/client/clientschedule")) {
-        return response({ Classes: [{ Id: 771, Clients: [{ Id: "rss-1", VisitId: 901, ServiceId: 611 }] }] });
+        scheduleUrl = new URL(url);
+        return response({ Classes: [] });
       }
-      if (path.endsWith("/client/clientvisits")) return response({ Visits: [visit] });
+      if (path.endsWith("/client/clientvisits")) {
+        clientVisitReads += 1;
+        return response({ Visits: clientVisitReads === 1 ? [] : [visit] });
+      }
       if (path.endsWith("/class/classvisits")) return response({ Class: { Id: 771, Visits: [visit] } });
       if (path.endsWith("/sale/sales")) return response({ Sales: [{
         Id: 501,
         ClientId: "rss-1",
         ShoppingCartId: "cart-1",
         Returned: false,
-        PurchasedItems: [{ ProductId: 1431, ClassId: 771 }],
+        PurchasedItems: [{ Id: 1431, Returned: false }],
         Payments: [{ Id: 701, Type: "Cash", Amount: 13 }],
       }] });
       if (path.endsWith("/sale/transactions")) return response({ Transactions: [] });
-      if (path.endsWith("/client/clientservices")) return response({ ClientServices: [{
-        Id: 611, ProductId: 1431, Current: false, Returned: false, Remaining: 0,
-      }] });
+      if (path.endsWith("/client/clientservices")) {
+        clientServiceReads += 1;
+        return response({ ClientServices: clientServiceReads === 1 ? [] : [{
+          Id: 611, ProductId: 1431, Current: false, Returned: false, Remaining: 0,
+        }] });
+      }
       throw new Error(`Unexpected endpoint ${path}`);
     }),
     sandboxCashRoute: true,
@@ -250,6 +264,121 @@ test("the hard-locked Site -99 Cash route confirms only after exact purchase and
   assert.equal(result.transactionId, null);
   assert.equal(result.visitId, "901");
   assert.equal(result.clientServiceId, "611");
+  assert.equal(scheduleUrl.searchParams.get("request.clientId"), "rss-1");
+  assert.match(scheduleUrl.searchParams.get("request.startDate"), /^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
+  assert.match(scheduleUrl.searchParams.get("request.endDate"), /^\d{4}-\d{2}-\d{2}T23:59:59\.999Z$/);
+  assert.equal(scheduleUrl.searchParams.get("request.limit"), "200");
+});
+
+test("the Site -99 Cash route stays unknown without the exact Class roster Visit", async () => {
+  let clientVisitReads = 0;
+  let clientServiceReads = 0;
+  const visit = { Id: 901, ClassId: 771, ClientId: "rss-1", ServiceId: 611 };
+  const client = createMindbodyClassBookingClient({
+    ...options(async (url) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/sale/checkoutshoppingcart")) {
+        return response({ ShoppingCart: { Id: "cart-1", SaleId: 501 } });
+      }
+      if (path.endsWith("/client/clientschedule")) return response({ Classes: [] });
+      if (path.endsWith("/client/clientvisits")) {
+        clientVisitReads += 1;
+        return response({ Visits: clientVisitReads === 1 ? [] : [visit] });
+      }
+      if (path.endsWith("/class/classvisits")) return response({ Class: { Id: 771, Visits: [] } });
+      if (path.endsWith("/sale/sales")) return response({ Sales: [{
+        Id: 501,
+        ClientId: "rss-1",
+        Returned: false,
+        PurchasedItems: [{ Id: 1431, Returned: false }],
+        Payments: [{ Id: 701, Type: "Cash", Amount: 13 }],
+      }] });
+      if (path.endsWith("/sale/transactions")) return response({ Transactions: [] });
+      if (path.endsWith("/client/clientservices")) {
+        clientServiceReads += 1;
+        return response({ ClientServices: clientServiceReads === 1 ? [] : [{
+          Id: 611, ProductId: 1431, Current: false, Returned: false, Remaining: 0,
+        }] });
+      }
+      throw new Error(`Unexpected endpoint ${path}`);
+    }),
+    sandboxCashRoute: true,
+    reconciliationAttempts: 1,
+    reconciliationDelayMs: 0,
+  });
+
+  const result = await client.createBooking({
+    mode: "purchase_pricing_option",
+    locationId: "1",
+    classId: "771",
+    clientId: "rss-1",
+    serviceProductId: "1431",
+    priceAmount: 13,
+    currency: "USD",
+  });
+
+  assert.equal(result.status, "unknown");
+  assert.equal(result.errorCode, "SANDBOX_CASH_EVIDENCE_INCOMPLETE");
+  assert.equal(result.saleId, "501");
+  assert.equal(result.cartId, "cart-1");
+});
+
+test("the Site -99 Cash route cannot join a new Sale to pre-existing Visit and ClientService evidence", async () => {
+  const visit = { Id: 901, ClassId: 771, ClientId: "rss-1", ServiceId: 611 };
+  const service = { Id: 611, ProductId: 1431, Current: true, Returned: false, Remaining: 8 };
+  const client = createMindbodyClassBookingClient({
+    ...options(async (url) => {
+      const parsedUrl = new URL(url);
+      const path = parsedUrl.pathname;
+      const offset = Number(parsedUrl.searchParams.get("Offset") ?? 0);
+      if (path.endsWith("/sale/checkoutshoppingcart")) {
+        return response({ ShoppingCart: { Id: "cart-new", SaleId: 502 } });
+      }
+      if (path.endsWith("/client/clientschedule")) return response({ Classes: [] });
+      if (path.endsWith("/client/clientvisits")) return offset === 0
+        ? response({
+          Visits: Array.from({ length: 100 }, (_, index) => ({
+            Id: `unrelated-visit-${index}`, ClassId: 999, ClientId: "rss-1",
+          })),
+          PaginationResponse: { TotalResults: 101 },
+        })
+        : response({ Visits: [visit], PaginationResponse: { TotalResults: 101 } });
+      if (path.endsWith("/class/classvisits")) return response({ Class: { Id: 771, Visits: [visit] } });
+      if (path.endsWith("/sale/sales")) return response({ Sales: [{
+        Id: 502,
+        ClientId: "rss-1",
+        Returned: false,
+        PurchasedItems: [{ Id: 1431, Returned: false }],
+        Payments: [{ Id: 702, Type: "Cash", Amount: 13 }],
+      }] });
+      if (path.endsWith("/sale/transactions")) return response({ Transactions: [] });
+      if (path.endsWith("/client/clientservices")) return offset === 0
+        ? response({
+          ClientServices: Array.from({ length: 100 }, (_, index) => ({
+            Id: `unrelated-service-${index}`, ProductId: 999,
+          })),
+          PaginationResponse: { TotalResults: 101 },
+        })
+        : response({ ClientServices: [service], PaginationResponse: { TotalResults: 101 } });
+      throw new Error(`Unexpected endpoint ${path}`);
+    }),
+    sandboxCashRoute: true,
+    reconciliationAttempts: 1,
+    reconciliationDelayMs: 0,
+  });
+
+  const result = await client.createBooking({
+    mode: "purchase_pricing_option",
+    locationId: "1",
+    classId: "771",
+    clientId: "rss-1",
+    serviceProductId: "1431",
+    priceAmount: 13,
+    currency: "USD",
+  });
+
+  assert.equal(result.status, "unknown");
+  assert.equal(result.errorCode, "SANDBOX_CASH_EVIDENCE_INCOMPLETE");
 });
 
 test("paid return completes the exact initiated cart but never treats the callback response as success", async () => {

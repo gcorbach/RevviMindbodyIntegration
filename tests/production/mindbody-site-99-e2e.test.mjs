@@ -55,7 +55,10 @@ function sandboxProvider({
       return json(body.Test ? {} : { Client: { Id: clientId } });
     }
     if (path === "client/requiredclientfields") {
-      return json({ RequiredClientFields: ["FirstName", "LastName", "Email"] });
+      return json({ RequiredClientFields: ["AddressLine1", "BirthDate", "Email", "IsMale"] });
+    }
+    if (path === "site/genders") {
+      return json({ GenderOptions: [{ Id: 1, Name: "None", IsActive: true, IsDefault: true }] });
     }
     if (path === "class/classes") {
       return json({
@@ -77,7 +80,7 @@ function sandboxProvider({
     if (path === "sale/services") {
       return json({
         Services: [{
-          ProductId: 1431,
+          ProductId: 1424,
           SellOnline: true,
           Discontinued: false,
           OnlinePrice: 13,
@@ -115,7 +118,7 @@ function sandboxProvider({
             Id: 100170553,
             ClientId: clientId,
             ShoppingCartId: "cart-1",
-            PurchasedItems: [{ Id: 1431, SaleDetailId: 188790, Returned: false }],
+            PurchasedItems: [{ Id: 1424, SaleDetailId: 188790, Returned: false }],
             Payments: [{ Id: 168194, Type: "Cash", Amount: 13, TransactionId: null }],
           }]
           : [],
@@ -125,7 +128,7 @@ function sandboxProvider({
     if (path === "client/clientservices") {
       return json({
         ClientServices: saleCreated
-          ? [{ Id: 7001, ProductId: 1431, Current: true, Returned: false, Remaining: 0 }]
+          ? [{ Id: 7001, ProductId: 1424, Current: true, Returned: false, Remaining: 0 }]
           : [],
       });
     }
@@ -139,6 +142,7 @@ function sandboxProvider({
       return json({
         ShoppingCart: {
           Id: "cart-1", SubTotal: 13, DiscountTotal: 0, TaxTotal: 0, GrandTotal: 13,
+          ...(body.Test === false ? { SaleId: 100170553 } : {}),
         },
       });
     }
@@ -282,6 +286,9 @@ test("committed mode waits for every evidence surface, proves exact facts, and a
     .map((request) => request.body);
   assert.deepEqual(addClientBodies.map((body) => body.Test), [false]);
   assert.match(addClientBodies[0].Email, /^revvi-sandbox-/);
+  assert.equal(addClientBodies[0].Gender, "None");
+  assert.equal("GenderOptionId" in addClientBodies[0], false);
+  assert.equal("IsMale" in addClientBodies[0], false);
   const checkoutBodies = provider.requests
     .filter((request) => request.url.pathname.endsWith("checkoutshoppingcart"))
     .map((request) => request.body);

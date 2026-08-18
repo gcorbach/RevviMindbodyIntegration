@@ -25,6 +25,7 @@ import {
   mindbodyStaffRuntimeConfigured,
   parseMindbodyStaffTokens,
 } from "../_shared/mindbody-runtime-provider.js";
+import { createSite99StaffOperationLease } from "../_shared/site-99-staff-operation-lease.js";
 
 const requiredEnvironment = [
   "SUPABASE_URL",
@@ -158,6 +159,7 @@ Deno.serve(async (request) => {
     }),
   };
   const configuredStaffTokens = staffTokens()!;
+  const withSite99StaffOperationLease = createSite99StaffOperationLease(supabase);
   const providerOptions = (
     context: {
       integration: { id: string; providerSiteId: string };
@@ -222,6 +224,7 @@ Deno.serve(async (request) => {
         staffTokens: configuredStaffTokens,
         sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
         sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
+        withSite99StaffOperationLease,
         createProvider: createMindbodyClientQuoteClient,
       }),
       {
@@ -258,6 +261,7 @@ Deno.serve(async (request) => {
         staffTokens: configuredStaffTokens,
         sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
         sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
+        withSite99StaffOperationLease,
         createProvider: createMindbodyClassBookingClient,
       }),
       {
