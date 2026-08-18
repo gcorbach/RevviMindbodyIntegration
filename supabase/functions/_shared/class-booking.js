@@ -71,18 +71,28 @@ function providerReferences(result = {}) {
   };
 }
 
-function hasConfirmationEvidence(result, quote) {
+function isSandboxCash(context) {
+  return context?.integration?.environment === "sandbox"
+    && context.integration.providerSiteId === "-99"
+    && context?.location?.providerLocationId === "1"
+    && context?.mapping?.paidPaymentRoute === "mindbody_sandbox_cash"
+    && context.mapping.sandboxDemoWriteEnabled === true;
+}
+
+function hasConfirmationEvidence(result, quote, context) {
   if (quote?.fulfilmentMode === "approved_unpaid") {
     return Boolean(result?.visitId || result?.rosterBookingId);
   }
   if (quote?.fulfilmentMode === "purchase_pricing_option") {
+    const transactionEvidence = result?.transactionId
+      || (isSandboxCash(context) && result?.paymentType === "Cash");
     return Boolean(
       (result?.visitId || result?.rosterBookingId)
       && result?.clientServiceId
       && result?.atomicCheckoutConfirmed === true
       && result?.saleId
       && result?.cartId
-      && result?.transactionId
+      && transactionEvidence
       && result?.paymentId,
     );
   }
@@ -112,14 +122,14 @@ function modeEvidenceMatches(result, quote) {
   return true;
 }
 
-function normalizeProviderOutcome(result, quote) {
+function normalizeProviderOutcome(result, quote, context) {
   if (quote?.fulfilmentMode !== "approved_unpaid"
     && result?.status === "waitlisted" && result.waitlistEntryId) {
     return { status: "waitlisted", attemptStatus: "confirmed", certainty: "provider_confirmed" };
   }
   if (result?.status === "confirmed"
     && result.certainty === "provider_confirmed"
-    && hasConfirmationEvidence(result, quote)
+    && hasConfirmationEvidence(result, quote, context)
     && modeEvidenceMatches(result, quote)) {
     return { status: "confirmed", attemptStatus: "confirmed", certainty: "provider_confirmed" };
   }
@@ -233,7 +243,12 @@ export async function createClassBooking(input, dependencies) {
     });
   } catch (error) {
     const rejected = error?.certainty === "provider_rejected";
+    const observedProviderResult = !rejected && error?.providerResult
+      && typeof error.providerResult === "object"
+      ? error.providerResult
+      : {};
     result = {
+      ...observedProviderResult,
       status: rejected ? "failed" : "unknown",
       certainty: rejected ? "provider_rejected" : "unknown",
       errorCode: error?.providerErrorCode ?? error?.code ?? (rejected ? "PROVIDER_REJECTED" : "PROVIDER_OUTCOME_UNKNOWN"),
@@ -269,7 +284,13 @@ export async function createClassBooking(input, dependencies) {
       };
     }
   }
-  return persistOutcome(claim, normalizeProviderOutcome(result, input.quote), result, input, dependencies);
+  return persistOutcome(
+    claim,
+    normalizeProviderOutcome(result, input.quote, input.context),
+    result,
+    input,
+    dependencies,
+  );
 }
 
 export async function reconcileClassBooking(input, dependencies) {

@@ -89,7 +89,7 @@ var RevviBooking = (() => {
     quoteEndpoint = "/functions/v1/booking-quote",
     bookingEndpoint = "/functions/v1/create-booking",
     paymentCompletionEndpoint = "/functions/v1/complete-paid-booking",
-    demoCleanupEndpoint = "/functions/v1/cleanup-demo-booking",
+    demoCleanupEndpoint = "/functions/v1/cancel-booking",
     upcomingEndpoint = "/functions/v1/upcoming-bookings",
     cancellationEndpoint = "/functions/v1/cancel-booking"
   } = {}) {
@@ -128,7 +128,7 @@ var RevviBooking = (() => {
         fetcher,
         demoCleanupEndpoint,
         authorization,
-        { demoBookingId }
+        { bookingId: demoBookingId, reason: "Revvi hosted sandbox demonstration cleanup" }
       ),
       upcomingBookings: (authorization, limit = 20) => postJson(
         fetcher,
@@ -255,8 +255,8 @@ var RevviBooking = (() => {
     const references = booking?.sandboxDemo?.references;
     const searchableReferences = references && typeof references.clientId === "string" && typeof references.clientName === "string" && typeof references.saleId === "string" && typeof references.visitId === "string";
     if (booking?.sandboxDemo?.cleanupStatus === "pending" && searchableReferences) {
-      const cleanupTime = formatDateTime(booking.sandboxDemo.autoCleanupAt, booking.timezone);
-      return `Sandbox Booking is active for inspection: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${locationName}. In Mindbody Business, search Clients for ${references.clientName} (Client ${references.clientId}) and open the Client schedule or visits. Cash Sale ${references.saleId} and Visit ${references.visitId} are the exact evidence. Use Clean up demo Booking when finished; otherwise it will be automatically cleaned at ${cleanupTime}.`;
+      const automaticCleanup = booking.sandboxDemo.autoCleanupAt ? `; otherwise it will be automatically cleaned at ${formatDateTime(booking.sandboxDemo.autoCleanupAt, booking.timezone)}` : "";
+      return `Sandbox Booking is active for inspection: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${locationName}. In Mindbody Business, search Clients for ${references.clientName} (Client ${references.clientId}) and open the Client schedule or visits. Cash Sale ${references.saleId} and Visit ${references.visitId} are the exact evidence. Use Clean up demo Booking when finished${automaticCleanup}.`;
     }
     if (booking?.sandboxDemo?.cleanupStatus === "confirmed" && searchableReferences) {
       const restoration = booking.sandboxDemo.entitlementRestorationObserved === true ? "Entitlement restoration was confirmed." : booking.sandboxDemo.entitlementRestorationObserved === false ? "Entitlement restoration was not observed." : "Entitlement restoration remains unknown.";
@@ -501,6 +501,7 @@ var RevviBooking = (() => {
     let quote = null;
     let requestActive = false;
     let activeDemoBookingId = null;
+    let activeDemoBooking = null;
     let loadSequence = 0;
     function availabilityContext() {
       const startDate = dateInput.value?.trim();
@@ -588,6 +589,7 @@ var RevviBooking = (() => {
         const booking = data?.booking;
         if (booking?.status === "confirmed") {
           activeDemoBookingId = booking?.sandboxDemo?.cleanupStatus === "pending" && UUID.test(booking?.sandboxDemo?.demoBookingId ?? "") ? booking.sandboxDemo.demoBookingId : null;
+          activeDemoBooking = activeDemoBookingId ? booking : null;
           ui.success({ ...booking, timezone: quote.occurrence?.timezone ?? selectedOccurrence?.timezone });
         } else if (booking?.status === "requires_action") {
           const redirectUrl = paymentActionUrl(booking.redirectUrl ?? data.redirectUrl);
@@ -620,11 +622,19 @@ var RevviBooking = (() => {
       ui.cleaningDemoBooking();
       try {
         const data = await api.cleanupDemoBooking(authorization, activeDemoBookingId);
-        const booking = data?.booking;
-        if (booking?.status !== "confirmed" || booking?.sandboxDemo?.cleanupStatus !== "confirmed" || booking?.sandboxDemo?.demoBookingId !== activeDemoBookingId) {
+        if (data?.bookingId !== activeDemoBookingId || data?.status !== "cancelled" || !activeDemoBooking) {
           throw new Error("The sandbox cleanup was not confirmed.");
         }
+        const booking = {
+          ...activeDemoBooking,
+          sandboxDemo: {
+            ...activeDemoBooking.sandboxDemo,
+            cleanupStatus: "confirmed",
+            entitlementRestorationObserved: data.passRestoration === "restored" ? true : data.passRestoration === "not_restored" ? false : null
+          }
+        };
         activeDemoBookingId = null;
+        activeDemoBooking = null;
         ui.success({ ...booking, timezone: quote?.occurrence?.timezone ?? selectedOccurrence?.timezone });
       } catch {
         ui.demoCleanupFailed();

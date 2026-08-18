@@ -88,6 +88,59 @@ test("create-booking revalidates current eligibility and returns normalized Clas
   });
 });
 
+test("the exact Site -99 response can expose inspected sandbox evidence without changing the ledger result", async () => {
+  const deps = dependencies({
+    decorateBooking: ({ booking, authorization, resolved }) => ({
+      ...booking,
+      sandboxDemo: {
+        paymentType: "Fictitious Cash",
+        providerEvidenceConfirmed: true,
+        demoBookingId: booking.id,
+        cleanupStatus: "pending",
+        references: {
+          clientId: resolved.quote.providerClientId,
+          clientName: authorization.customer.identity.firstName,
+          saleId: booking.providerReferences.saleId,
+          paymentId: booking.providerReferences.paymentId,
+          visitId: booking.providerReferences.visitId,
+        },
+      },
+    }),
+    authorizeRequest: async () => ({
+      customer: { id: "customer-a", identity: { firstName: "Revvi Demo" } },
+    }),
+    catalogue: {
+      ...dependencies().catalogue,
+      resolveBookingContext: async () => ({
+        quote: { id: quoteId, customerId: "customer-a", businessId: "business-a", providerClientId: "client-99" },
+        context: { business: { id: "business-a" }, integration: { id: "integration-a" } },
+      }),
+    },
+    executeBooking: async () => ({
+      booking: {
+        id: "booking-a", status: "confirmed", priceAmount: 13, currency: "USD",
+        providerVisitId: "visit-99", providerSaleId: "sale-99", providerPaymentId: "payment-99",
+      },
+      attempt: { id: "attempt-a", status: "confirmed" },
+    }),
+  });
+  const response = await handleClassBooking(request(), deps);
+  const booking = (await response.json()).data.booking;
+  assert.deepEqual(booking.sandboxDemo, {
+    paymentType: "Fictitious Cash",
+    providerEvidenceConfirmed: true,
+    demoBookingId: "booking-a",
+    cleanupStatus: "pending",
+    references: {
+      clientId: "client-99",
+      clientName: "Revvi Demo",
+      saleId: "sale-99",
+      paymentId: "payment-99",
+      visitId: "visit-99",
+    },
+  });
+});
+
 test("a duplicate request returns its stored result without quote revalidation or a provider factory", async () => {
   let contextReads = 0;
   let providerFactories = 0;

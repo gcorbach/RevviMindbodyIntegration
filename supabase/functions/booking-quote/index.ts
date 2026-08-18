@@ -13,6 +13,11 @@ import {
   createMindbodyClientQuoteClient,
   instrumentClientQuoteProvider,
 } from "../_shared/mindbody-client-quote.js";
+import {
+  createMindbodyRuntimeProvider,
+  mindbodyStaffRuntimeConfigured,
+  parseMindbodyStaffTokens,
+} from "../_shared/mindbody-runtime-provider.js";
 
 const requiredEnvironment = [
   "SUPABASE_URL",
@@ -21,27 +26,20 @@ const requiredEnvironment = [
   "MEMBERSTACK_SECRET_KEY",
   "MEMBERSTACK_CONTRACT_EVIDENCE_DIGEST",
   "MINDBODY_API_KEY",
-  "MINDBODY_STAFF_TOKENS_JSON",
 ] as const;
 
 function staffTokens() {
-  try {
-    const parsed = JSON.parse(Deno.env.get("MINDBODY_STAFF_TOKENS_JSON") ?? "");
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    for (const [integrationId, token] of Object.entries(parsed)) {
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(integrationId)
-        || typeof token !== "string" || token.trim().length < 16) return null;
-    }
-    return parsed as Record<string, string>;
-  } catch {
-    return null;
-  }
+  return parseMindbodyStaffTokens(Deno.env.get("MINDBODY_STAFF_TOKENS_JSON")) as Record<string, string> | null;
 }
 
 function configured() {
   if (requiredEnvironment.some((name) => !Deno.env.get(name))) return false;
   return /^[a-f0-9]{64}$/i.test(Deno.env.get("MEMBERSTACK_CONTRACT_EVIDENCE_DIGEST") ?? "")
-    && staffTokens() !== null;
+    && mindbodyStaffRuntimeConfigured({
+      staffTokens: staffTokens(),
+      sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
+      sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
+    });
 }
 
 function configurationError(request: Request) {
@@ -104,14 +102,16 @@ Deno.serve(async (request) => {
       },
       operation: { requestId: string; customerId: string },
     ) => {
-      const userToken = configuredStaffTokens[context.integration.id];
-      if (!userToken) throw new Error("No staff token is configured for the selected integration.");
-      const provider = createMindbodyClientQuoteClient({
+      const provider = createMindbodyRuntimeProvider({
+        context,
+        customerId: operation.customerId,
         apiKey: Deno.env.get("MINDBODY_API_KEY")!,
-        siteId: context.integration.providerSiteId,
-        userToken,
+        staffTokens: configuredStaffTokens,
+        sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
+        sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
         baseUrl: Deno.env.get("MINDBODY_BASE_URL") ?? "https://api.mindbodyonline.com",
         requestTimeoutMs: Number(Deno.env.get("MINDBODY_REQUEST_TIMEOUT_MS") ?? 10_000),
+        createProvider: createMindbodyClientQuoteClient,
       });
       return instrumentClientQuoteProvider(provider, {
         context: {

@@ -6,12 +6,14 @@ import {
   createMindbodyClassBookingClient,
   instrumentClassBookingProvider,
 } from "../_shared/mindbody-class-booking.js";
+import {
+  createMindbodyRuntimeProvider,
+  mindbodyStaffRuntimeConfigured,
+  parseMindbodyStaffTokens,
+} from "../_shared/mindbody-runtime-provider.js";
 
 function staffTokens() {
-  try {
-    const value = JSON.parse(Deno.env.get("MINDBODY_STAFF_TOKENS_JSON") ?? "");
-    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, string> : null;
-  } catch { return null; }
+  return parseMindbodyStaffTokens(Deno.env.get("MINDBODY_STAFF_TOKENS_JSON")) as Record<string, string> | null;
 }
 
 Deno.serve(async (request) => {
@@ -25,7 +27,12 @@ Deno.serve(async (request) => {
     });
   }
   if (!Deno.env.get("SUPABASE_URL") || !Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
-    || !Deno.env.get("MINDBODY_API_KEY") || !configuredTokens) {
+    || !Deno.env.get("MINDBODY_API_KEY")
+    || !mindbodyStaffRuntimeConfigured({
+      staffTokens: configuredTokens,
+      sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
+      sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
+    })) {
     return new Response(JSON.stringify({ ok: false, error: { code: "CONFIGURATION_ERROR", message: "Lifecycle worker is not configured.", retryable: true }, requestId }), {
       status: 500, headers: { "Content-Type": "application/json", "X-Request-Id": requestId },
     });
@@ -38,16 +45,18 @@ Deno.serve(async (request) => {
   try {
     const result = await runClassLifecycleWorker({
       catalogue,
-      createProvider: async (context: { booking: { businessId: string; integrationId: string }; attempt: { id: string } }) => {
-        const integration = await catalogue.resolveIntegration(context.booking.integrationId);
-        const userToken = configuredTokens[integration.id];
-        if (typeof userToken !== "string" || userToken.trim().length < 16) {
-          throw new Error("Mindbody staff token is unavailable.");
-        }
-        return instrumentClassBookingProvider(createMindbodyClassBookingClient({
-          apiKey: Deno.env.get("MINDBODY_API_KEY")!, siteId: integration.providerSiteId, userToken,
+      createProvider: async (context: { booking: { id: string; businessId: string }; attempt: { id: string } }) => {
+        const providerContext = await catalogue.resolveBookingProviderContext(context.booking.id);
+        return instrumentClassBookingProvider(createMindbodyRuntimeProvider({
+          context: providerContext,
+          customerId: providerContext.customerId,
+          apiKey: Deno.env.get("MINDBODY_API_KEY")!,
+          staffTokens: configuredTokens,
+          sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
+          sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
           baseUrl: Deno.env.get("MINDBODY_BASE_URL") ?? "https://api.mindbodyonline.com",
           requestTimeoutMs: Number(Deno.env.get("MINDBODY_REQUEST_TIMEOUT_MS") ?? 10_000),
+          createProvider: createMindbodyClassBookingClient,
         }), {
           context: { businessId: context.booking.businessId, attemptId: context.attempt.id },
           requestId,

@@ -136,6 +136,33 @@ export function createClassLifecycleCatalogue(supabase, customerCatalogue) {
       if (error) throw unavailable("The entitlement restoration baseline could not be persisted safely.");
     },
 
+    async persistSandboxDemoRestorationBaseline(facts) {
+      const baseline = facts.baseline;
+      const { error } = await supabase.rpc("persist_class_sandbox_demo_restoration_baseline", {
+        candidate_business_id: facts.businessId,
+        candidate_booking_id: facts.bookingId,
+        candidate_attempt_id: facts.attemptId,
+        candidate_write_token: facts.writeToken,
+        candidate_current: baseline.current,
+        candidate_returned: baseline.returned,
+        candidate_unlimited: baseline.unlimited,
+        candidate_remaining: baseline.remaining,
+        candidate_observed_at: baseline.observedAt,
+      });
+      if (error) throw unavailable("The sandbox ClientService restoration baseline could not be persisted safely.");
+    },
+
+    async recordSandboxDemoRestoration(facts) {
+      const { data, error } = await supabase.rpc("record_class_sandbox_demo_restoration", {
+        candidate_business_id: facts.businessId,
+        candidate_booking_id: facts.bookingId,
+        candidate_restoration_status: facts.restorationStatus,
+        candidate_error_code: facts.restorationErrorCode,
+      });
+      if (error) throw unavailable("The sandbox ClientService restoration result could not be persisted safely.");
+      return publicCancellation(data);
+    },
+
     async resolveIntegration(integrationId) {
       const { data, error } = await supabase.from("class_business_integrations")
         .select("id,business_id,provider_site_id,environment,status")
@@ -155,6 +182,48 @@ export function createClassLifecycleCatalogue(supabase, customerCatalogue) {
         businessId: data.business_id,
         providerSiteId: data.provider_site_id,
         environment: data.environment,
+      };
+    },
+
+    async resolveBookingProviderContext(bookingId) {
+      const { data: bookingRow, error: bookingError } = await supabase.from("class_bookings")
+        .select("id,customer_id,quote_id")
+        .eq("id", bookingId)
+        .maybeSingle();
+      if (bookingError || !bookingRow) throw unavailable("The Booking provider context could not be resolved.");
+      const { data: quoteRow, error: quoteError } = await supabase.from("class_booking_quotes")
+        .select("integration_id,location_id,mapping_id")
+        .eq("id", bookingRow.quote_id)
+        .maybeSingle();
+      if (quoteError || !quoteRow) throw unavailable("The Booking provider context could not be resolved.");
+      const { data: integration, error: integrationError } = await supabase.from("class_business_integrations")
+        .select("id,environment,provider_site_id")
+        .eq("id", quoteRow.integration_id)
+        .maybeSingle();
+      const { data: location, error: locationError } = await supabase.from("class_business_locations")
+        .select("provider_location_id")
+        .eq("id", quoteRow.location_id)
+        .maybeSingle();
+      const { data: mapping, error: mappingError } = await supabase.from("class_offer_provider_mappings")
+        .select("paid_payment_route,sandbox_demo_write_enabled,sandbox_demo_customer_id")
+        .eq("id", quoteRow.mapping_id)
+        .maybeSingle();
+      if (integrationError || locationError || mappingError || !integration || !location || !mapping) {
+        throw unavailable("The Booking provider context could not be resolved.");
+      }
+      return {
+        customerId: bookingRow.customer_id,
+        integration: {
+          id: integration.id,
+          environment: integration.environment,
+          providerSiteId: integration.provider_site_id,
+        },
+        location: { providerLocationId: location.provider_location_id },
+        mapping: {
+          paidPaymentRoute: mapping.paid_payment_route,
+          sandboxDemoWriteEnabled: mapping.sandbox_demo_write_enabled === true,
+          sandboxDemoCustomerId: mapping.sandbox_demo_customer_id,
+        },
       };
     },
 
@@ -223,11 +292,17 @@ export function createClassLifecycleCatalogue(supabase, customerCatalogue) {
         .maybeSingle();
       if (error || !row) throw unavailable("The lifecycle Booking context could not be resolved.");
       const { data: quoteRow, error: quoteError } = await supabase.from("class_booking_quotes")
-        .select("integration_id")
+        .select("integration_id,mapping_id")
         .eq("business_id", row.business_id)
         .eq("id", row.quote_id)
         .maybeSingle();
       if (quoteError || !quoteRow) throw unavailable("The lifecycle integration context could not be resolved.");
+      const { data: mappingRow, error: mappingError } = await supabase.from("class_offer_provider_mappings")
+        .select("paid_payment_route")
+        .eq("business_id", row.business_id)
+        .eq("id", quoteRow.mapping_id)
+        .maybeSingle();
+      if (mappingError || !mappingRow) throw unavailable("The lifecycle mapping context could not be resolved.");
       let attemptsQuery = supabase.from("class_booking_provider_attempts")
         .select("id,attempt_type,status")
         .eq("business_id", row.business_id)
@@ -258,6 +333,8 @@ export function createClassLifecycleCatalogue(supabase, customerCatalogue) {
           paymentId: row.provider_payment_id,
           cancellationStatus: row.cancellation_status,
           restorationStatus: row.restoration_status,
+          sandboxDemoRestoration: row.fulfilment_mode === "purchase_pricing_option"
+            && mappingRow.paid_payment_route === "mindbody_sandbox_cash",
           restorationBaseline: row.restoration_baseline_observed_at ? {
             status: "observed",
             clientServiceId: row.provider_client_service_id,
@@ -295,6 +372,16 @@ export function createClassLifecycleCatalogue(supabase, customerCatalogue) {
     },
 
     async recordEntitlementRestoration(context, observation) {
+      if (context.booking.sandboxDemoRestoration === true) {
+        const { error } = await supabase.rpc("record_class_sandbox_demo_restoration", {
+          candidate_business_id: context.booking.businessId,
+          candidate_booking_id: context.booking.id,
+          candidate_restoration_status: observation.status,
+          candidate_error_code: observation.errorCode ?? null,
+        });
+        if (error) throw unavailable("The sandbox ClientService restoration read could not be persisted.");
+        return;
+      }
       const { error } = await supabase.rpc("record_class_entitlement_restoration_read", {
         candidate_business_id: context.booking.businessId,
         candidate_booking_id: context.booking.id,

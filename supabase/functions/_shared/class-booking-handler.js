@@ -39,8 +39,11 @@ function parseRequest(value) {
   return { quoteId: value.quoteId, idempotencyKey: value.idempotencyKey };
 }
 
-function success(result, origin, id) {
-  const booking = publicBooking(result.booking);
+function success(result, origin, id, decorateBooking, details = {}) {
+  const publicResult = publicBooking(result.booking);
+  const booking = typeof decorateBooking === "function"
+    ? decorateBooking({ booking: publicResult, result, ...details })
+    : publicResult;
   const status = booking.status === "unknown" ? 202 : 200;
   return json({ ok: true, data: { booking }, requestId: id }, status, origin, id);
 }
@@ -81,7 +84,14 @@ export async function handleClassBooking(request, dependencies) {
       customerId: authorization.customer.id,
       idempotencyKey: input.idempotencyKey,
     });
-    if (existing) return success(existing, origin, id);
+    if (existing) {
+      if (typeof dependencies.decorateBooking !== "function") return success(existing, origin, id);
+      const resolved = await dependencies.catalogue.resolveBookingContext({
+        quoteId: input.quoteId,
+        customerId: authorization.customer.id,
+      });
+      return success(existing, origin, id, dependencies.decorateBooking, { authorization, resolved });
+    }
 
     const resolved = await dependencies.catalogue.resolveBookingContext({
       quoteId: input.quoteId,
@@ -122,7 +132,7 @@ export async function handleClassBooking(request, dependencies) {
         attemptId: attempt.id,
       }),
     });
-    return success(result, origin, id);
+    return success(result, origin, id, dependencies.decorateBooking, { authorization, resolved });
   } catch (error) {
     if (error instanceof BookingRequestError
       || error instanceof BookingOrchestrationError

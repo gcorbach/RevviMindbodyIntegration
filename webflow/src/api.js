@@ -66,7 +66,7 @@ export function createBookingWidgetApi({
   quoteEndpoint = "/functions/v1/booking-quote",
   bookingEndpoint = "/functions/v1/create-booking",
   paymentCompletionEndpoint = "/functions/v1/complete-paid-booking",
-  demoCleanupEndpoint = "/functions/v1/cleanup-demo-booking",
+  demoCleanupEndpoint = "/functions/v1/cancel-booking",
   upcomingEndpoint = "/functions/v1/upcoming-bookings",
   cancellationEndpoint = "/functions/v1/cancel-booking",
 } = {}) {
@@ -105,7 +105,7 @@ export function createBookingWidgetApi({
       fetcher,
       demoCleanupEndpoint,
       authorization,
-      { demoBookingId },
+      { bookingId: demoBookingId, reason: "Revvi hosted sandbox demonstration cleanup" },
     ),
     upcomingBookings: (authorization, limit = 20) => postJson(
       fetcher,

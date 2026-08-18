@@ -66,17 +66,38 @@ If you do not click the cleanup button, the server attempts exact cleanup after 
 
 If the result says it is being reconciled, do not click again with a new request. Keep the server running and retain the terminal's safe error code so exact cleanup can continue.
 
-## What is still needed for the hosted Revvi demo
+## Hosted Revvi staging deployment
 
-The same widget can be placed on a Webflow staging Offer page, but a truthful end-to-end hosted demo additionally requires:
+The hosted adapter uses the linked Supabase staging project and the normal production-shaped Class endpoints. It is not the loopback demo server:
 
-- Webflow staging-page publish access and a place to host the versioned `dist/` assets.
-- A hosted or HTTPS-tunnelled Supabase staging backend.
-- The Revvi Memberstack test app ID and server secret.
-- One eligible Memberstack test plan ID and test Customer.
-- The Webflow staging origin added to the server allowlist.
+- `offer-class-availability`
+- `booking-quote`
+- `create-booking`
+- `cancel-booking` (also powers the visible **Clean up demo Booking** action)
+- `class-lifecycle-worker` for queued read-only reconciliation
 
-The hosted page must not reuse the local demo identity. Memberstack must provide the browser JWT and the backend must re-read the current test Customer before every provider write.
+Configure these secret names in Supabase without committing their values:
+
+- `MINDBODY_API_KEY`
+- `MINDBODY_SANDBOX_USERNAME`
+- `MINDBODY_SANDBOX_PASSWORD`
+- the existing Memberstack application, contract-evidence, and server-secret values
+- `ALLOWED_ORIGINS` containing the exact published Webflow origin
+
+The server issues a temporary Site `-99` staff token for each provider operation and revokes it in `finally`; the token is never returned to Webflow or persisted. The database gate additionally requires sandbox environment, Site `-99`, provider Location `1`, payment route `mindbody_sandbox_cash`, the explicit operator flag, and the one designated Supabase test Customer.
+
+Use the following stable context in the Webflow `/book` widget:
+
+- Business slug: `lastspot-sandbox`
+- Location UUID: `df893f87-6ca7-4417-88e9-25067b42ee37`
+- Offer UUID: `0b3e181e-a718-4098-aa58-9275763f4419`
+- Location label: `Clubville`
+- IANA timezone: `Africa/Johannesburg`
+- Offer label: `Revvi Yoga Clubville`
+
+Point each `SUPABASE_FUNCTIONS_URL` placeholder in `webflow/embed.html` at `https://hqjgsqlniuhphvhyeejm.supabase.co/functions/v1`. Publish the versioned `webflow/dist/` JavaScript and CSS on an HTTPS origin that Webflow allows, then use the real Memberstack test Customer on the protected page.
+
+The hosted confirmation leaves the exact Visit active until the operator clicks **Clean up demo Booking**. Unlike the loopback preview, hosted Edge Functions do not promise an in-process ten-minute timer; unresolved cleanup stays locked and is handled by the lifecycle reconciliation/support path.
 
 ## Boundaries
 

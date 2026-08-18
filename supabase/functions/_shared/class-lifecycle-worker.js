@@ -57,7 +57,8 @@ export async function runClassLifecycleWorker(dependencies, limit = 25) {
           }
         }
 
-        if (context.booking.fulfilmentMode === "existing_entitlement") {
+        if (context.booking.fulfilmentMode === "existing_entitlement"
+          || context.booking.sandboxDemoRestoration === true) {
           const restoration = await provider.reconcileEntitlementRestoration(restorationReadInput(context));
           await dependencies.catalogue.recordEntitlementRestoration(context, restoration);
           if (!["confirmed", "failed"].includes(restoration.status)) {
