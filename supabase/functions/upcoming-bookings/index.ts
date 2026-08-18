@@ -35,11 +35,17 @@ Deno.serve((request) => {
   );
   const customerCatalogue = createClassOfferCatalogue(supabase);
   const catalogue = createClassLifecycleCatalogue(supabase, customerCatalogue);
+  const admitMemberstackRequest = createSupabaseMemberstackAdmission(supabase);
   const memberstack = {
-    ...createMemberstackJwtVerifier({ appId: Deno.env.get("MEMBERSTACK_APP_ID")!, now }),
+    ...createMemberstackJwtVerifier({
+      appId: Deno.env.get("MEMBERSTACK_APP_ID")!,
+      secretKey: Deno.env.get("MEMBERSTACK_SECRET_KEY")!,
+      admitRequest: admitMemberstackRequest,
+      now,
+    }),
     ...createMemberstackAdminClient({
       secretKey: Deno.env.get("MEMBERSTACK_SECRET_KEY")!,
-      admitRequest: createSupabaseMemberstackAdmission(supabase), now,
+      admitRequest: admitMemberstackRequest, now,
     }),
   };
   return handleUpcomingClassBookings(request, {
