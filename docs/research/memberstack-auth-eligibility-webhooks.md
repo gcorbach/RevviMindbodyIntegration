@@ -110,7 +110,7 @@ Memberstack now explicitly supports local JWT verification for serverless enviro
 
 Memberstack recommends caching the JWKS in memory; its Node example uses a 24-hour cache and up to five keys. A standards-based JWT/JWKS library should perform algorithm, signature, issuer, audience, and expiry checks atomically. If the selected `kid` is absent, refresh the JWKS once and fail closed rather than accepting an unmatched key. [Memberstack custom-backend security guide](https://docs.memberstack.com/hc/en-us/articles/7253255689755-Using-Permissions-and-Token-Verification-to-Secure-Your-Site-on-a-Custom-Backend)
 
-The same guide's local examples identify the member with verified claim `sub`, while its later illustrative payload nests `data.id`; the Admin SDK and REST response expose `id`. Issue #32 must capture one real test-mode token fixture and bind the local verifier to the actual verified `sub` shape. Never accept an unverified alternate claim path. The current-member Admin retrieval remains authoritative after identity verification.
+The same guide's local examples identify the member with verified claim `sub`, while its later illustrative payload nests `data.id`; the Admin SDK and REST response expose `id`. Hosted test-mode evidence captured on 2026-08-18 resolved the browser contract: the signed token uses root `id`, with neither `sub` nor `data.id`. The local verifier is therefore bound to root `id` and rejects a missing or conflicting verified identifier. The current-member Admin retrieval remains authoritative after identity verification.
 
 ## Current plan and subscription contract
 
@@ -263,7 +263,7 @@ The documented examples conflict between envelopes using `payload` and newer eve
 These are activation gates or explicit fail-closed boundaries, not fields to guess:
 
 1. **Pin and test SDK versions.** The current public browser surface is documented as `getMemberCookie()`, while older snippets mention differently named token methods. Pin both DOM and Admin packages and run contract fixtures before changing versions.
-2. **JWT member-ID shape conflicts.** Current local-verification examples use `sub`, while another payload example uses nested `data.id`; SDK/REST verification returns `id`. Capture a real token fixture and fail closed on a missing/ambiguous verified identifier.
+2. **JWT member-ID shape resolved for test mode.** Although local-verification examples use `sub` and another illustrative payload uses nested `data.id`, the captured hosted test token uses root `id`. The verifier requires that signed root claim and fails closed on a missing or conflicting alternate identifier. Repeat this capture before changing Memberstack modes or token implementations.
 3. **Status case and type are open.** Memberstack Admin examples use uppercase but the paid-status guide uses lowercase, and published types use `string`. Normalize case only and allow only `ACTIVE`/`TRIALING`; capture free-plan, trial, cancellation-at-period-end, and payment-failure fixtures before activation.
 4. **`active` and `status` must agree.** Both exist in the current Admin member shape. Require `active === true` plus the closed provisionable status allowlist; fail closed on disagreement.
 5. **Webhook body adapter is inconsistent in the docs.** Pin `@memberstack/admin@1.6.0` and prove its object-plus-`JSON.stringify` adapter with a real Dashboard test delivery, including duplicate, modified-body, missing-header, and stale-timestamp cases.

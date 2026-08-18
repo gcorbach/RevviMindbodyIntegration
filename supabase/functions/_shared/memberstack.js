@@ -179,11 +179,13 @@ export function createMemberstackJwtVerifier({
           || claims?.aud !== appId
           || typeof claims.exp !== "number"
           || claims.exp * 1000 <= now().getTime()
-          || typeof claims.sub !== "string"
-          || claims.sub.length === 0) {
+          || typeof claims.id !== "string"
+          || claims.id.length === 0
+          || (typeof claims.sub === "string" && claims.sub !== claims.id)
+          || (typeof claims.data?.id === "string" && claims.data.id !== claims.id)) {
           throw invalidToken();
         }
-        return { memberId: claims.sub };
+        return { memberId: claims.id };
       } catch (error) {
         if (error instanceof MemberstackAuthenticationError
           || error instanceof MemberstackServiceError) throw error;

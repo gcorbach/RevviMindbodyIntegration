@@ -75,7 +75,7 @@ async function memberstackKeyFixture() {
 test("Memberstack bearer JWTs require the official RS256/JWKS identity contract", async () => {
   const fixture = await memberstackKeyFixture();
   const token = await signedToken(fixture.privateKey, {
-    sub: "member-a",
+    id: "member-a",
     iss: "https://api.memberstack.com",
     aud: "app_revvi",
     iat: 1_786_363_100,
@@ -94,6 +94,37 @@ test("Memberstack bearer JWTs require the official RS256/JWKS identity contract"
   });
 
   assert.deepEqual(await verifier.verifyBrowserToken(token), { memberId: "member-a" });
+});
+
+test("Memberstack bearer identity requires the captured root id claim", async () => {
+  const fixture = await memberstackKeyFixture();
+  const verifier = createMemberstackJwtVerifier({
+    appId: "app_revvi",
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+    fetchImpl: async () => new Response(JSON.stringify({ keys: [fixture.publicJwk] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+  const common = {
+    iss: "https://api.memberstack.com",
+    aud: "app_revvi",
+    iat: 1_786_363_100,
+    exp: 1_786_366_700,
+  };
+  const invalidTokens = [
+    await signedToken(fixture.privateKey, { ...common, sub: "member-a" }),
+    await signedToken(fixture.privateKey, { ...common, id: "member-a", sub: "member-b" }),
+    await signedToken(fixture.privateKey, { ...common, id: "member-a", data: { id: "member-b" } }),
+  ];
+
+  for (const token of invalidTokens) {
+    await assert.rejects(
+      verifier.verifyBrowserToken(token),
+      (error) => error instanceof MemberstackAuthenticationError
+        && error.code === "AUTHENTICATION_INVALID",
+    );
+  }
 });
 
 test("the browser supplies exactly one Memberstack bearer credential", () => {
@@ -207,7 +238,7 @@ test("wrong-audience, expired, and modified Memberstack JWTs fail closed", async
     }),
   });
   const common = {
-    sub: "member-a",
+    id: "member-a",
     iss: "https://api.memberstack.com",
     aud: "app_revvi",
     iat: 1_786_363_100,
@@ -219,7 +250,7 @@ test("wrong-audience, expired, and modified Memberstack JWTs fail closed", async
   ];
   const valid = await signedToken(fixture.privateKey, common);
   const [header, , signature] = valid.split(".");
-  fixtures.push(["modified payload", `${header}.${base64url(JSON.stringify({ ...common, sub: "member-b" }))}.${signature}`]);
+  fixtures.push(["modified payload", `${header}.${base64url(JSON.stringify({ ...common, id: "member-b" }))}.${signature}`]);
 
   for (const [label, token] of fixtures) {
     await t.test(label, async () => {
@@ -235,7 +266,7 @@ test("wrong-audience, expired, and modified Memberstack JWTs fail closed", async
 test("a Memberstack JWKS outage remains retryable instead of blaming the Customer", async () => {
   const fixture = await memberstackKeyFixture();
   const token = await signedToken(fixture.privateKey, {
-    sub: "member-a",
+    id: "member-a",
     iss: "https://api.memberstack.com",
     aud: "app_revvi",
     exp: Math.floor(Date.now() / 1000) + 300,
