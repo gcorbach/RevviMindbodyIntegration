@@ -357,6 +357,15 @@ test("the pinned official Memberstack SDK accepts a current signed fixture and r
 
 test("supported webhook envelopes resolve one current Memberstack member", () => {
   assert.deepEqual(parseMemberstackWebhookEnvelope({
+    event: "member.updated",
+    payload: { id: "member-a" },
+  }), {
+    eventType: "member.updated",
+    externalEventType: "member.updated",
+    memberId: "member-a",
+  });
+
+  assert.deepEqual(parseMemberstackWebhookEnvelope({
     event: "member.plan.updated",
     payload: { member: { id: "member-a" } },
   }), {
