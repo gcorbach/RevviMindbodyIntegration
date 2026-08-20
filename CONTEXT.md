@@ -53,8 +53,16 @@ _Avoid_: Revvi discount, service name, barcode
 **Business**:
 An independently configured organisation in Revvi with its own Mindbody integration and one or more Locations.
 
+**Business category**:
+A broad discovery label describing what a Business generally offers, such as yoga. It does not identify bookable Class inventory or determine Booking eligibility.
+_Avoid_: Studio type, Class type
+
 **Location**:
 A bookable operating site belonging to a Business and represented in its Mindbody data.
+
+**Class family**:
+A stable, customer-recognisable grouping of related Classes at one Location, such as Hot Yoga. It is a Revvi concept and may require several Mindbody taxonomy identifiers to define safely.
+_Avoid_: Studio type, Mindbody Session Type
 
 **Revvi Offer**:
 A pre-agreed benefit giving eligible Revvi Customers exclusive terms on approved existing Classes at one Business and Location. Supabase is its system of record; Webflow presents it by stable reference, and the underlying Classes do not need to be Revvi-only.
