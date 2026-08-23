@@ -52,6 +52,22 @@ test("POST booking-quote derives tenant context from Offer and returns a stored 
   });
 });
 
+test("POST booking-quote carries a selected Class family without trusting provider taxonomy from the browser", async () => {
+  const classFamilyId = "35000000-0000-4000-8000-000000000009";
+  let received;
+  const response = await handleClassBookingQuote(
+    request({ offerId, sessionId: "771", classFamilyId }),
+    dependencies({
+      createQuote: async (input) => {
+        received = input.classFamilyId;
+        return { quoteId: "quote-family", expiresAt: "2026-08-10T12:05:00.000Z", occurrence: { classId: "771" } };
+      },
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(received, classFamilyId);
+});
+
 test("booking-quote rejects browser-supplied price, mode, tenant or Client identity", async () => {
   let authorizationReached = false;
   const deps = dependencies({ authorizeRequest: async () => { authorizationReached = true; } });

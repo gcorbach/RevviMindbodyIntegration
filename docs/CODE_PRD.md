@@ -11,11 +11,11 @@
 
 **Specification authority:** This document is the binding production specification. GitHub issue #10 and implementation issues #11–#19 describe the retained appointment prototype and are historical where they conflict with this document. Appointment endpoints, appointment identifiers, and appointment fixtures must not be used by the production Class Booking path.
 
-**Binding product model:** A Revvi Customer arrives from a Webflow Offer page with a Business, Location, and Revvi Offer already selected. Supabase is authoritative for the Offer, its eligible Memberstack plan IDs, approved Class inventory, and one configured fulfilment mode. Webflow stores presentation content and stable references only. Mindbody remains authoritative for the available Class occurrences, client record, price or entitlement, roster result, and financial result.
+**Binding product model:** A Revvi Customer arrives from a Webflow Offer page with a Business, Location, and Revvi Offer already selected. Supabase is authoritative for the Offer, its eligible Memberstack plan IDs, Revvi-owned Class families and approved Class inventory, and one configured fulfilment mode. Webflow stores presentation content and stable references only. Mindbody remains authoritative for the available Class occurrences, client record, price or entitlement, roster result, and financial result.
 
 Each Revvi Offer has exactly one fulfilment mode:
 
-1. `purchase_pricing_option` — purchase the Offer's dedicated Mindbody pricing option and book the selected Class occurrence;
+1. `purchase_pricing_option` — purchase one approved Mindbody pricing option that applies to the selected Class occurrence;
 2. `existing_entitlement` — use one exact eligible Mindbody `ClientService`/pass; or
 3. `approved_unpaid` — create the Class Booking without additional Mindbody payment under an explicitly approved Business arrangement.
 
@@ -292,7 +292,7 @@ Every Offer declares:
 * one Business and Location;
 * stable approved Class inventory boundaries using Program, Class Description, Session Type, and optionally Class Schedule IDs;
 * one fulfilment mode; and
-* for `purchase_pricing_option`, one dedicated Mindbody `Service.ProductId`.
+* for `purchase_pricing_option`, an approved Mindbody Product set; the server selects exactly one Product that applies to the chosen Class.
 
 The Offer never maps by displayed names or by time-specific `Class.Id` values. Future eligible occurrences are discovered from the stable inventory boundaries.
 
@@ -614,7 +614,16 @@ create table public.offer_provider_mappings (
 );
 ```
 
-`provider_service_product_id` is required only for `purchase_pricing_option` and is Mindbody `Service.ProductId`. One paid Offer at one Location maps to one dedicated pricing option. Do not use the barcode-like `Service.Id` or a service name as the canonical mapping key. A time-specific `Class.Id` must never be stored as a durable Offer mapping.
+`provider_service_product_id` is required only for `purchase_pricing_option` and is Mindbody `Service.ProductId`. New configuration stores the approved Product set in child rows (the legacy scalar remains a compatibility projection). A Product is a pricing option, not a Class or Class family; one Product may apply to multiple Class formats, and one Class may be applicable to more than one configured Product. The server must fail closed unless exactly one approved Product applies to the selected Class. Do not use the barcode-like `Service.Id` or a service name as the canonical mapping key. A time-specific `Class.Id` must never be stored as a durable Offer mapping.
+
+```sql
+create table public.class_offer_pricing_options (
+  mapping_id uuid not null references public.class_offer_provider_mappings(id),
+  provider_service_product_id text not null,
+  status text not null default 'draft',
+  unique (mapping_id, provider_service_product_id)
+);
+```
 
 Use child allowlist rows for inventory boundaries:
 
@@ -1235,7 +1244,8 @@ POST is preferred over GET because the request may contain filters and verified 
   "offerId": "uuid",
   "startDate": "2026-08-01",
   "endDate": "2026-08-14",
-  "locationId": "business-location-uuid"
+  "locationId": "business-location-uuid",
+  "classFamilyId": "optional-class-family-uuid"
 }
 ```
 
@@ -1254,10 +1264,19 @@ POST is preferred over GET because the request may contain filters and verified 
       "id": "uuid",
       "title": "Revvi Yoga Offer"
     },
+    "classFamilies": [
+      {
+        "id": "class-family-uuid",
+        "name": "Hot Yoga",
+        "description": "Heated flow classes.",
+        "available": true
+      }
+    ],
     "sessions": [
       {
         "sessionId": "mindbody-class-id",
         "classId": "mindbody-class-id",
+        "classFamilyId": "class-family-uuid",
         "classScheduleId": "mindbody-class-schedule-id",
         "name": "Pilates Reformer",
         "staffName": "Instructor Name",
@@ -1284,6 +1303,7 @@ POST is preferred over GET because the request may contain filters and verified 
 * Date range must have a maximum allowed duration.
 * Default range should be 14 days.
 * Inventory must be filtered using the active offer mapping.
+* When Class families are configured, occurrences must match one complete correlated family provider mapping; the optional `classFamilyId` narrows the read to that family.
 * Ineligible Customers must not receive bookable inventory.
 * Raw Mindbody data must not be returned.
 * Treat `sessionId` as an alias of the required Mindbody `Class.Id`; never use `ClassScheduleId` as an occurrence ID.
@@ -1309,7 +1329,8 @@ Perform a final pre-booking validation before displaying the confirmation screen
 ```json
 {
   "offerId": "uuid",
-  "sessionId": "provider-session-id"
+  "sessionId": "provider-session-id",
+  "classFamilyId": "class-family-uuid"
 }
 ```
 
@@ -1721,7 +1742,7 @@ The 120-hour scope does not include building a custom PCI-compliant payment form
 Configure exactly one mode per Revvi Offer:
 
 ```txt
-purchase_pricing_option  Dedicated Service.ProductId; client-aware Test quote; live purchase plus ClassIds only through an approved no-raw-card payment route
+purchase_pricing_option  Approved Product set; exactly one applicable Service.ProductId; client-aware Test quote; live purchase plus ClassIds only through an approved no-raw-card payment route
 existing_entitlement     One exact tested ClientServiceId; no automatic entitlement selection
 approved_unpaid          AddClientToClass without additional payment only with written Business approval and tested provider settings
 ```
@@ -1787,6 +1808,7 @@ type BookingWidgetState =
   | { status: "loading-eligibility" }
   | { status: "ineligible"; message: string }
   | { status: "loading-availability" }
+  | { status: "selecting-class-family"; families: ClassFamilySummary[] }
   | { status: "showing-availability"; sessions: AvailableSession[] }
   | { status: "loading-quote"; sessionId: string }
   | { status: "confirming"; quote: BookingQuote }
@@ -1852,7 +1874,14 @@ const availabilityRequestSchema = z.object({
   startDate: z.string().date(),
   endDate: z.string().date(),
   locationId: z.string().uuid(),
+  classFamilyId: z.string().uuid().optional(),
 });
+
+const bookingQuoteRequestSchema = z.object({
+  offerId: z.string().uuid(),
+  sessionId: z.string().min(1),
+  classFamilyId: z.string().uuid().optional(),
+}).strict();
 
 const createBookingRequestSchema = z.object({
   quoteId: z.string().min(1),

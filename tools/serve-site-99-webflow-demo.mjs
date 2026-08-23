@@ -14,6 +14,8 @@ export const SITE_99_DEMO_CONTEXT = Object.freeze({
   locationTimezone: "Africa/Johannesburg",
 });
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const WEBFLOW_EMBED = readFileSync(new URL("../webflow/embed.html", import.meta.url), "utf8");
 const WEBFLOW_SCRIPT = readFileSync(new URL("../webflow/dist/revvi-booking.js", import.meta.url));
 const WEBFLOW_STYLES = readFileSync(new URL("../webflow/dist/revvi-booking.css", import.meta.url));
@@ -95,11 +97,11 @@ export function createSite99WebflowDemoHandler({
   let shuttingDown = false;
   let providerIdleWaiters = [];
 
-  async function runProvider(mode) {
+  async function runProvider(mode, options = {}) {
     if (providerActive) return null;
     providerActive = true;
     try {
-      return await runner.run(mode);
+      return await runner.run(mode, options);
     } finally {
       providerActive = false;
       const waiters = providerIdleWaiters;
@@ -241,16 +243,25 @@ export function createSite99WebflowDemoHandler({
       if (!exactContext(body)) {
         return json(403, { ok: false, error: { code: "OFFER_CONTEXT_MISMATCH" } });
       }
-      const result = await runProvider("probe");
+      if (body?.classFamilyId !== undefined && !UUID.test(body.classFamilyId ?? "")) {
+        return json(422, { ok: false, error: { code: "INVALID_CLASS_FAMILY" } });
+      }
+      const result = await runProvider("probe", {
+        ...(body?.classFamilyId ? { classFamilyId: body.classFamilyId } : {}),
+      });
       if (!result) return busy();
-      const fixture = result?.fixture;
+      const fixtures = Array.isArray(result?.fixtures)
+        ? result.fixtures
+        : result?.fixture ? [result.fixture] : [];
       return json(200, {
         ok: true,
         data: {
           business: { slug: SITE_99_DEMO_CONTEXT.businessSlug },
           offer: { id: SITE_99_DEMO_CONTEXT.offerId, name: SITE_99_DEMO_CONTEXT.offerName },
-          sessions: [{
+          ...(Array.isArray(result?.families) ? { families: result.families } : {}),
+          sessions: fixtures.map((fixture) => ({
             classId: String(fixture.classId),
+            ...(fixture.classFamilyId ? { classFamilyId: String(fixture.classFamilyId) } : {}),
             name: fixture.className,
             startAt: site99DateTime(fixture.classStart),
             timezone: SITE_99_DEMO_CONTEXT.locationTimezone,
@@ -258,7 +269,7 @@ export function createSite99WebflowDemoHandler({
             availabilityState: "available",
             estimatedAvailableSlots: null,
             provisionalPrice: { amount: fixture.paymentSeed, currency: "USD" },
-          }],
+          })),
         },
       });
     }
@@ -266,18 +277,26 @@ export function createSite99WebflowDemoHandler({
       if (body?.offerId !== SITE_99_DEMO_CONTEXT.offerId || !body?.sessionId) {
         return json(403, { ok: false, error: { code: "OFFER_CONTEXT_MISMATCH" } });
       }
-      const result = await runProvider("quote");
+      if (body?.classFamilyId !== undefined && !UUID.test(body.classFamilyId ?? "")) {
+        return json(422, { ok: false, error: { code: "INVALID_CLASS_FAMILY" } });
+      }
+      const classFamilyId = body?.classFamilyId ?? null;
+      const result = await runProvider("quote", {
+        ...(classFamilyId ? { classFamilyId } : {}),
+        classId: String(body.sessionId),
+      });
       if (!result) return busy();
       const fixture = result?.fixture;
       const quote = result?.quote;
       if (String(fixture?.classId) !== String(body.sessionId)
+        || (classFamilyId !== null && String(fixture?.classFamilyId) !== classFamilyId)
         || quote?.totalsUnchanged !== true
         || quote?.testCreatedProviderState !== false) {
         return json(409, { ok: false, error: { code: "QUOTE_CHANGED" } });
       }
       const quoteId = randomUuid();
       const expiresAt = new Date(now().getTime() + 10 * 60 * 1000);
-      quotes.set(quoteId, { fixture, expiresAt });
+      quotes.set(quoteId, { fixture, classFamilyId, expiresAt });
       return json(200, {
         ok: true,
         data: {
@@ -285,6 +304,7 @@ export function createSite99WebflowDemoHandler({
           expiresAt: expiresAt.toISOString(),
           session: {
             classId: String(fixture.classId),
+            ...(fixture.classFamilyId ? { classFamilyId: String(fixture.classFamilyId) } : {}),
             name: fixture.className,
             startAt: site99DateTime(fixture.classStart),
             locationName: SITE_99_DEMO_CONTEXT.locationName,
@@ -334,7 +354,10 @@ export function createSite99WebflowDemoHandler({
       }
       let result;
       try {
-        result = await runProvider("book-for-inspection");
+        result = await runProvider("book-for-inspection", {
+          ...(storedQuote.classFamilyId ? { classFamilyId: storedQuote.classFamilyId } : {}),
+          classId: String(storedQuote.fixture.classId),
+        });
       } catch (error) {
         const emergencyCleanupId = registerEmergencyCleanup();
         await attemptEmergencyCleanup(emergencyCleanupId);
@@ -383,6 +406,7 @@ export function createSite99WebflowDemoHandler({
         data: {
           booking: {
             status: "confirmed",
+            ...(fixture.classFamilyId ? { classFamilyId: String(fixture.classFamilyId) } : {}),
             className: fixture.className,
             startAt: site99DateTime(fixture.classStart),
             locationName: SITE_99_DEMO_CONTEXT.locationName,

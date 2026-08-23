@@ -153,7 +153,7 @@ class_family_provider_mappings
 
 One Class family may have several provider-mapping rows when a Business uses several Class Descriptions for one customer-recognisable choice. Each row preserves the expected tuple instead of constructing a cross-product of independent allowlists. IDs are always interpreted inside the Offer's activated Site and Location.
 
-Keep `provider_service_product_id`, fulfilment mode, mapping version, activation evidence, and write gates on `class_offer_provider_mappings`. Add the selected `class_family_id` to the quote and Booking lineage so support and revalidation can prove which family the Customer selected; do not make it a new payment or fulfilment boundary.
+Keep fulfilment mode, mapping version, activation evidence, and write gates on `class_offer_provider_mappings`. Store approved Mindbody Products in the mapping's Product set (`class_offer_pricing_options`); retain the scalar `provider_service_product_id` only as a compatibility projection. The first partner uses one shared Product across formats, while runtime resolution fails closed unless exactly one approved Product applies to the selected Class. Add the selected `class_family_id` to the quote and Booking lineage so support and revalidation can prove which family the Customer selected; do not make it a new payment or fulfilment boundary.
 
 ### Deep module and interface
 

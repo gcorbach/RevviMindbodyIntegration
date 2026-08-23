@@ -165,6 +165,133 @@ test("an approved Offer discovers future client-aware Class occurrences and its 
   ]);
 });
 
+test("a paid Offer can resolve one applicable Product from its approved Product set", async () => {
+  const multiProductContext = {
+    ...context,
+    mapping: {
+      ...context.mapping,
+      providerServiceProductIds: ["product-shared", "product-strength"],
+    },
+  };
+  const result = await discoverOfferClassAvailability({
+    context: multiProductContext,
+    startAt: "2026-08-11T22:00:00.000Z",
+    endAt: "2026-08-25T21:59:59.999Z",
+  }, {
+    provider: happyProvider({
+      getServices: async () => [{
+        ProductId: "product-strength",
+        OnlinePrice: 44,
+        SellOnline: true,
+        Discontinued: false,
+        SellAtLocationIds: [7],
+        UseAtLocationIds: [7],
+      }],
+    }),
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+  });
+  assert.equal(result.sessions[0].provisionalPrice.serviceProductId, "product-strength");
+  assert.equal(result.sessions[0].provisionalPrice.amount, 44);
+});
+
+test("a selected Class family admits only its complete provider taxonomy mappings", async () => {
+  const familyContext = {
+    ...context,
+    classFamilies: [{
+      id: "family-hot",
+      displayName: "Hot Yoga",
+      providerMappings: [{
+        id: "family-mapping-hot",
+        providerLocationId: "7",
+        providerClassDescriptionId: "13",
+        providerProgramId: "11",
+        providerSessionTypeId: "23",
+      }],
+    }, {
+      id: "family-restorative",
+      displayName: "Restorative Yoga",
+      providerMappings: [{
+        id: "family-mapping-restorative",
+        providerLocationId: "7",
+        providerClassDescriptionId: "14",
+        providerProgramId: "11",
+        providerSessionTypeId: "24",
+      }],
+    }],
+  };
+  const provider = happyProvider({
+    getClassDescriptions: async () => [
+      {
+        Id: 13,
+        Name: "Hot Yoga",
+        Description: "A heated flow class.",
+        Active: true,
+        Program: { Id: 11 },
+        SessionType: { Id: 23 },
+      },
+      {
+        Id: 14,
+        Name: "Restorative Yoga",
+        Description: "A gentle evening class.",
+        Active: true,
+        Program: { Id: 11 },
+        SessionType: { Id: 24 },
+      },
+    ],
+    getClasses: async () => [
+      ...(await happyProvider().getClasses()),
+      {
+        Id: 20,
+        ClassScheduleId: 18,
+        StartDateTime: "2026-08-13T18:00:00+02:00",
+        EndDateTime: "2026-08-13T19:00:00+02:00",
+        Location: { Id: 7 },
+        ClassDescription: {
+          Id: 14,
+          Name: "Restorative Yoga",
+          Description: "A gentle evening class.",
+          Program: { Id: 11 },
+          SessionType: { Id: 24 },
+        },
+        Active: true,
+        IsCanceled: false,
+        IsAvailable: true,
+        MaxCapacity: 12,
+        WebCapacity: 12,
+        TotalBooked: 2,
+        WebBooked: 2,
+      },
+    ],
+  });
+
+  const result = await discoverOfferClassAvailability({
+    context: familyContext,
+    classFamilyId: "family-restorative",
+    startAt: "2026-08-11T22:00:00.000Z",
+    endAt: "2026-08-25T21:59:59.999Z",
+  }, { provider, now: () => new Date("2026-08-10T12:00:00.000Z") });
+
+  assert.equal(result.classFamily.id, "family-restorative");
+  assert.deepEqual(result.sessions.map((session) => session.classId), ["20"]);
+  assert.equal(result.sessions[0].classDescriptionId, "14");
+  assert.equal(result.sessions[0].programId, "11");
+  assert.equal(result.sessions[0].sessionTypeId, "24");
+
+  const catalogueResult = await discoverOfferClassAvailability({
+    context: familyContext,
+    startAt: "2026-08-11T22:00:00.000Z",
+    endAt: "2026-08-25T21:59:59.999Z",
+  }, { provider, now: () => new Date("2026-08-10T12:00:00.000Z") });
+  assert.deepEqual(catalogueResult.classFamilies, [
+    { id: "family-hot", name: "Hot Yoga", available: true },
+    { id: "family-restorative", name: "Restorative Yoga", available: true },
+  ]);
+  assert.deepEqual(
+    catalogueResult.sessions.map((session) => [session.classId, session.classFamilyId]),
+    [["19", "family-hot"], ["20", "family-restorative"]],
+  );
+});
+
 test("unapproved, inactive, cancelled, past, and wrong-location occurrences never reach pricing", async () => {
   const [approved] = await happyProvider().getClasses();
   const serviceClassIds = [];

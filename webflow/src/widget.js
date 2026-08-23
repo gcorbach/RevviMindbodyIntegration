@@ -85,6 +85,8 @@ export function mountBookingWidget(root, dependencies = {}) {
   const randomUuid = dependencies.randomUuid ?? (() => browser.crypto.randomUUID());
   let authorization;
   let occurrences = [];
+  let families = [];
+  let selectedFamilyId = null;
   let selectedOccurrence = null;
   let quote = null;
   let requestActive = false;
@@ -95,7 +97,7 @@ export function mountBookingWidget(root, dependencies = {}) {
   function availabilityContext() {
     const startDate = dateInput.value?.trim();
     if (!ISO_DATE.test(startDate ?? "")) throw new Error("Choose a valid Class date.");
-    return { ...context, startDate };
+    return { ...context, startDate, ...(selectedFamilyId ? { classFamilyId: selectedFamilyId } : {}) };
   }
 
   async function loadAvailability() {
@@ -111,6 +113,10 @@ export function mountBookingWidget(root, dependencies = {}) {
       const data = await api.availability(authorization, availabilityContext());
       if (sequence !== loadSequence) return;
       occurrences = exactAvailability(data, context);
+      if (!selectedFamilyId && Array.isArray(data?.classFamilies)) {
+        families = data.classFamilies;
+        ui.families(families, selectedFamilyId, selectFamily);
+      }
       if (occurrences.length === 0) ui.empty();
       else ui.occurrences(occurrences, selectOccurrence);
     } catch (error) {
@@ -125,6 +131,15 @@ export function mountBookingWidget(root, dependencies = {}) {
     }
   }
 
+  function selectFamily(familyId) {
+    if (requestActive || !UUID.test(familyId ?? "")) return;
+    selectedFamilyId = familyId;
+    selectedOccurrence = null;
+    quote = null;
+    ui.clearSelection();
+    void loadAvailability();
+  }
+
   async function selectOccurrence(occurrence) {
     if (requestActive) return;
     requestActive = true;
@@ -136,7 +151,12 @@ export function mountBookingWidget(root, dependencies = {}) {
     ui.loadingQuote();
     try {
       const providerQuote = exactQuote(
-        await api.quote(authorization, context.offerId, occurrence.classId),
+        await api.quote(
+          authorization,
+          context.offerId,
+          occurrence.classId,
+          occurrence.classFamilyId ?? selectedFamilyId,
+        ),
         occurrence,
       );
       quote = {

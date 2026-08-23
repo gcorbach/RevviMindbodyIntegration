@@ -85,6 +85,7 @@ export function createBookingWidgetUi(root) {
   );
   const template = element(root, "[data-booking-occurrence-template]");
   const selection = element(root, "[data-booking-selection]");
+  const familySelector = element(root, "[data-booking-families]");
 
   setText(root, "[data-booking-offer]", root.dataset.offerName);
   setText(root, "[data-booking-location]", root.dataset.locationName);
@@ -130,6 +131,30 @@ export function createBookingWidgetUi(root) {
     show("showing-availability", "occurrences");
   }
 
+  function renderFamilies(families, selectedFamilyId, onSelect) {
+    familySelector.replaceChildren();
+    const available = families.filter((family) => family.available !== false);
+    if (available.length <= 1) {
+      familySelector.hidden = true;
+      return;
+    }
+    familySelector.hidden = false;
+    const label = document.createElement("label");
+    label.textContent = "Class type";
+    const select = document.createElement("select");
+    select.setAttribute("data-booking-family-select", "true");
+    for (const family of available) {
+      const option = document.createElement("option");
+      option.value = family.id;
+      option.textContent = family.name;
+      option.selected = family.id === selectedFamilyId;
+      select.append(option);
+    }
+    select.addEventListener("change", () => onSelect(select.value));
+    label.append(select);
+    familySelector.append(label);
+  }
+
   return Object.freeze({
     loadingEligibility() {
       views.loading.textContent = "Checking your Revvi access…";
@@ -139,6 +164,7 @@ export function createBookingWidgetUi(root) {
       views.loading.textContent = "Loading live Class times…";
       show("loading-availability", "loading");
     },
+    families: renderFamilies,
     loadingQuote() {
       views.loading.textContent = "Checking this Class and your Revvi terms…";
       show("loading-quote", "loading");

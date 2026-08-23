@@ -80,12 +80,12 @@ export function createBookingWidgetApi({
       );
       return { ...data, occurrences: wireOccurrences };
     },
-    async quote(authorization, offerId, classId) {
+    async quote(authorization, offerId, classId, classFamilyId) {
       const { session: wireOccurrence, ...data } = await postJson(
         fetcher,
         quoteEndpoint,
         authorization,
-        { offerId, sessionId: classId },
+        { offerId, sessionId: classId, ...(classFamilyId ? { classFamilyId } : {}) },
       );
       return { ...data, occurrence: wireOccurrence };
     },

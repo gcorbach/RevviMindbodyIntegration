@@ -47,7 +47,7 @@ The customer record in Mindbody that corresponds to a Revvi Customer for a Booki
 The integration-driven Mindbody Public API payment flow for a Booking. A general Mindbody-hosted checkout page has not been established.
 
 **Mindbody pricing option**:
-A Business-configured Mindbody product containing the commercial terms for one paid Revvi Offer at one Location. It is identified by Mindbody `Service.ProductId` and remains authoritative for the amount charged.
+A Business-configured Mindbody Product/pricing option containing commercial terms for a paid Revvi Offer. It is identified by Mindbody `Service.ProductId`, remains authoritative for the amount charged, and is not a Class or Class family: one Product may apply to many Class occurrences, while one Class may have several applicable Products.
 _Avoid_: Revvi discount, service name, barcode
 
 **Business**:

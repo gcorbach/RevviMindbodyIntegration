@@ -5,7 +5,7 @@ import {
   createClassAvailabilityCatalogue,
 } from "../../supabase/functions/_shared/class-availability-catalogue.js";
 
-function fakeSupabase({ business, contextRow, rpcError = null, insertError = null }) {
+function fakeSupabase({ business, contextRow, familyRows = [], pricingRows = [], rpcError = null, insertError = null }) {
   const calls = [];
   return {
     calls,
@@ -23,11 +23,21 @@ function fakeSupabase({ business, contextRow, rpcError = null, insertError = nul
           async insert(value) { calls.push(["diagnostic", value]); return { error: insertError }; },
         };
       }
+      if (table === "class_offer_pricing_options") {
+        return {
+          select(columns) { calls.push(["select", table, columns]); return this; },
+          eq(column, value) { calls.push(["pricingFilter", column, value]); return this; },
+          then(resolve) { return resolve({ data: pricingRows, error: null }); },
+        };
+      }
       throw new Error(`unexpected table ${table}`);
     },
     async rpc(name, args) {
       calls.push(["rpc", name, args]);
-      return { data: contextRow ? [contextRow] : [], error: rpcError };
+      return {
+        data: name === "resolve_class_availability_families" ? familyRows : contextRow ? [contextRow] : [],
+        error: rpcError,
+      };
     },
   };
 }
@@ -142,4 +152,70 @@ test("diagnostics persist only allowlisted operational facts", async () => {
     success: false,
     error_code: "HTTP_429",
   }]);
+});
+
+test("the catalogue resolves active customer-facing Class families with correlated provider mappings", async () => {
+  const supabase = fakeSupabase({
+    business: { id: "business-a" },
+    contextRow: row,
+    familyRows: [{
+      family_id: "family-a",
+      family_slug: "hot-yoga",
+      family_name: "Hot Yoga",
+      family_description: "Heated flow classes.",
+      family_display_order: 2,
+      provider_mappings: [{
+        id: "family-mapping-a",
+        providerLocationId: "7",
+        providerClassDescriptionId: "13",
+        providerProgramId: "11",
+        providerSessionTypeId: "23",
+      }],
+    }],
+  });
+  const catalogue = createClassAvailabilityCatalogue(supabase);
+  const context = await catalogue.resolveAvailabilityContext({
+    businessSlug: "pilot-yoga",
+    locationId: "location-a",
+    offerId: "offer-a",
+    customerId: "customer-a",
+  });
+  assert.deepEqual(context.classFamilies, [{
+    id: "family-a",
+    slug: "hot-yoga",
+    displayName: "Hot Yoga",
+    description: "Heated flow classes.",
+    displayOrder: 2,
+    providerMappings: [{
+      id: "family-mapping-a",
+      providerLocationId: "7",
+      providerClassDescriptionId: "13",
+      providerProgramId: "11",
+      providerSessionTypeId: "23",
+    }],
+  }]);
+});
+
+test("the catalogue exposes the active Product set while retaining the legacy scalar projection", async () => {
+  const supabase = fakeSupabase({
+    business: { id: "business-a" },
+    contextRow: row,
+    pricingRows: [
+      { provider_service_product_id: "product-shared" },
+      { provider_service_product_id: "product-format-b" },
+    ],
+  });
+  const catalogue = createClassAvailabilityCatalogue(supabase);
+  const context = await catalogue.resolveAvailabilityContext({
+    businessSlug: "pilot-yoga",
+    locationId: "location-a",
+    offerId: "offer-a",
+    customerId: "customer-a",
+  });
+  assert.deepEqual(context.mapping, {
+    id: "mapping-a",
+    status: "active",
+    providerServiceProductId: "product-revvi",
+    providerServiceProductIds: ["product-shared", "product-format-b"],
+  });
 });

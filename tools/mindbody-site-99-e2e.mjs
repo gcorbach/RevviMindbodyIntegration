@@ -7,6 +7,7 @@ const API_BASE = `${API_ORIGIN}/public/v6`;
 const SITE_ID = "-99";
 const WRITE_CONFIRMATION = "BOOK_AND_CANCEL_SITE_-99";
 const PROVIDER_REQUEST_ID = Symbol("providerRequestId");
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RUN_MODE_POLICIES = Object.freeze({
   probe: Object.freeze({ outcome: "probe" }),
   quote: Object.freeze({ outcome: "quote", quotes: true }),
@@ -35,6 +36,57 @@ function requiredEnvironment(environment, name) {
   const value = text(environment[name]);
   if (!value) throw new Site99RunError("configuration", "MISSING_ENVIRONMENT", null, name);
   return value;
+}
+
+function parseClassFamilyManifest(environment) {
+  const raw = requiredEnvironment(environment, "MINDBODY_SANDBOX_CLASS_FAMILIES_JSON");
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Site99RunError("configuration", "INVALID_CLASS_FAMILY_MANIFEST");
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Site99RunError("configuration", "INVALID_CLASS_FAMILY_MANIFEST");
+  }
+  const ids = new Set();
+  return parsed.map((family, familyIndex) => {
+    const familyId = text(family?.id);
+    const familyName = text(family?.name);
+    if (!UUID.test(familyId ?? "") || !familyName || ids.has(familyId)) {
+      throw new Site99RunError("configuration", "INVALID_CLASS_FAMILY_MANIFEST", null, `family[${familyIndex}]`);
+    }
+    ids.add(familyId);
+    const mappings = Array.isArray(family?.mappings) ? family.mappings : [];
+    if (mappings.length === 0) {
+      throw new Site99RunError("configuration", "INVALID_CLASS_FAMILY_MANIFEST", null, `family[${familyIndex}].mappings`);
+    }
+    return Object.freeze({
+      id: familyId,
+      name: familyName,
+      ...(text(family.description) ? { description: text(family.description) } : {}),
+      mappings: Object.freeze(mappings.map((mapping, mappingIndex) => {
+        const normalized = {
+          providerLocationId: text(mapping?.providerLocationId),
+          providerClassDescriptionId: text(mapping?.providerClassDescriptionId),
+          providerProgramId: text(mapping?.providerProgramId),
+          providerSessionTypeId: text(mapping?.providerSessionTypeId),
+          ...(text(mapping?.providerClassScheduleId)
+            ? { providerClassScheduleId: text(mapping.providerClassScheduleId) }
+            : {}),
+        };
+        if (Object.values(normalized).some((value) => !value)) {
+          throw new Site99RunError(
+            "configuration",
+            "INVALID_CLASS_FAMILY_MANIFEST",
+            null,
+            `family[${familyIndex}].mappings[${mappingIndex}]`,
+          );
+        }
+        return Object.freeze(normalized);
+      })),
+    });
+  });
 }
 
 function money(value) {
@@ -217,7 +269,8 @@ export function createSite99Runner({
   const programId = text(environment.MINDBODY_SANDBOX_PROGRAM_ID ?? "27");
   const classDescriptionId = text(environment.MINDBODY_SANDBOX_CLASS_DESCRIPTION_ID ?? "223");
   const sessionTypeId = text(environment.MINDBODY_SANDBOX_SESSION_TYPE_ID ?? "250");
-  const productId = text(environment.MINDBODY_SANDBOX_PRODUCT_ID ?? "1424");
+  const productId = requiredEnvironment(environment, "MINDBODY_SANDBOX_PRODUCT_ID");
+  const classFamilies = parseClassFamilyManifest(environment);
   let authorization = null;
   let pendingInspection = null;
 
@@ -311,23 +364,46 @@ export function createSite99Runner({
     }
   }
 
+  function familyById(classFamilyId) {
+    if (classFamilyId === null || classFamilyId === undefined || classFamilyId === "") return null;
+    const family = classFamilies.find((candidate) => candidate.id === String(classFamilyId));
+    if (!family) throw new Site99RunError("configuration", "CLASS_FAMILY_NOT_CONFIGURED", null, String(classFamilyId));
+    return family;
+  }
+
+  function mappingsForCandidate(candidate) {
+    return classFamilies.flatMap((family) => family.mappings
+      .filter((mapping) => id(candidate.Location) === mapping.providerLocationId
+        && id(candidate.ClassDescription) === mapping.providerClassDescriptionId
+        && id(candidate.ClassDescription?.Program) === mapping.providerProgramId
+        && id(candidate.ClassDescription?.SessionType) === mapping.providerSessionTypeId
+        && (!mapping.providerClassScheduleId
+          || text(candidate.ClassScheduleId) === mapping.providerClassScheduleId))
+      .map((mapping) => ({ family, mapping })));
+  }
+
   async function readPublicCatalogue() {
+    const programIds = [...new Set(classFamilies.flatMap((family) => family.mappings
+      .map((mapping) => mapping.providerProgramId)))];
+    const classDescriptionIds = [...new Set(classFamilies.flatMap((family) => family.mappings
+      .map((mapping) => mapping.providerClassDescriptionId)))];
     const [locations, programs, descriptions] = await Promise.all([
       request("public_location_discovery", "site/locations", { searchParams: query({ Limit: 100 }) }),
       request("public_program_discovery", "site/programs", {
         searchParams: query({ ScheduleType: "Class", Limit: 100 }),
       }),
       request("public_class_description_discovery", "class/classdescriptions", {
-        searchParams: query({ ProgramIds: [programId], LocationIds: [locationId], Limit: 100 }),
+        searchParams: query({ ProgramIds: programIds, LocationIds: [locationId], Limit: 100 }),
       }),
     ]);
     if (!array(locations?.Locations).some((location) => id(location) === locationId)) {
       throw new Site99RunError("public_location_discovery", "LOCATION_NOT_FOUND");
     }
-    if (!array(programs?.Programs).some((program) => id(program) === programId)) {
+    if (programIds.some((candidate) => !array(programs?.Programs).some((program) => id(program) === candidate))) {
       throw new Site99RunError("public_program_discovery", "PROGRAM_NOT_FOUND");
     }
-    if (!array(descriptions?.ClassDescriptions).some((description) => id(description) === classDescriptionId)) {
+    if (classDescriptionIds.some((candidate) => !array(descriptions?.ClassDescriptions)
+      .some((description) => id(description) === candidate))) {
       throw new Site99RunError("public_class_description_discovery", "CLASS_DESCRIPTION_NOT_FOUND");
     }
     return {
@@ -340,7 +416,11 @@ export function createSite99Runner({
     };
   }
 
-  async function discoverFixture({ forClient = false, classId = null } = {}) {
+  async function discoverFixtures({ forClient = false, classFamilyId = null, classId = null } = {}) {
+    const requestedFamily = familyById(classFamilyId);
+    const targetFamilies = requestedFamily ? [requestedFamily] : classFamilies;
+    const classDescriptionIds = [...new Set(targetFamilies.flatMap((family) => family.mappings
+      .map((mapping) => mapping.providerClassDescriptionId)))];
     const start = new Date(clock().getTime() + 24 * 60 * 60 * 1000);
     const end = new Date(clock().getTime() + 14 * 24 * 60 * 60 * 1000);
     const classes = await request(forClient ? "client_class_discovery" : "public_class_discovery", "class/classes", {
@@ -349,44 +429,83 @@ export function createSite99Runner({
         EndDateTime: classId ? undefined : end.toISOString(),
         ClassIds: classId ? [classId] : undefined,
         LocationIds: classId ? undefined : [locationId],
-        ClassDescriptionIds: classId ? undefined : [classDescriptionId],
+        ClassDescriptionIds: classId ? undefined : classDescriptionIds,
         ClientId: forClient ? clientId : undefined,
         Limit: 100,
       }),
     });
-    const occurrence = array(classes?.Classes)
+    const candidates = array(classes?.Classes)
       .filter((candidate) => candidate.IsCanceled !== true
         && candidate.IsAvailable === true
         && (!forClient || candidate.IsEnrolled !== true)
-        && id(candidate.Location) === locationId
-        && id(candidate.ClassDescription) === classDescriptionId
-        && id(candidate.ClassDescription?.Program) === programId
-        && id(candidate.ClassDescription?.SessionType) === sessionTypeId)
-      .sort((left, right) => String(left.StartDateTime).localeCompare(String(right.StartDateTime)))[0];
-    if (!occurrence) throw new Site99RunError(forClient ? "client_class_discovery" : "public_class_discovery", "NO_ELIGIBLE_CLASS");
-    const selectedClassId = id(occurrence);
-    const services = await request(forClient ? "client_service_discovery" : "public_service_discovery", "sale/services", {
-      searchParams: query({ ClassId: selectedClassId, LocationId: locationId, SellOnline: true, Limit: 100 }),
-    });
-    const service = array(services?.Services).find((candidate) => id(candidate.ProductId) === productId
-      && candidate.SellOnline === true
-      && candidate.Discontinued !== true
-      && array(candidate.SellAtLocationIds).map(String).includes(locationId)
-      && array(candidate.UseAtLocationIds).map(String).includes(locationId));
-    if (!service) throw new Site99RunError(forClient ? "client_service_discovery" : "public_service_discovery", "PRODUCT_NOT_APPLICABLE");
-    return {
-      classId: selectedClassId,
-      classStart: text(occurrence.StartDateTime),
-      className: text(occurrence.ClassDescription?.Name),
-      locationId,
-      programId,
-      classDescriptionId,
-      sessionTypeId,
-      classScheduleId: text(occurrence.ClassScheduleId),
-      staffId: id(occurrence.Staff),
-      productId,
-      paymentSeed: paymentSeed(service),
-    };
+        && id(candidate.Location) === locationId)
+      .sort((left, right) => String(left.StartDateTime).localeCompare(String(right.StartDateTime)));
+    const fixtures = [];
+    let hadMatchingOccurrence = false;
+    for (const occurrence of candidates) {
+      const matches = mappingsForCandidate(occurrence);
+      const selectedMatches = requestedFamily
+        ? matches.filter((match) => match.family.id === requestedFamily.id)
+        : matches;
+      if (selectedMatches.length === 0) continue;
+      if (selectedMatches.length > 1) {
+        throw new Site99RunError(
+          forClient ? "client_class_discovery" : "public_class_discovery",
+          "AMBIGUOUS_CLASS_FAMILY",
+          null,
+          id(occurrence),
+        );
+      }
+      hadMatchingOccurrence = true;
+      const { family, mapping } = selectedMatches[0];
+      const services = await request(
+        forClient ? "client_service_discovery" : "public_service_discovery",
+        "sale/services",
+        { searchParams: query({ ClassId: id(occurrence), LocationId: locationId, SellOnline: true, Limit: 100 }) },
+      );
+      const service = array(services?.Services).find((candidate) => id(candidate.ProductId) === productId
+        && candidate.SellOnline === true
+        && candidate.Discontinued !== true
+        && array(candidate.SellAtLocationIds).map(String).includes(locationId)
+        && array(candidate.UseAtLocationIds).map(String).includes(locationId));
+      if (!service) {
+        if (classId && id(occurrence) === String(classId)) {
+          throw new Site99RunError(
+            forClient ? "client_service_discovery" : "public_service_discovery",
+            "PRODUCT_NOT_APPLICABLE",
+          );
+        }
+        continue;
+      }
+      fixtures.push({
+        classId: id(occurrence),
+        classFamilyId: family.id,
+        classFamilyName: family.name,
+        classStart: text(occurrence.StartDateTime),
+        className: text(occurrence.ClassDescription?.Name),
+        locationId,
+        programId: mapping.providerProgramId,
+        classDescriptionId: mapping.providerClassDescriptionId,
+        sessionTypeId: mapping.providerSessionTypeId,
+        classScheduleId: text(occurrence.ClassScheduleId),
+        staffId: id(occurrence.Staff),
+        productId,
+        paymentSeed: paymentSeed(service),
+      });
+    }
+    if (fixtures.length === 0) {
+      throw new Site99RunError(
+        forClient ? "client_class_discovery" : "public_class_discovery",
+        hadMatchingOccurrence ? "PRODUCT_NOT_APPLICABLE" : "NO_ELIGIBLE_CLASS",
+        null,
+        requestedFamily?.id ?? null,
+      );
+    }
+    return fixtures;
+  }
+
+  async function discoverFixture(options = {}) {
+    return (await discoverFixtures(options))[0];
   }
 
   async function createSyntheticClient() {
@@ -773,7 +892,7 @@ export function createSite99Runner({
   }
 
   return Object.freeze({
-    async run(mode = "probe") {
+    async run(mode = "probe", { classFamilyId = null, classId = null } = {}) {
       const policy = RUN_MODE_POLICIES[mode];
       if (!policy) {
         throw new Site99RunError("configuration", "INVALID_MODE", null, mode);
@@ -788,13 +907,24 @@ export function createSite99Runner({
       try {
         const site = await connectSite();
         const apiKeyOnly = await readPublicCatalogue();
-        await discoverFixture();
+        const publicFixtures = await discoverFixtures({ classFamilyId, classId });
+        const fixture = publicFixtures[0];
+        const familyAvailability = classFamilies.map((family) => ({
+          id: family.id,
+          name: family.name,
+          ...(family.description ? { description: family.description } : {}),
+          available: publicFixtures.some((candidate) => candidate.classFamilyId === family.id),
+        }));
         const staff = await issueStaffToken();
         let syntheticClient = { syntheticClientCreated: false };
         if (policy.createsSyntheticClient) {
           syntheticClient = await createSyntheticClient();
         }
-        const fixture = await discoverFixture({ forClient: true });
+        const clientFixture = await discoverFixture({
+          forClient: true,
+          classFamilyId: fixture.classFamilyId,
+          classId: fixture.classId,
+        });
         auth = {
           ...site,
           ...staff,
@@ -817,9 +947,18 @@ export function createSite99Runner({
             booking: { ...inspection.booking, ...cleanup, inspectionStatus: "cleaned" },
           };
         }
-        if (!policy.quotes) return { result: "passed", mode, auth, fixture };
-        const initialQuote = await quote(fixture);
-        const immediateRequote = await quote(fixture);
+        if (!policy.quotes) {
+          return {
+            result: "passed",
+            mode,
+            auth,
+            fixture: clientFixture,
+            fixtures: publicFixtures,
+            families: familyAvailability,
+          };
+        }
+        const initialQuote = await quote(clientFixture);
+        const immediateRequote = await quote(clientFixture);
         if (["subtotal", "discountTotal", "taxTotal", "grandTotal"]
           .some((field) => initialQuote[field] !== immediateRequote[field])) {
           throw new Site99RunError("immediate_requote", "TOTAL_CHANGED");
@@ -837,15 +976,33 @@ export function createSite99Runner({
           totalsUnchanged: true,
         };
         if (policy.outcome === "quote") {
-          return { result: "passed", mode, auth, fixture, quote: quoteResult };
+          return {
+            result: "passed",
+            mode,
+            auth,
+            fixture: clientFixture,
+            fixtures: publicFixtures,
+            families: familyAvailability,
+            quote: quoteResult,
+          };
         }
-        const booking = await bookClass(fixture, quoteResult, {
+        const booking = await bookClass(clientFixture, quoteResult, {
           cleanupOnSuccess: policy.cleanupOnSuccess === true,
         });
         if (policy.retainsInspection) {
           pendingInspection = { clientId, fixture, booking };
         }
-        return { result: "passed", mode, auth, fixture, syntheticClient, quote: quoteResult, booking };
+        return {
+          result: "passed",
+          mode,
+          auth,
+          fixture: clientFixture,
+          fixtures: publicFixtures,
+          families: familyAvailability,
+          syntheticClient,
+          quote: quoteResult,
+          booking,
+        };
       } finally {
         if (authorization) {
           try {

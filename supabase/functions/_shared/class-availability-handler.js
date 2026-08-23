@@ -111,6 +111,7 @@ export async function handleOfferClassAvailability(request, dependencies) {
     });
     const data = await dependencies.discoverAvailability({
       context: configuration,
+      ...(input.classFamilyId ? { classFamilyId: input.classFamilyId } : {}),
       startAt: dateRange.startAt,
       endAt: dateRange.endAt,
     }, { provider, now: dependencies.now });

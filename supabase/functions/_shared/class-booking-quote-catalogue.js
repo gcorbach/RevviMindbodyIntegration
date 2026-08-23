@@ -4,6 +4,33 @@ function unavailable(message = "The booking quote configuration could not be loa
   return new BookingQuoteError("QUOTE_CONFIGURATION_UNAVAILABLE", message, 503);
 }
 
+function normalizeClassFamilies(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((row) => row?.family_id).map((row) => ({
+    id: row.family_id,
+    slug: row.family_slug,
+    displayName: row.family_name,
+    ...(row.family_description ? { description: row.family_description } : {}),
+    displayOrder: row.family_display_order ?? 0,
+    status: "active",
+    providerMappings: Array.isArray(row.provider_mappings) ? row.provider_mappings : [],
+  }));
+}
+
+async function activePricingOptionIds(supabase, row) {
+  if (row?.fulfilment_mode !== "purchase_pricing_option") return [];
+  const { data, error } = await supabase
+    .from("class_offer_pricing_options")
+    .select("provider_service_product_id")
+    .eq("business_id", row.business_id)
+    .eq("mapping_id", row.mapping_id)
+    .eq("status", "active");
+  if (error) throw unavailable("The approved Mindbody Product set could not be loaded.");
+  return [...new Set((Array.isArray(data) ? data : [])
+    .map((option) => String(option?.provider_service_product_id ?? "").trim())
+    .filter(Boolean))];
+}
+
 export function createClassBookingQuoteCatalogue(supabase) {
   return Object.freeze({
     async resolveOfferLocator(offerId) {
@@ -26,6 +53,15 @@ export function createClassBookingQuoteCatalogue(supabase) {
         throw new BookingQuoteError("QUOTE_CONTEXT_NOT_FOUND", "This Offer has no approved booking quote configuration.", 404);
       }
       const row = data[0];
+      const { data: familyRows, error: familyError } = await supabase.rpc(
+        "resolve_class_availability_families",
+        {
+          candidate_business_id: row.business_id,
+          candidate_location_id: row.location_id,
+          candidate_offer_id: row.offer_id,
+        },
+      );
+      if (familyError) throw unavailable();
       let paidRoute = null;
       if (row.fulfilment_mode === "purchase_pricing_option") {
         const { data: paidMapping, error: paidMappingError } = await supabase
@@ -37,6 +73,7 @@ export function createClassBookingQuoteCatalogue(supabase) {
         if (paidMappingError || !paidMapping) throw unavailable("The approved paid checkout route could not be loaded.");
         paidRoute = paidMapping;
       }
+      const providerServiceProductIds = await activePricingOptionIds(supabase, row);
       return {
         business: { id: row.business_id },
         location: {
@@ -62,6 +99,9 @@ export function createClassBookingQuoteCatalogue(supabase) {
           id: row.mapping_id,
           version: Number(row.mapping_version),
           providerServiceProductId: row.provider_service_product_id,
+          ...(providerServiceProductIds.length
+            ? { providerServiceProductIds }
+            : {}),
           modeEvidenceVerified: row.mode_evidence_verified
             && (paidRoute == null || paidRoute.paid_pricing_option_enabled === true),
           paidPaymentRoute: paidRoute?.paid_payment_route ?? null,
@@ -80,6 +120,7 @@ export function createClassBookingQuoteCatalogue(supabase) {
           providerClientUniqueId: row.provider_client_unique_id,
         } : null,
         inventoryAllowlist: row.inventory_allowlist,
+        classFamilies: normalizeClassFamilies(familyRows),
       };
     },
 
@@ -135,6 +176,7 @@ export function createClassBookingQuoteCatalogue(supabase) {
         offer_id: quote.offerId,
         mapping_id: quote.mappingId,
         mapping_version: quote.mappingVersion,
+        class_family_id: quote.classFamilyId ?? null,
         integration_id: quote.integrationId,
         location_id: quote.locationId,
         customer_id: quote.customerId,

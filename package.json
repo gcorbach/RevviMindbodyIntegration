@@ -13,6 +13,7 @@
     "sandbox:mindbody": "node tools/mindbody-site-99-e2e.mjs",
     "predemo:webflow:site99": "pnpm build:webflow",
     "demo:webflow:site99": "node tools/serve-site-99-webflow-demo.mjs",
+    "test:e2e:local": "supabase test db",
     "test": "node --test --test-concurrency=1 tests/production/**/*.test.mjs",
     "test:prototype:appointment": "node tests/run-appointment-prototype.mjs"
   },

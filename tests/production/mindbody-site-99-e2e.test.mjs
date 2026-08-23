@@ -9,6 +9,39 @@ const environment = Object.freeze({
   MINDBODY_SANDBOX_PASSWORD: "sandbox-password",
   MINDBODY_SANDBOX_SITE_ID: "-99",
   MINDBODY_SANDBOX_CLIENT_ID: "client-shared",
+  MINDBODY_SANDBOX_PRODUCT_ID: "1424",
+  MINDBODY_SANDBOX_CLASS_FAMILIES_JSON: JSON.stringify([{
+    id: "00000000-0000-4000-8000-000000000101",
+    name: "Yoga",
+    mappings: [{
+      providerLocationId: "1",
+      providerClassDescriptionId: "223",
+      providerProgramId: "27",
+      providerSessionTypeId: "250",
+    }],
+  }]),
+});
+
+test("the Site -99 runner requires an explicit current sandbox Product mapping", () => {
+  assert.throws(
+    () => createSite99Runner({
+      environment: { ...environment, MINDBODY_SANDBOX_PRODUCT_ID: undefined },
+    }),
+    (error) => error instanceof Site99RunError
+      && error.code === "MISSING_ENVIRONMENT"
+      && error.detail === "MINDBODY_SANDBOX_PRODUCT_ID",
+  );
+});
+
+test("the Site -99 runner requires an explicit Class-family manifest", () => {
+  assert.throws(
+    () => createSite99Runner({
+      environment: { ...environment, MINDBODY_SANDBOX_CLASS_FAMILIES_JSON: undefined },
+    }),
+    (error) => error instanceof Site99RunError
+      && error.code === "MISSING_ENVIRONMENT"
+      && error.detail === "MINDBODY_SANDBOX_CLASS_FAMILIES_JSON",
+  );
 });
 
 function json(body, status = 200) {
@@ -25,6 +58,7 @@ function sandboxProvider({
   revokeFails = false,
   ambiguousCancellation = false,
   cancellationLagReads = 0,
+  multiFamily = false,
 } = {}) {
   const requests = [];
   let clientId = "client-shared";
@@ -41,7 +75,9 @@ function sandboxProvider({
     if (path === "site/locations") return json({ Locations: [{ Id: 1, Name: "Clubville" }] });
     if (path === "site/programs") return json({ Programs: [{ Id: 27, Name: "Yoga", ScheduleType: "Class" }] });
     if (path === "class/classdescriptions") {
-      return json({ ClassDescriptions: [{ Id: 223, Name: "Yoga", Active: true }] });
+      return json({ ClassDescriptions: multiFamily
+        ? [{ Id: 223, Name: "Yoga", Active: true }, { Id: 224, Name: "Strength Yoga", Active: true }]
+        : [{ Id: 223, Name: "Yoga", Active: true }] });
     }
     if (path === "usertoken/issue") {
       return json({ AccessToken: "temporary-staff-token", Expires: "2026-08-18T00:00:00Z" });
@@ -62,19 +98,34 @@ function sandboxProvider({
     }
     if (path === "class/classes") {
       return json({
-        Classes: [{
-          Id: 19364,
-          StartDateTime: "2026-08-18T10:00:00",
-          IsCanceled: false,
-          IsAvailable: true,
-          IsEnrolled: false,
-          ClassScheduleId: 2152,
-          Location: { Id: 1, Name: "Clubville" },
-          Staff: { Id: 9, Name: "Sandbox Staff" },
-          ClassDescription: {
-            Id: 223, Name: "Yoga", Program: { Id: 27 }, SessionType: { Id: 250 },
+        Classes: [
+          {
+            Id: 19364,
+            StartDateTime: "2026-08-18T10:00:00",
+            IsCanceled: false,
+            IsAvailable: true,
+            IsEnrolled: false,
+            ClassScheduleId: 2152,
+            Location: { Id: 1, Name: "Clubville" },
+            Staff: { Id: 9, Name: "Sandbox Staff" },
+            ClassDescription: {
+              Id: 223, Name: "Yoga", Program: { Id: 27 }, SessionType: { Id: 250 },
+            },
           },
-        }],
+          ...(multiFamily ? [{
+            Id: 19365,
+            StartDateTime: "2026-08-18T11:00:00",
+            IsCanceled: false,
+            IsAvailable: true,
+            IsEnrolled: false,
+            ClassScheduleId: 2153,
+            Location: { Id: 1, Name: "Clubville" },
+            Staff: { Id: 9, Name: "Sandbox Staff" },
+            ClassDescription: {
+              Id: 224, Name: "Strength Yoga", Program: { Id: 27 }, SessionType: { Id: 251 },
+            },
+          }] : []),
+        ],
       });
     }
     if (path === "sale/services") {
@@ -226,6 +277,48 @@ test("quote mode proves key-only catalogue reads and two Test=true quotes create
   });
   assert.equal(result.auth.staffTokenRevoked, true);
   assert.doesNotMatch(JSON.stringify(result), /sandbox-app-key|sandbox-password|temporary-staff-token/);
+});
+
+test("probe mode exposes live occurrences grouped by configured Class family", async () => {
+  const provider = sandboxProvider({ multiFamily: true });
+  const environmentWithFamilies = {
+    ...environment,
+    MINDBODY_SANDBOX_CLASS_FAMILIES_JSON: JSON.stringify([
+      {
+        id: "00000000-0000-4000-8000-000000000101",
+        name: "Yoga",
+        mappings: [{
+          providerLocationId: "1",
+          providerClassDescriptionId: "223",
+          providerProgramId: "27",
+          providerSessionTypeId: "250",
+        }],
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000102",
+        name: "Strength Yoga",
+        mappings: [{
+          providerLocationId: "1",
+          providerClassDescriptionId: "224",
+          providerProgramId: "27",
+          providerSessionTypeId: "251",
+        }],
+      },
+    ]),
+  };
+  const result = await runner(provider, { environment: environmentWithFamilies }).run("probe");
+
+  assert.deepEqual(result.families, [
+    { id: "00000000-0000-4000-8000-000000000101", name: "Yoga", available: true },
+    { id: "00000000-0000-4000-8000-000000000102", name: "Strength Yoga", available: true },
+  ]);
+  assert.deepEqual(result.fixtures.map((fixture) => [fixture.classFamilyId, fixture.classId]), [
+    ["00000000-0000-4000-8000-000000000101", "19364"],
+    ["00000000-0000-4000-8000-000000000102", "19365"],
+  ]);
+  const selected = await runner(provider, { environment: environmentWithFamilies })
+    .run("probe", { classFamilyId: "00000000-0000-4000-8000-000000000102" });
+  assert.deepEqual(selected.fixtures.map((fixture) => fixture.classId), ["19365"]);
 });
 
 test("committed mode waits for every evidence surface, proves exact facts, and always removes the Visit", async () => {

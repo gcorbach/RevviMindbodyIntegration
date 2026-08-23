@@ -6,16 +6,17 @@ const embed = readFileSync(new URL("../../webflow/embed.html", import.meta.url),
 const history = readFileSync(new URL("../../webflow/history.html", import.meta.url), "utf8");
 const bundle = readFileSync(new URL("../../webflow/dist/revvi-booking.js", import.meta.url), "utf8");
 
-test("the Webflow markup binds one stable Offer and preselected Location without a Location picker", () => {
+test("the Webflow markup binds one stable Offer and preselected Location with an in-Offer Class-family selector", () => {
   assert.match(embed, /data-business-slug=/);
   assert.match(embed, /data-location-id=/);
   assert.match(embed, /data-offer-id=/);
   assert.match(embed, /data-booking-date/);
   assert.match(embed, /data-booking-location/);
+  assert.match(embed, /data-booking-families/);
   assert.match(embed, /data-booking-occurrences/);
   assert.match(embed, /data-availability-endpoint="SUPABASE_FUNCTIONS_URL\/offer-class-availability"/);
   assert.match(embed, /data-payment-completion-endpoint="SUPABASE_FUNCTIONS_URL\/complete-paid-booking"/);
-  assert.doesNotMatch(embed, /data-location-select|<select/i);
+  assert.doesNotMatch(embed, /data-location-select/i);
   assert.doesNotMatch(embed, /data-booking-session|data-session-/i);
 });
 

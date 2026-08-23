@@ -30,6 +30,8 @@ $env:MINDBODY_SANDBOX_USERNAME = Read-Host "Mindbody sandbox staff username"
 $mindbodyPassword = Read-Host "Mindbody sandbox staff password" -AsSecureString
 $env:MINDBODY_SANDBOX_PASSWORD = [System.Net.NetworkCredential]::new("", $mindbodyPassword).Password
 $env:MINDBODY_SANDBOX_SITE_ID = "-99"
+$env:MINDBODY_SANDBOX_PRODUCT_ID = Read-Host "Current applicable Site -99 Product ID"
+$env:MINDBODY_SANDBOX_CLASS_FAMILIES_JSON = '[{"id":"00000000-0000-4000-8000-000000000101","name":"Hot Strength Pilates","mappings":[{"providerLocationId":"1","providerClassDescriptionId":"<class-description-id>","providerProgramId":"<program-id>","providerSessionTypeId":"<session-type-id>"}]}]'
 $env:MINDBODY_SANDBOX_WRITE_CONFIRM = "BOOK_AND_CANCEL_SITE_-99"
 pnpm demo:webflow:site99
 ```
@@ -43,6 +45,8 @@ Remove-Item Env:MINDBODY_API_KEY -ErrorAction SilentlyContinue
 Remove-Item Env:MINDBODY_SANDBOX_USERNAME -ErrorAction SilentlyContinue
 Remove-Item Env:MINDBODY_SANDBOX_PASSWORD -ErrorAction SilentlyContinue
 Remove-Item Env:MINDBODY_SANDBOX_SITE_ID -ErrorAction SilentlyContinue
+Remove-Item Env:MINDBODY_SANDBOX_PRODUCT_ID -ErrorAction SilentlyContinue
+Remove-Item Env:MINDBODY_SANDBOX_CLASS_FAMILIES_JSON -ErrorAction SilentlyContinue
 Remove-Item Env:MINDBODY_SANDBOX_WRITE_CONFIRM -ErrorAction SilentlyContinue
 $mindbodyPassword = $null
 ```

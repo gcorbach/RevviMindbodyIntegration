@@ -19,6 +19,7 @@ test("the Webflow request keeps only the binding Offer and preselected Location 
     ...ids,
     startDate: "2026-08-11",
     endDate: "2026-08-24",
+    classFamilyId: "33000000-0000-4000-8000-000000000003",
     classId: "caller-must-not-authorize-an-occurrence",
     providerLocationId: "caller-must-not-authorize-provider-ids",
   }), {
@@ -26,6 +27,7 @@ test("the Webflow request keeps only the binding Offer and preselected Location 
     ...ids,
     startDate: "2026-08-11",
     endDate: "2026-08-24",
+    classFamilyId: "33000000-0000-4000-8000-000000000003",
   });
 });
 
