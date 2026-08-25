@@ -510,6 +510,7 @@ export function createSite99WebflowDemoServer({ handler, demoBearerToken, logger
         stage: error?.stage ?? null,
         code: error?.code ?? "UNEXPECTED_ERROR",
         status: error?.status ?? null,
+        ...(error?.detail ? { detail: error.detail } : {}),
       });
       response.writeHead(502, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       response.end(JSON.stringify({

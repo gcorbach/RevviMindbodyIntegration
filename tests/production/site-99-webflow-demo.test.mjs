@@ -5,7 +5,9 @@ import {
   createSite99WebflowDemoHandler,
   renderSite99WebflowDemoPage,
   SITE_99_DEMO_CONTEXT,
+  createSite99WebflowDemoServer,
 } from "../../tools/serve-site-99-webflow-demo.mjs";
+import { Site99RunError } from "../../tools/mindbody-site-99-e2e.mjs";
 import { bookingConfirmationText } from "../../webflow/src/ui.js";
 
 const DEMO_TOKEN = "demo-header.demo-payload.demo-signature";
@@ -66,6 +68,44 @@ test("the local Webflow demo shows a live Site -99 Class through the widget cont
       }],
     },
   });
+});
+
+test("the local Webflow demo logs safe selector diagnostics", async () => {
+  const logs = [];
+  const server = createSite99WebflowDemoServer({
+    demoBearerToken: DEMO_TOKEN,
+    logger: { error: (message, facts) => logs.push({ message, facts }) },
+    handler: async () => {
+      throw new Site99RunError(
+        "sessionTypeName",
+        "SELECTOR_NO_MATCH",
+        null,
+        "00000000-0000-4000-8000-000000000101:Yoga sessionTypeName=Yoga; candidates=250:Hatha Yoga",
+      );
+    },
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/offer-class-availability`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${DEMO_TOKEN}`, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(response.status, 502);
+    assert.deepEqual(logs, [{
+      message: "Site -99 Webflow demo request failed.",
+      facts: {
+        name: "Site99RunError",
+        stage: "sessionTypeName",
+        code: "SELECTOR_NO_MATCH",
+        status: null,
+        detail: "00000000-0000-4000-8000-000000000101:Yoga sessionTypeName=Yoga; candidates=250:Hatha Yoga",
+      },
+    }]);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });
 
 test("the local Webflow demo exposes and filters live Class families", async () => {

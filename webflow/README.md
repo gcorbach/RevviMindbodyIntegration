@@ -2,6 +2,8 @@
 
 This directory contains the production Webflow widget for one already-selected Revvi Offer and Business Location. Webflow supplies presentation text and the stable Supabase references only. Eligibility, approved Class inventory, price, and Offer fulfilment mode remain server-owned.
 
+The `/book` route follows the approved prototype flow: choose a live Class, choose one of its real dates and times, then review the server-owned quote before reserving. The class rows and time buttons are built from the live availability response; the prototype's example partner, Class names, times, and prices are not copied into the production widget.
+
 ## Webflow installation
 
 1. Add the markup from `embed.html` to the existing Offer page.

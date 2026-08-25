@@ -115,14 +115,18 @@ function page({
               return;` : "clearInterval(automation); return;"}
           }
           if (["stale", "requires-payment-action", "pending-reconciliation", "error"].includes(root.dataset.bookingState)) { clearInterval(automation); return; }
-          const confirm = root.querySelector("[data-quote-confirm]");
+          const confirm = root.querySelector("[data-quote-confirm]:not([data-booking-continue])");
           if (confirm && !confirm.closest("[hidden]") && !confirm.disabled) {
             confirm.click();
             confirm.click();
             return;
           }
-          const book = root.querySelector("[data-occurrence-book]:not([disabled])");
-          if (book) { book.click(); return; }
+          const chooseClass = root.querySelector("[data-class-select]:not([disabled])");
+          if (chooseClass && !chooseClass.closest("[hidden]")) { chooseClass.click(); return; }
+          const chooseTime = root.querySelector("[data-time-select]:not([disabled])");
+          if (chooseTime && !chooseTime.closest("[hidden]")) { chooseTime.click(); return; }
+          const continueButton = root.querySelector("[data-booking-continue]:not([disabled])");
+          if (continueButton && !continueButton.closest("[hidden]")) { continueButton.click(); return; }
         }, 20);` : ""}
       setTimeout(() => {
         root.dataset.viewportWidth = String(window.innerWidth);
@@ -237,12 +241,10 @@ test("the Webflow widget shows approved Class times responsively and suppresses 
       assert.match(result.stdout, /data-viewport-fits="true"/);
       assert.match(result.stdout, /Rosebank Studio/);
       assert.match(result.stdout, /Revvi Yoga Access/);
-      assert.match(result.stdout, /3 spots left/);
-      assert.match(result.stdout, /Class is full/);
-      assert.match(result.stdout, /Availability to be confirmed/);
+      assert.match(result.stdout, /Amina/);
       assert.doesNotMatch(result.stdout, /null spots/);
       assert.match(result.stdout, /data-booking-state="success"/);
-      assert.match(result.stdout, /loading-eligibility,loading-availability,showing-availability,loading-quote,confirming,submitting,success/);
+      assert.match(result.stdout, /loading-eligibility,loading-availability,showing-classes,showing-times,loading-quote,confirming,submitting,success/);
       assert.match(result.stdout, /Booking confirmed/);
       assert.match(result.stdout, /Cancel with the studio before the cutoff/);
       assert.match(result.stdout, /data-availability-stale="false"/);

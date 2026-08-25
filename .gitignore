@@ -3,3 +3,7 @@ node_modules/
 
 # Local Edge Function secrets
 supabase/functions/.env.local
+webflow/.env
+
+# Windows download metadata copied into Linux worktrees
+*:Zone.Identifier

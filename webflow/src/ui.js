@@ -4,7 +4,8 @@ const VIEW_SELECTORS = Object.freeze({
   error: "[data-booking-error]",
   empty: "[data-booking-empty]",
   stale: "[data-booking-stale]",
-  occurrences: "[data-booking-occurrences]",
+  occurrences: "[data-booking-class-choices]",
+  times: "[data-booking-time-options]",
   quote: "[data-booking-quote]",
   submitting: "[data-booking-submitting]",
   paymentAction: "[data-booking-payment-action]",
@@ -22,12 +23,13 @@ function setText(root, selector, value) {
   element(root, selector).textContent = value ?? "";
 }
 
-function formatDateTime(value, timezone) {
+function formatDateTime(value, timezone, options = {}) {
   try {
     return new Intl.DateTimeFormat(undefined, {
       dateStyle: "medium",
       timeStyle: "short",
       timeZone: timezone,
+      ...options,
     }).format(new Date(value));
   } catch {
     return "Time to be confirmed";
@@ -40,6 +42,59 @@ function formatMoney(amount, currency) {
     return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(amount);
   } catch {
     return `${currency} ${amount.toFixed(2)}`;
+  }
+}
+
+function dateKey(value, timezone) {
+  try {
+    const parts = new Intl.DateTimeFormat("en", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date(value));
+    const fields = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${fields.year}-${fields.month}-${fields.day}`;
+  } catch {
+    return null;
+  }
+}
+
+function dateLabel(value, timezone) {
+  try {
+    const [year, month, day] = value.split("-").map(Number);
+    return new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", timeZone: timezone })
+      .format(new Date(Date.UTC(year, month - 1, day, 12)));
+  } catch {
+    return value;
+  }
+}
+
+function timeLabel(occurrence) {
+  return formatDateTime(occurrence.startAt, occurrence.timezone, { dateStyle: undefined, timeStyle: "short" });
+}
+
+function classKey(occurrence) {
+  return occurrence.classFamilyId
+    ? `family:${occurrence.classFamilyId}`
+    : `name:${occurrence.name ?? "class"}`;
+}
+
+function classDuration(occurrences) {
+  const start = Date.parse(occurrences[0]?.startAt ?? "");
+  const end = Date.parse(occurrences[0]?.endAt ?? "");
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return Math.round((end - start) / 60_000);
+}
+
+function availabilityPresentation(occurrence) {
+  switch (occurrence.availabilityState) {
+    case "available": return { label: "Available", bookable: true };
+    case "waitlist_available": return { label: "Waitlist available", bookable: true };
+    case "full": return { label: "Class is full", bookable: false };
+    case "outside_booking_window": return { label: "Booking window closed", bookable: false };
+    case "client_ineligible": return { label: "Not available for this Customer", bookable: false };
+    default: return { label: "Availability to be confirmed", bookable: false };
   }
 }
 
@@ -68,91 +123,110 @@ export function bookingConfirmationText(booking, fallbackLocationName) {
   return `Booking confirmed: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} — ${locationName}.`;
 }
 
-function availabilityPresentation(occurrence) {
-  switch (occurrence.availabilityState) {
-    case "available": return { label: "Available", bookable: true };
-    case "waitlist_available": return { label: "Waitlist available", bookable: true };
-    case "full": return { label: "Class is full", bookable: false };
-    case "outside_booking_window": return { label: "Booking window closed", bookable: false };
-    case "client_ineligible": return { label: "Not available for this Customer", bookable: false };
-    default: return { label: "Availability to be confirmed", bookable: false };
-  }
-}
-
 export function createBookingWidgetUi(root) {
   const views = Object.fromEntries(
     Object.entries(VIEW_SELECTORS).map(([name, selector]) => [name, element(root, selector)]),
   );
-  const template = element(root, "[data-booking-occurrence-template]");
+  const classTemplate = element(root, "[data-booking-class-template]");
+  const timeTemplate = element(root, "[data-booking-time-template]");
   const selection = element(root, "[data-booking-selection]");
-  const familySelector = element(root, "[data-booking-families]");
+  const stepPanels = [...root.querySelectorAll("[data-booking-step-panel]")];
+  const stepLinks = [...root.querySelectorAll("[data-booking-step-link]")];
+  const continueButton = element(root, "[data-booking-continue]");
 
-  setText(root, "[data-booking-offer]", root.dataset.offerName);
+  setText(root, "[data-booking-location-copy]", root.dataset.locationName);
   setText(root, "[data-booking-location]", root.dataset.locationName);
+  setText(root, "[data-booking-offer]", root.dataset.offerName);
+
+  function setStep(step) {
+    const current = String(step);
+    root.dataset.bookingStep = current;
+    for (const panel of stepPanels) panel.hidden = panel.dataset.bookingStepPanel !== current;
+    for (const link of stepLinks) {
+      const isCurrent = link.dataset.bookingStepLink === current;
+      link.toggleAttribute("aria-current", isCurrent);
+      link.disabled = Number(link.dataset.bookingStepLink) > Number(step);
+    }
+  }
 
   function show(status, viewName) {
     root.dataset.bookingState = status;
     root.setAttribute("aria-busy", String(status.startsWith("loading-") || status === "submitting"));
     for (const [name, view] of Object.entries(views)) view.hidden = name !== viewName;
+    const step = viewName === "occurrences" ? 1 : viewName === "times" ? 2 : ["quote", "confirmation"].includes(viewName) ? 3 : null;
+    if (step) setStep(step);
+    else stepPanels.forEach((panel) => { panel.hidden = true; });
   }
 
-  function renderOccurrences(occurrences, onSelect) {
+  function renderClassChoices(occurrences, onSelect, families = []) {
     views.occurrences.replaceChildren();
+    const familyNames = new Map(families.map((family) => [String(family.id), family.displayName ?? family.name]));
+    const groups = new Map();
     for (const occurrence of occurrences) {
-      const fragment = template.content.cloneNode(true);
-      const card = fragment.querySelector("[data-booking-occurrence]");
-      const presentation = availabilityPresentation(occurrence);
-      card.dataset.classId = String(occurrence.classId);
-      setText(fragment, "[data-occurrence-name]", occurrence.name);
-      setText(fragment, "[data-occurrence-time]", formatDateTime(occurrence.startAt, occurrence.timezone));
-      setText(fragment, "[data-occurrence-staff]", occurrence.staffName ?? "Instructor to be confirmed");
-      setText(fragment, "[data-occurrence-location]", root.dataset.locationName);
-      setText(
-        fragment,
-        "[data-occurrence-price]",
-        occurrence.provisionalPrice
-          ? `Estimated ${formatMoney(occurrence.provisionalPrice.amount, occurrence.provisionalPrice.currency)} — confirmed before Booking`
-          : "Terms confirmed before Booking",
-      );
-      setText(
-        fragment,
-        "[data-occurrence-capacity]",
-        Number.isSafeInteger(occurrence.estimatedAvailableSlots) && occurrence.estimatedAvailableSlots > 0
-          ? `${occurrence.estimatedAvailableSlots} spots left`
-          : "",
-      );
-      setText(fragment, "[data-occurrence-status]", presentation.label);
-      const button = element(fragment, "[data-occurrence-book]");
-      button.disabled = !presentation.bookable;
-      button.textContent = occurrence.availabilityState === "waitlist_available" ? "View waitlist" : "Book";
-      if (presentation.bookable) button.addEventListener("click", () => onSelect(occurrence));
+      const key = classKey(occurrence);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(occurrence);
+    }
+    for (const [key, classOccurrences] of groups) {
+      classOccurrences.sort((left, right) => String(left.startAt).localeCompare(String(right.startAt)));
+      const first = classOccurrences[0];
+      const fragment = classTemplate.content.cloneNode(true);
+      const card = fragment.querySelector("[data-booking-class-choice]");
+      const button = element(fragment, "[data-class-select]");
+      const presentation = classOccurrences.map(availabilityPresentation);
+      const bookable = presentation.some(({ bookable: canBook }) => canBook);
+      card.dataset.classKey = key;
+      card.dataset.classId = String(first.classId);
+      setText(fragment, "[data-class-name]", familyNames.get(String(first.classFamilyId)) ?? first.name ?? "Class");
+      const instructor = first.staffName ?? "Instructor to be confirmed";
+      const duration = classDuration(classOccurrences);
+      const next = `Next: ${formatDateTime(first.startAt, first.timezone)}`;
+      setText(fragment, "[data-class-meta]", `${instructor}${duration ? ` · ${duration} min` : ""} · ${next}`);
+      button.disabled = !bookable;
+      button.textContent = presentation.some(({ label }) => label === "Waitlist available") && !presentation.some(({ label }) => label === "Available")
+        ? "View waitlist"
+        : "Select";
+      if (bookable) button.addEventListener("click", () => onSelect(key, classOccurrences));
       views.occurrences.append(fragment);
     }
-    show("showing-availability", "occurrences");
+    show("showing-classes", "occurrences");
   }
 
-  function renderFamilies(families, selectedFamilyId, onSelect) {
-    familySelector.replaceChildren();
-    const available = families.filter((family) => family.available !== false);
-    if (available.length <= 1) {
-      familySelector.hidden = true;
-      return;
+  function renderTimes(occurrences, selectedDate, onSelectDate, onSelectTime, selectedOccurrence = null, className = null) {
+    const dates = [...new Set(occurrences
+      .map((occurrence) => dateKey(occurrence.startAt, occurrence.timezone))
+      .filter(Boolean))].sort();
+    const activeDate = dates.includes(selectedDate) ? selectedDate : dates[0];
+    const timezone = occurrences[0]?.timezone;
+    const dateOptions = element(root, "[data-booking-date-options]");
+    dateOptions.replaceChildren();
+    for (const date of dates) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "revvi-booking-day-button";
+      button.dataset.bookingDateOption = date;
+      button.textContent = dateLabel(date, timezone);
+      button.classList.toggle("active", date === activeDate);
+      button.addEventListener("click", () => onSelectDate(date));
+      dateOptions.append(button);
     }
-    familySelector.hidden = false;
-    const label = document.createElement("label");
-    label.textContent = "Class type";
-    const select = document.createElement("select");
-    select.setAttribute("data-booking-family-select", "true");
-    for (const family of available) {
-      const option = document.createElement("option");
-      option.value = family.id;
-      option.textContent = family.name;
-      option.selected = family.id === selectedFamilyId;
-      select.append(option);
+    const timeOptions = element(root, "[data-booking-time-options]");
+    timeOptions.replaceChildren();
+    for (const occurrence of occurrences.filter((candidate) => dateKey(candidate.startAt, candidate.timezone) === activeDate)) {
+      const fragment = timeTemplate.content.cloneNode(true);
+      const button = element(fragment, "[data-time-select]");
+      const presentation = availabilityPresentation(occurrence);
+      button.dataset.classId = String(occurrence.classId);
+      button.dataset.bookingOccurrence = "true";
+      button.textContent = timeLabel(occurrence);
+      button.classList.toggle("active", occurrence.classId === selectedOccurrence?.classId);
+      button.disabled = !presentation.bookable;
+      if (presentation.bookable) button.addEventListener("click", () => onSelectTime(occurrence));
+      timeOptions.append(fragment);
     }
-    select.addEventListener("change", () => onSelect(select.value));
-    label.append(select);
-    familySelector.append(label);
+    setText(root, "[data-booking-time-context]", `${className ?? occurrences[0]?.name ?? "Class"} · ${root.dataset.locationName}`);
+    show("showing-times", "times");
+    return activeDate;
   }
 
   return Object.freeze({
@@ -164,7 +238,11 @@ export function createBookingWidgetUi(root) {
       views.loading.textContent = "Loading live Class times…";
       show("loading-availability", "loading");
     },
-    families: renderFamilies,
+    classChoices: renderClassChoices,
+    times: renderTimes,
+    enableContinue(enabled) {
+      continueButton.disabled = !enabled;
+    },
     loadingQuote() {
       views.loading.textContent = "Checking this Class and your Revvi terms…";
       show("loading-quote", "loading");
@@ -174,20 +252,24 @@ export function createBookingWidgetUi(root) {
       show("ineligible", "ineligible");
     },
     empty() { show("empty", "empty"); },
-    occurrences: renderOccurrences,
     selected(occurrence) {
       selection.textContent = `${occurrence.name} — ${formatDateTime(occurrence.startAt, occurrence.timezone)}`;
       selection.hidden = false;
+      continueButton.disabled = false;
+      for (const button of root.querySelectorAll("[data-time-select]")) {
+        button.classList.toggle("active", button.dataset.classId === String(occurrence.classId));
+      }
     },
     clearSelection() {
       selection.textContent = "";
       selection.hidden = true;
+      continueButton.disabled = true;
     },
     quote(quote) {
       setText(root, "[data-quote-class]", quote.occurrence?.name);
       setText(root, "[data-quote-time]", formatDateTime(quote.occurrence?.startAt, quote.occurrence?.timezone));
       setText(root, "[data-quote-location]", quote.occurrence?.locationName ?? root.dataset.locationName);
-      setText(root, "[data-quote-price]", formatMoney(quote.price?.grandTotal, quote.price?.currency));
+      setText(root, "[data-booking-review-price]", formatMoney(quote.price?.grandTotal, quote.price?.currency));
       setText(root, "[data-quote-expiry]", quote.expiresAt ? `Quote expires ${formatDateTime(quote.expiresAt, quote.occurrence?.timezone)}` : "");
       setText(root, "[data-quote-policy]", quote.cancellationPolicy?.displayText ?? "Cancellation terms will be confirmed by the Business.");
       show("confirming", "quote");
@@ -256,7 +338,12 @@ export function createBookingWidgetUi(root) {
     },
     confirmButton: element(root, "[data-quote-confirm]"),
     backButton: element(root, "[data-quote-back]"),
+    backToClassesButton: element(root, "[data-booking-back-to-classes]"),
     refreshButton: element(root, "[data-booking-refresh]"),
+    continueButton,
+    stepOneButton: element(root, "[data-booking-step-link=\"1\"]"),
+    stepTwoButton: element(root, "[data-booking-step-link=\"2\"]"),
     demoCleanupButton: element(root, "[data-booking-demo-cleanup]"),
+    changeLocationButton: element(root, "[data-booking-change-location]"),
   });
 }

@@ -216,7 +216,8 @@ var RevviBooking = (() => {
     error: "[data-booking-error]",
     empty: "[data-booking-empty]",
     stale: "[data-booking-stale]",
-    occurrences: "[data-booking-occurrences]",
+    occurrences: "[data-booking-class-choices]",
+    times: "[data-booking-time-options]",
     quote: "[data-booking-quote]",
     submitting: "[data-booking-submitting]",
     paymentAction: "[data-booking-payment-action]",
@@ -231,12 +232,13 @@ var RevviBooking = (() => {
   function setText(root, selector, value) {
     element(root, selector).textContent = value ?? "";
   }
-  function formatDateTime(value, timezone) {
+  function formatDateTime(value, timezone, options = {}) {
     try {
       return new Intl.DateTimeFormat(void 0, {
         dateStyle: "medium",
         timeStyle: "short",
-        timeZone: timezone
+        timeZone: timezone,
+        ...options
       }).format(new Date(value));
     } catch {
       return "Time to be confirmed";
@@ -250,19 +252,39 @@ var RevviBooking = (() => {
       return `${currency} ${amount.toFixed(2)}`;
     }
   }
-  function bookingConfirmationText(booking, fallbackLocationName) {
-    const locationName = booking.locationName ?? fallbackLocationName;
-    const references = booking?.sandboxDemo?.references;
-    const searchableReferences = references && typeof references.clientId === "string" && typeof references.clientName === "string" && typeof references.saleId === "string" && typeof references.visitId === "string";
-    if (booking?.sandboxDemo?.cleanupStatus === "pending" && searchableReferences) {
-      const automaticCleanup = booking.sandboxDemo.autoCleanupAt ? `; otherwise it will be automatically cleaned at ${formatDateTime(booking.sandboxDemo.autoCleanupAt, booking.timezone)}` : "";
-      return `Sandbox Booking is active for inspection: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${locationName}. In Mindbody Business, search Clients for ${references.clientName} (Client ${references.clientId}) and open the Client schedule or visits. Cash Sale ${references.saleId} and Visit ${references.visitId} are the exact evidence. Use Clean up demo Booking when finished${automaticCleanup}.`;
+  function dateKey(value, timezone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).formatToParts(new Date(value));
+      const fields = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+      return `${fields.year}-${fields.month}-${fields.day}`;
+    } catch {
+      return null;
     }
-    if (booking?.sandboxDemo?.cleanupStatus === "confirmed" && searchableReferences) {
-      const restoration = booking.sandboxDemo.entitlementRestorationObserved === true ? "Entitlement restoration was confirmed." : booking.sandboxDemo.entitlementRestorationObserved === false ? "Entitlement restoration was not observed." : "Entitlement restoration remains unknown.";
-      return `Sandbox Booking verified and removed safely: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${locationName}. Search Mindbody for ${references.clientName} (Client ${references.clientId}); the retained Cash Sale is ${references.saleId}, and Visit ${references.visitId} was removed. ${restoration}`;
+  }
+  function dateLabel(value, timezone) {
+    try {
+      const [year, month, day] = value.split("-").map(Number);
+      return new Intl.DateTimeFormat(void 0, { weekday: "short", month: "short", day: "numeric", timeZone: timezone }).format(new Date(Date.UTC(year, month - 1, day, 12)));
+    } catch {
+      return value;
     }
-    return `Booking confirmed: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${locationName}.`;
+  }
+  function timeLabel(occurrence) {
+    return formatDateTime(occurrence.startAt, occurrence.timezone, { dateStyle: void 0, timeStyle: "short" });
+  }
+  function classKey(occurrence) {
+    return occurrence.classFamilyId ? `family:${occurrence.classFamilyId}` : `name:${occurrence.name ?? "class"}`;
+  }
+  function classDuration(occurrences) {
+    const start = Date.parse(occurrences[0]?.startAt ?? "");
+    const end = Date.parse(occurrences[0]?.endAt ?? "");
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+    return Math.round((end - start) / 6e4);
   }
   function availabilityPresentation(occurrence) {
     switch (occurrence.availabilityState) {
@@ -280,72 +302,117 @@ var RevviBooking = (() => {
         return { label: "Availability to be confirmed", bookable: false };
     }
   }
+  function bookingConfirmationText(booking, fallbackLocationName) {
+    const locationName = booking.locationName ?? fallbackLocationName;
+    const references = booking?.sandboxDemo?.references;
+    const searchableReferences = references && typeof references.clientId === "string" && typeof references.clientName === "string" && typeof references.saleId === "string" && typeof references.visitId === "string";
+    if (booking?.sandboxDemo?.cleanupStatus === "pending" && searchableReferences) {
+      const automaticCleanup = booking.sandboxDemo.autoCleanupAt ? `; otherwise it will be automatically cleaned at ${formatDateTime(booking.sandboxDemo.autoCleanupAt, booking.timezone)}` : "";
+      return `Sandbox Booking is active for inspection: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${locationName}. In Mindbody Business, search Clients for ${references.clientName} (Client ${references.clientId}) and open the Client schedule or visits. Cash Sale ${references.saleId} and Visit ${references.visitId} are the exact evidence. Use Clean up demo Booking when finished${automaticCleanup}.`;
+    }
+    if (booking?.sandboxDemo?.cleanupStatus === "confirmed" && searchableReferences) {
+      const restoration = booking.sandboxDemo.entitlementRestorationObserved === true ? "Entitlement restoration was confirmed." : booking.sandboxDemo.entitlementRestorationObserved === false ? "Entitlement restoration was not observed." : "Entitlement restoration remains unknown.";
+      return `Sandbox Booking verified and removed safely: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${locationName}. Search Mindbody for ${references.clientName} (Client ${references.clientId}); the retained Cash Sale is ${references.saleId}, and Visit ${references.visitId} was removed. ${restoration}`;
+    }
+    return `Booking confirmed: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${locationName}.`;
+  }
   function createBookingWidgetUi(root) {
     const views = Object.fromEntries(
       Object.entries(VIEW_SELECTORS).map(([name, selector]) => [name, element(root, selector)])
     );
-    const template = element(root, "[data-booking-occurrence-template]");
+    const classTemplate = element(root, "[data-booking-class-template]");
+    const timeTemplate = element(root, "[data-booking-time-template]");
     const selection = element(root, "[data-booking-selection]");
-    const familySelector = element(root, "[data-booking-families]");
-    setText(root, "[data-booking-offer]", root.dataset.offerName);
+    const stepPanels = [...root.querySelectorAll("[data-booking-step-panel]")];
+    const stepLinks = [...root.querySelectorAll("[data-booking-step-link]")];
+    const continueButton = element(root, "[data-booking-continue]");
+    setText(root, "[data-booking-location-copy]", root.dataset.locationName);
     setText(root, "[data-booking-location]", root.dataset.locationName);
+    setText(root, "[data-booking-offer]", root.dataset.offerName);
+    function setStep(step) {
+      const current = String(step);
+      root.dataset.bookingStep = current;
+      for (const panel of stepPanels) panel.hidden = panel.dataset.bookingStepPanel !== current;
+      for (const link of stepLinks) {
+        const isCurrent = link.dataset.bookingStepLink === current;
+        link.toggleAttribute("aria-current", isCurrent);
+        link.disabled = Number(link.dataset.bookingStepLink) > Number(step);
+      }
+    }
     function show(status, viewName) {
       root.dataset.bookingState = status;
       root.setAttribute("aria-busy", String(status.startsWith("loading-") || status === "submitting"));
       for (const [name, view] of Object.entries(views)) view.hidden = name !== viewName;
+      const step = viewName === "occurrences" ? 1 : viewName === "times" ? 2 : ["quote", "confirmation"].includes(viewName) ? 3 : null;
+      if (step) setStep(step);
+      else stepPanels.forEach((panel) => {
+        panel.hidden = true;
+      });
     }
-    function renderOccurrences(occurrences, onSelect) {
+    function renderClassChoices(occurrences, onSelect, families = []) {
       views.occurrences.replaceChildren();
+      const familyNames = new Map(families.map((family) => [String(family.id), family.displayName ?? family.name]));
+      const groups = /* @__PURE__ */ new Map();
       for (const occurrence of occurrences) {
-        const fragment = template.content.cloneNode(true);
-        const card = fragment.querySelector("[data-booking-occurrence]");
-        const presentation = availabilityPresentation(occurrence);
-        card.dataset.classId = String(occurrence.classId);
-        setText(fragment, "[data-occurrence-name]", occurrence.name);
-        setText(fragment, "[data-occurrence-time]", formatDateTime(occurrence.startAt, occurrence.timezone));
-        setText(fragment, "[data-occurrence-staff]", occurrence.staffName ?? "Instructor to be confirmed");
-        setText(fragment, "[data-occurrence-location]", root.dataset.locationName);
-        setText(
-          fragment,
-          "[data-occurrence-price]",
-          occurrence.provisionalPrice ? `Estimated ${formatMoney(occurrence.provisionalPrice.amount, occurrence.provisionalPrice.currency)} \u2014 confirmed before Booking` : "Terms confirmed before Booking"
-        );
-        setText(
-          fragment,
-          "[data-occurrence-capacity]",
-          Number.isSafeInteger(occurrence.estimatedAvailableSlots) && occurrence.estimatedAvailableSlots > 0 ? `${occurrence.estimatedAvailableSlots} spots left` : ""
-        );
-        setText(fragment, "[data-occurrence-status]", presentation.label);
-        const button = element(fragment, "[data-occurrence-book]");
-        button.disabled = !presentation.bookable;
-        button.textContent = occurrence.availabilityState === "waitlist_available" ? "View waitlist" : "Book";
-        if (presentation.bookable) button.addEventListener("click", () => onSelect(occurrence));
+        const key = classKey(occurrence);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(occurrence);
+      }
+      for (const [key, classOccurrences] of groups) {
+        classOccurrences.sort((left, right) => String(left.startAt).localeCompare(String(right.startAt)));
+        const first = classOccurrences[0];
+        const fragment = classTemplate.content.cloneNode(true);
+        const card = fragment.querySelector("[data-booking-class-choice]");
+        const button = element(fragment, "[data-class-select]");
+        const presentation = classOccurrences.map(availabilityPresentation);
+        const bookable = presentation.some(({ bookable: canBook }) => canBook);
+        card.dataset.classKey = key;
+        card.dataset.classId = String(first.classId);
+        setText(fragment, "[data-class-name]", familyNames.get(String(first.classFamilyId)) ?? first.name ?? "Class");
+        const instructor = first.staffName ?? "Instructor to be confirmed";
+        const duration = classDuration(classOccurrences);
+        const next = `Next: ${formatDateTime(first.startAt, first.timezone)}`;
+        setText(fragment, "[data-class-meta]", `${instructor}${duration ? ` \xB7 ${duration} min` : ""} \xB7 ${next}`);
+        button.disabled = !bookable;
+        button.textContent = presentation.some(({ label }) => label === "Waitlist available") && !presentation.some(({ label }) => label === "Available") ? "View waitlist" : "Select";
+        if (bookable) button.addEventListener("click", () => onSelect(key, classOccurrences));
         views.occurrences.append(fragment);
       }
-      show("showing-availability", "occurrences");
+      show("showing-classes", "occurrences");
     }
-    function renderFamilies(families, selectedFamilyId, onSelect) {
-      familySelector.replaceChildren();
-      const available = families.filter((family) => family.available !== false);
-      if (available.length <= 1) {
-        familySelector.hidden = true;
-        return;
+    function renderTimes(occurrences, selectedDate, onSelectDate, onSelectTime, selectedOccurrence = null, className = null) {
+      const dates = [...new Set(occurrences.map((occurrence) => dateKey(occurrence.startAt, occurrence.timezone)).filter(Boolean))].sort();
+      const activeDate = dates.includes(selectedDate) ? selectedDate : dates[0];
+      const timezone = occurrences[0]?.timezone;
+      const dateOptions = element(root, "[data-booking-date-options]");
+      dateOptions.replaceChildren();
+      for (const date of dates) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "revvi-booking-day-button";
+        button.dataset.bookingDateOption = date;
+        button.textContent = dateLabel(date, timezone);
+        button.classList.toggle("active", date === activeDate);
+        button.addEventListener("click", () => onSelectDate(date));
+        dateOptions.append(button);
       }
-      familySelector.hidden = false;
-      const label = document.createElement("label");
-      label.textContent = "Class type";
-      const select = document.createElement("select");
-      select.setAttribute("data-booking-family-select", "true");
-      for (const family of available) {
-        const option = document.createElement("option");
-        option.value = family.id;
-        option.textContent = family.name;
-        option.selected = family.id === selectedFamilyId;
-        select.append(option);
+      const timeOptions = element(root, "[data-booking-time-options]");
+      timeOptions.replaceChildren();
+      for (const occurrence of occurrences.filter((candidate) => dateKey(candidate.startAt, candidate.timezone) === activeDate)) {
+        const fragment = timeTemplate.content.cloneNode(true);
+        const button = element(fragment, "[data-time-select]");
+        const presentation = availabilityPresentation(occurrence);
+        button.dataset.classId = String(occurrence.classId);
+        button.dataset.bookingOccurrence = "true";
+        button.textContent = timeLabel(occurrence);
+        button.classList.toggle("active", occurrence.classId === selectedOccurrence?.classId);
+        button.disabled = !presentation.bookable;
+        if (presentation.bookable) button.addEventListener("click", () => onSelectTime(occurrence));
+        timeOptions.append(fragment);
       }
-      select.addEventListener("change", () => onSelect(select.value));
-      label.append(select);
-      familySelector.append(label);
+      setText(root, "[data-booking-time-context]", `${className ?? occurrences[0]?.name ?? "Class"} \xB7 ${root.dataset.locationName}`);
+      show("showing-times", "times");
+      return activeDate;
     }
     return Object.freeze({
       loadingEligibility() {
@@ -356,7 +423,11 @@ var RevviBooking = (() => {
         views.loading.textContent = "Loading live Class times\u2026";
         show("loading-availability", "loading");
       },
-      families: renderFamilies,
+      classChoices: renderClassChoices,
+      times: renderTimes,
+      enableContinue(enabled) {
+        continueButton.disabled = !enabled;
+      },
       loadingQuote() {
         views.loading.textContent = "Checking this Class and your Revvi terms\u2026";
         show("loading-quote", "loading");
@@ -368,20 +439,24 @@ var RevviBooking = (() => {
       empty() {
         show("empty", "empty");
       },
-      occurrences: renderOccurrences,
       selected(occurrence) {
         selection.textContent = `${occurrence.name} \u2014 ${formatDateTime(occurrence.startAt, occurrence.timezone)}`;
         selection.hidden = false;
+        continueButton.disabled = false;
+        for (const button of root.querySelectorAll("[data-time-select]")) {
+          button.classList.toggle("active", button.dataset.classId === String(occurrence.classId));
+        }
       },
       clearSelection() {
         selection.textContent = "";
         selection.hidden = true;
+        continueButton.disabled = true;
       },
       quote(quote) {
         setText(root, "[data-quote-class]", quote.occurrence?.name);
         setText(root, "[data-quote-time]", formatDateTime(quote.occurrence?.startAt, quote.occurrence?.timezone));
         setText(root, "[data-quote-location]", quote.occurrence?.locationName ?? root.dataset.locationName);
-        setText(root, "[data-quote-price]", formatMoney(quote.price?.grandTotal, quote.price?.currency));
+        setText(root, "[data-booking-review-price]", formatMoney(quote.price?.grandTotal, quote.price?.currency));
         setText(root, "[data-quote-expiry]", quote.expiresAt ? `Quote expires ${formatDateTime(quote.expiresAt, quote.occurrence?.timezone)}` : "");
         setText(root, "[data-quote-policy]", quote.cancellationPolicy?.displayText ?? "Cancellation terms will be confirmed by the Business.");
         show("confirming", "quote");
@@ -452,8 +527,13 @@ var RevviBooking = (() => {
       },
       confirmButton: element(root, "[data-quote-confirm]"),
       backButton: element(root, "[data-quote-back]"),
+      backToClassesButton: element(root, "[data-booking-back-to-classes]"),
       refreshButton: element(root, "[data-booking-refresh]"),
-      demoCleanupButton: element(root, "[data-booking-demo-cleanup]")
+      continueButton,
+      stepOneButton: element(root, '[data-booking-step-link="1"]'),
+      stepTwoButton: element(root, '[data-booking-step-link="2"]'),
+      demoCleanupButton: element(root, "[data-booking-demo-cleanup]"),
+      changeLocationButton: element(root, "[data-booking-change-location]")
     });
   }
 
@@ -523,7 +603,10 @@ var RevviBooking = (() => {
     let authorization;
     let occurrences = [];
     let families = [];
-    let selectedFamilyId = null;
+    let selectedClassKey = null;
+    let selectedClassOccurrences = [];
+    let selectedClassName = null;
+    let selectedDateKey = null;
     let selectedOccurrence = null;
     let quote = null;
     let requestActive = false;
@@ -533,7 +616,21 @@ var RevviBooking = (() => {
     function availabilityContext() {
       const startDate = dateInput.value?.trim();
       if (!ISO_DATE.test(startDate ?? "")) throw new Error("Choose a valid Class date.");
-      return { ...context, startDate, ...selectedFamilyId ? { classFamilyId: selectedFamilyId } : {} };
+      return { ...context, startDate };
+    }
+    function occurrenceDateKey(occurrence) {
+      try {
+        const parts = new Intl.DateTimeFormat("en", {
+          timeZone: occurrence.timezone,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit"
+        }).formatToParts(new Date(occurrence.startAt));
+        const fields = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+        return `${fields.year}-${fields.month}-${fields.day}`;
+      } catch {
+        return null;
+      }
     }
     async function loadAvailability() {
       const sequence = ++loadSequence;
@@ -548,12 +645,14 @@ var RevviBooking = (() => {
         const data = await api.availability(authorization, availabilityContext());
         if (sequence !== loadSequence) return;
         occurrences = exactAvailability(data, context);
-        if (!selectedFamilyId && Array.isArray(data?.classFamilies)) {
-          families = data.classFamilies;
-          ui.families(families, selectedFamilyId, selectFamily);
-        }
+        families = Array.isArray(data?.classFamilies) ? data.classFamilies : [];
+        selectedClassKey = null;
+        selectedClassOccurrences = [];
+        selectedClassName = null;
+        selectedDateKey = null;
+        selectedOccurrence = null;
         if (occurrences.length === 0) ui.empty();
-        else ui.occurrences(occurrences, selectOccurrence);
+        else ui.classChoices(occurrences, selectClass, families);
       } catch (error) {
         if (sequence !== loadSequence) return;
         if (error instanceof BookingWidgetRequestError && [401, 403].includes(error.status)) {
@@ -565,43 +664,57 @@ var RevviBooking = (() => {
         }
       }
     }
-    function selectFamily(familyId) {
-      if (requestActive || !UUID.test(familyId ?? "")) return;
-      selectedFamilyId = familyId;
+    function selectClass(classKey2, classOccurrences) {
+      if (requestActive || !classKey2 || !Array.isArray(classOccurrences) || classOccurrences.length === 0) return;
+      selectedClassKey = classKey2;
+      selectedClassOccurrences = [...classOccurrences].sort((left, right) => String(left.startAt).localeCompare(String(right.startAt)));
+      selectedClassName = families.find((family) => String(family.id) === String(selectedClassOccurrences[0]?.classFamilyId))?.displayName ?? selectedClassOccurrences[0]?.name ?? "Class";
+      selectedDateKey = occurrenceDateKey(selectedClassOccurrences[0]);
       selectedOccurrence = null;
       quote = null;
       ui.clearSelection();
-      void loadAvailability();
+      ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
     }
-    async function selectOccurrence(occurrence) {
+    function selectDate(dateKey2) {
+      if (requestActive || !selectedClassKey) return;
+      selectedDateKey = dateKey2;
+      selectedOccurrence = null;
+      quote = null;
+      ui.clearSelection();
+      ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+    }
+    function selectOccurrence(occurrence) {
       if (requestActive) return;
-      requestActive = true;
       selectedOccurrence = occurrence;
-      dateInput.disabled = true;
       root.dataset.selectedClassId = occurrence.classId;
       root.dataset.selectedClassTime = occurrence.startAt;
       ui.selected(occurrence);
+    }
+    async function continueToQuote() {
+      if (requestActive || !selectedOccurrence) return;
+      requestActive = true;
+      dateInput.disabled = true;
       ui.loadingQuote();
       try {
         const providerQuote = exactQuote(
           await api.quote(
             authorization,
             context.offerId,
-            occurrence.classId,
-            occurrence.classFamilyId ?? selectedFamilyId
+            selectedOccurrence.classId,
+            selectedOccurrence.classFamilyId
           ),
-          occurrence
+          selectedOccurrence
         );
         quote = {
           ...providerQuote,
-          occurrence: { ...providerQuote.occurrence, timezone: occurrence.timezone }
+          occurrence: { ...providerQuote.occurrence, timezone: selectedOccurrence.timezone }
         };
         ui.quote(quote);
       } catch (error) {
         quote = null;
         if (error instanceof BookingWidgetRequestError && STALE_CODES.has(error.code)) {
-          root.dataset.selectedClassId = occurrence.classId;
-          root.dataset.selectedClassTime = occurrence.startAt;
+          root.dataset.selectedClassId = selectedOccurrence.classId;
+          root.dataset.selectedClassTime = selectedOccurrence.startAt;
           ui.stale(error.message);
         } else {
           ui.error("This Class could not be checked safely.", error?.retryable === true);
@@ -723,8 +836,13 @@ var RevviBooking = (() => {
       return true;
     }
     ui.confirmButton.addEventListener("click", submitBooking);
+    ui.continueButton.addEventListener("click", continueToQuote);
     ui.demoCleanupButton.addEventListener("click", cleanupDemoBooking);
     function resetSelection() {
+      selectedClassKey = null;
+      selectedClassOccurrences = [];
+      selectedClassName = null;
+      selectedDateKey = null;
       selectedOccurrence = null;
       quote = null;
       dateInput.disabled = false;
@@ -733,9 +851,33 @@ var RevviBooking = (() => {
       ui.clearSelection();
     }
     ui.backButton.addEventListener("click", () => {
-      if (!requestActive && occurrences.length > 0) {
+      if (!requestActive && selectedClassOccurrences.length > 0) {
+        selectedOccurrence = null;
+        quote = null;
+        dateInput.disabled = false;
+        ui.clearSelection();
+        ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+      }
+    });
+    ui.backToClassesButton.addEventListener("click", () => {
+      if (!requestActive) {
         resetSelection();
-        ui.occurrences(occurrences, selectOccurrence);
+        ui.classChoices(occurrences, selectClass, families);
+      }
+    });
+    ui.changeLocationButton.addEventListener("click", () => {
+      if (root.dataset.changeLocationUrl) browser.location.assign(root.dataset.changeLocationUrl);
+      else browser.history?.back?.();
+    });
+    ui.stepOneButton.addEventListener("click", () => {
+      if (!requestActive) {
+        resetSelection();
+        ui.classChoices(occurrences, selectClass, families);
+      }
+    });
+    ui.stepTwoButton.addEventListener("click", () => {
+      if (!requestActive && selectedClassOccurrences.length > 0) {
+        ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, selectedOccurrence, selectedClassName);
       }
     });
     ui.refreshButton.addEventListener("click", () => {
@@ -745,7 +887,10 @@ var RevviBooking = (() => {
       }
     });
     dateInput.addEventListener("change", () => {
-      if (!requestActive) void loadAvailability();
+      if (!requestActive) {
+        resetSelection();
+        void loadAvailability();
+      }
     });
     void (async () => {
       if (!await completeReturnedPayment()) await loadAvailability();

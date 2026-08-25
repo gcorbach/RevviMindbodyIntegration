@@ -12,65 +12,102 @@
   data-quote-endpoint="SUPABASE_FUNCTIONS_URL/booking-quote"
   data-booking-endpoint="SUPABASE_FUNCTIONS_URL/create-booking"
   data-payment-completion-endpoint="SUPABASE_FUNCTIONS_URL/complete-paid-booking"
-    data-demo-cleanup-endpoint="SUPABASE_FUNCTIONS_URL/cancel-booking"
+  data-demo-cleanup-endpoint="SUPABASE_FUNCTIONS_URL/cancel-booking"
 >
-  <header data-booking-context>
-    <span data-booking-offer></span>
-    <span data-booking-location></span>
-    <label>
-      From
-      <input type="date" data-booking-date>
-    </label>
-    <span data-booking-selection hidden></span>
-    <span data-booking-freshness hidden></span>
-    <div data-booking-families hidden></div>
-  </header>
+  <aside data-booking-brand-panel aria-label="Selected Revvi partner">
+    <span data-booking-brand>revvi</span>
+    <span data-booking-brand-caption data-booking-location></span>
+    <span data-booking-brand-offer data-booking-offer></span>
+  </aside>
 
-  <p data-booking-loading hidden></p>
-  <p data-booking-ineligible hidden></p>
-  <p data-booking-error hidden></p>
-  <p data-booking-empty hidden>No upcoming Class times are available.</p>
-  <section data-booking-stale hidden>
-    <p data-booking-stale-message></p>
-    <button type="button" data-booking-refresh>Refresh Class times</button>
-  </section>
-  <section data-booking-occurrences></section>
+  <main data-booking-main>
+    <header data-booking-context>
+      <span data-booking-selection hidden></span>
+      <span data-booking-freshness hidden></span>
+    </header>
 
-  <section data-booking-quote hidden>
-    <h2>Confirm your Class</h2>
-    <span data-quote-class></span>
-    <span data-quote-time></span>
-    <span data-quote-location></span>
-    <span data-quote-price></span>
-    <span data-quote-expiry></span>
-    <p data-quote-policy></p>
-    <button type="button" data-quote-confirm>Confirm Booking</button>
-    <button type="button" data-quote-back>Back to times</button>
-  </section>
+    <nav data-booking-steps aria-label="Booking steps">
+      <button type="button" data-booking-step-link="1" aria-current="step">Choose class</button>
+      <span aria-hidden="true">›</span>
+      <button type="button" data-booking-step-link="2" disabled>Choose a time</button>
+      <span aria-hidden="true">›</span>
+      <button type="button" data-booking-step-link="3" disabled>Confirm</button>
+    </nav>
 
-  <p data-booking-submitting hidden>Submitting your Booking…</p>
-  <section data-booking-payment-action hidden>
-    <p>Mindbody requires one secure payment step before it can confirm this Booking.</p>
-    <a data-booking-payment-link rel="noopener noreferrer">Continue secure payment</a>
-  </section>
-  <p data-booking-reconciliation hidden></p>
-  <section data-booking-confirmation hidden>
-    <p data-booking-confirmation-message></p>
-    <p data-booking-demo-cleanup-message hidden></p>
-    <button type="button" data-booking-demo-cleanup hidden>Clean up demo Booking</button>
-  </section>
+    <section data-booking-step-panel="1" data-booking-class-step>
+      <div class="revvi-booking-badge"><span aria-hidden="true"></span>STEP 1 OF 3</div>
+      <h1>Choose your class</h1>
+      <p data-booking-class-context class="revvi-booking-eyebrow">
+        <span data-booking-location-copy></span>
+        <button type="button" data-booking-change-location>CHANGE LOCATION</button>
+      </p>
+      <div data-booking-class-choices data-booking-occurrences></div>
+    </section>
 
-  <template data-booking-occurrence-template>
-    <article data-booking-occurrence>
-      <h3 data-occurrence-name></h3>
-      <span data-occurrence-time></span>
-      <span data-occurrence-staff></span>
-      <span data-occurrence-location></span>
-      <span data-occurrence-price></span>
-      <span data-occurrence-capacity></span>
-      <span data-occurrence-status></span>
-      <button type="button" data-occurrence-book>Book</button>
+    <section data-booking-step-panel="2" data-booking-time-step hidden>
+      <div class="revvi-booking-badge"><span aria-hidden="true"></span>STEP 2 OF 3</div>
+      <h1>Pick a time that works</h1>
+      <p data-booking-time-context class="revvi-booking-sub"></p>
+      <div data-booking-date-options class="revvi-booking-date-options"></div>
+      <label data-booking-date-picker-label>
+        More dates
+        <input type="date" data-booking-date>
+      </label>
+      <div data-booking-time-options class="revvi-booking-time-options"></div>
+      <button type="button" data-booking-continue class="revvi-booking-cta" disabled>Continue</button>
+      <button type="button" data-booking-back-to-classes class="revvi-booking-text-button">Back to classes</button>
+      <p data-booking-payment-note class="revvi-booking-note">Terms and price are confirmed before you reserve.</p>
+    </section>
+
+    <section data-booking-quote data-booking-step-panel="3" hidden>
+      <div class="revvi-booking-badge"><span aria-hidden="true"></span>STEP 3 OF 3</div>
+      <h1>Review and reserve</h1>
+      <p data-quote-class class="revvi-booking-sub"></p>
+      <p data-quote-time class="revvi-booking-sub"></p>
+      <p data-quote-location class="revvi-booking-sub"></p>
+      <div class="revvi-booking-note" data-quote-policy></div>
+      <div data-booking-review-price data-quote-price class="revvi-booking-price"></div>
+      <div data-quote-expiry class="revvi-booking-muted"></div>
+      <button type="button" data-quote-confirm class="revvi-booking-cta">Reserve my spot</button>
+      <button type="button" data-quote-back class="revvi-booking-text-button">Back to times</button>
+    </section>
+
+    <p data-booking-loading hidden></p>
+    <p data-booking-ineligible hidden></p>
+    <p data-booking-error hidden></p>
+    <p data-booking-empty hidden>No upcoming Class times are available.</p>
+    <section data-booking-stale hidden>
+      <p data-booking-stale-message></p>
+      <button type="button" data-booking-refresh>Refresh Class times</button>
+    </section>
+    <p data-booking-submitting hidden>Submitting your Booking…</p>
+    <section data-booking-payment-action hidden>
+      <p>Mindbody requires one secure payment step before it can confirm this Booking.</p>
+      <a data-booking-payment-link rel="noopener noreferrer">Continue secure payment</a>
+    </section>
+    <p data-booking-reconciliation hidden></p>
+    <section data-booking-confirmation data-booking-step-panel="3" hidden>
+      <div class="revvi-booking-check" aria-hidden="true">✓</div>
+      <h1>You’re booked</h1>
+      <p data-booking-confirmation-message></p>
+      <p data-booking-demo-cleanup-message hidden></p>
+      <button type="button" data-booking-demo-cleanup hidden>Clean up demo Booking</button>
+    </section>
+  </main>
+
+  <template data-booking-class-template>
+    <article data-booking-class-choice>
+      <div data-class-swatch aria-hidden="true"></div>
+      <div data-class-copy>
+        <h2 data-class-name></h2>
+        <p data-class-meta></p>
+      </div>
+      <button type="button" data-class-select>Select</button>
     </article>
+  </template>
+
+  <template data-booking-time-template>
+    <button type="button" data-time-select></button>
   </template>
 </div>
 

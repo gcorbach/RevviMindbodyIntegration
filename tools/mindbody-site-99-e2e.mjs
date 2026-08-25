@@ -24,6 +24,10 @@ function text(value) {
   return value == null ? null : String(value).trim() || null;
 }
 
+function normalizedName(value) {
+  return text(value)?.normalize("NFKC").replace(/\s+/g, " ").toLowerCase() ?? null;
+}
+
 function array(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -58,13 +62,37 @@ function parseClassFamilyManifest(environment) {
     }
     ids.add(familyId);
     const mappings = Array.isArray(family?.mappings) ? family.mappings : [];
-    if (mappings.length === 0) {
+    const selectors = Array.isArray(family?.selectors) ? family.selectors : [];
+    if (mappings.length === 0 && selectors.length === 0) {
       throw new Site99RunError("configuration", "INVALID_CLASS_FAMILY_MANIFEST", null, `family[${familyIndex}].mappings`);
+    }
+    if (mappings.length > 0 && selectors.length > 0) {
+      throw new Site99RunError("configuration", "INVALID_CLASS_FAMILY_MANIFEST", null, `family[${familyIndex}]`);
     }
     return Object.freeze({
       id: familyId,
       name: familyName,
       ...(text(family.description) ? { description: text(family.description) } : {}),
+      ...(text(family.pricingOptionName) ? { pricingOptionName: text(family.pricingOptionName) } : {}),
+      ...(selectors.length > 0 ? {
+        selectors: Object.freeze(selectors.map((selector, selectorIndex) => {
+          const normalized = {
+            locationName: text(selector?.locationName),
+            programName: text(selector?.programName),
+            classDescriptionName: text(selector?.classDescriptionName),
+            sessionTypeName: text(selector?.sessionTypeName),
+          };
+          if (Object.values(normalized).some((value) => !value)) {
+            throw new Site99RunError(
+              "configuration",
+              "INVALID_CLASS_FAMILY_MANIFEST",
+              null,
+              `family[${familyIndex}].selectors[${selectorIndex}]`,
+            );
+          }
+          return Object.freeze(normalized);
+        })),
+      } : {}),
       mappings: Object.freeze(mappings.map((mapping, mappingIndex) => {
         const normalized = {
           providerLocationId: text(mapping?.providerLocationId),
@@ -265,12 +293,15 @@ export function createSite99Runner({
     throw new Site99RunError("configuration", "ORIGIN_NOT_ALLOWED");
   }
   let clientId = text(environment.MINDBODY_SANDBOX_CLIENT_ID ?? "100013562");
-  const locationId = text(environment.MINDBODY_SANDBOX_LOCATION_ID ?? "1");
-  const programId = text(environment.MINDBODY_SANDBOX_PROGRAM_ID ?? "27");
-  const classDescriptionId = text(environment.MINDBODY_SANDBOX_CLASS_DESCRIPTION_ID ?? "223");
-  const sessionTypeId = text(environment.MINDBODY_SANDBOX_SESSION_TYPE_ID ?? "250");
-  const productId = requiredEnvironment(environment, "MINDBODY_SANDBOX_PRODUCT_ID");
+  let locationId = text(environment.MINDBODY_SANDBOX_LOCATION_ID ?? "1");
+  const configuredProductId = text(environment.MINDBODY_SANDBOX_PRODUCT_ID);
   const classFamilies = parseClassFamilyManifest(environment);
+  const selectorMode = classFamilies.some((family) => family.selectors?.length > 0);
+  if (!selectorMode && !configuredProductId) {
+    requiredEnvironment(environment, "MINDBODY_SANDBOX_PRODUCT_ID");
+  }
+  let productId = selectorMode ? null : configuredProductId;
+  let activeClassFamilies = classFamilies;
   let authorization = null;
   let pendingInspection = null;
 
@@ -366,13 +397,13 @@ export function createSite99Runner({
 
   function familyById(classFamilyId) {
     if (classFamilyId === null || classFamilyId === undefined || classFamilyId === "") return null;
-    const family = classFamilies.find((candidate) => candidate.id === String(classFamilyId));
+    const family = activeClassFamilies.find((candidate) => candidate.id === String(classFamilyId));
     if (!family) throw new Site99RunError("configuration", "CLASS_FAMILY_NOT_CONFIGURED", null, String(classFamilyId));
     return family;
   }
 
   function mappingsForCandidate(candidate) {
-    return classFamilies.flatMap((family) => family.mappings
+    return activeClassFamilies.flatMap((family) => family.mappings
       .filter((mapping) => id(candidate.Location) === mapping.providerLocationId
         && id(candidate.ClassDescription) === mapping.providerClassDescriptionId
         && id(candidate.ClassDescription?.Program) === mapping.providerProgramId
@@ -383,34 +414,119 @@ export function createSite99Runner({
   }
 
   async function readPublicCatalogue() {
-    const programIds = [...new Set(classFamilies.flatMap((family) => family.mappings
+    const programIds = [...new Set(activeClassFamilies.flatMap((family) => family.mappings
       .map((mapping) => mapping.providerProgramId)))];
-    const classDescriptionIds = [...new Set(classFamilies.flatMap((family) => family.mappings
+    const classDescriptionIds = [...new Set(activeClassFamilies.flatMap((family) => family.mappings
       .map((mapping) => mapping.providerClassDescriptionId)))];
-    const [locations, programs, descriptions] = await Promise.all([
+    const [locations, programs, descriptions, sessionTypes] = await Promise.all([
       request("public_location_discovery", "site/locations", { searchParams: query({ Limit: 100 }) }),
       request("public_program_discovery", "site/programs", {
         searchParams: query({ ScheduleType: "Class", Limit: 100 }),
       }),
       request("public_class_description_discovery", "class/classdescriptions", {
-        searchParams: query({ ProgramIds: programIds, LocationIds: [locationId], Limit: 100 }),
+        searchParams: query({
+          ...(selectorMode ? { IncludeInactive: false } : { ProgramIds: programIds, LocationIds: [locationId] }),
+          Limit: 100,
+        }),
       }),
+      ...(selectorMode ? [request("public_session_type_discovery", "site/sessiontypes", {
+        searchParams: query({ IncludeInactive: false, Limit: 100 }),
+      })] : [Promise.resolve(null)]),
     ]);
-    if (!array(locations?.Locations).some((location) => id(location) === locationId)) {
+    if (!selectorMode && !array(locations?.Locations).some((location) => id(location) === locationId)) {
       throw new Site99RunError("public_location_discovery", "LOCATION_NOT_FOUND");
     }
-    if (programIds.some((candidate) => !array(programs?.Programs).some((program) => id(program) === candidate))) {
+    if (!selectorMode && programIds.some((candidate) => !array(programs?.Programs).some((program) => id(program) === candidate))) {
       throw new Site99RunError("public_program_discovery", "PROGRAM_NOT_FOUND");
     }
-    if (classDescriptionIds.some((candidate) => !array(descriptions?.ClassDescriptions)
+    if (!selectorMode && classDescriptionIds.some((candidate) => !array(descriptions?.ClassDescriptions)
       .some((description) => id(description) === candidate))) {
       throw new Site99RunError("public_class_description_discovery", "CLASS_DESCRIPTION_NOT_FOUND");
+    }
+    if (selectorMode) {
+      const locationsByName = array(locations?.Locations)
+        .filter((location) => location.Active !== false && location.IsActive !== false);
+      const programsByName = array(programs?.Programs)
+        .filter((program) => program.Active !== false && program.IsActive !== false);
+      const descriptionsByName = array(descriptions?.ClassDescriptions)
+        .filter((description) => description.Active !== false && description.IsActive !== false);
+      const sessionTypesByName = array(sessionTypes?.SessionTypes ?? sessionTypes?.Sessiontypes)
+        .filter((sessionType) => sessionType.Active !== false && sessionType.IsActive !== false);
+      const findUnique = (values, name, stage, family, selector, relation = null) => {
+        const matches = values.filter((value) => normalizedName(value.Name) === normalizedName(name)
+          && (!relation || !id(value.Program ?? value.ProgramId)
+            || id(value.Program ?? value.ProgramId) === relation));
+        if (matches.length !== 1) {
+          const candidates = matches.length > 0
+            ? matches.map((value) => `${id(value)}:${text(value.Name)}`).join(", ")
+            : values
+              .filter((value) => normalizedName(value.Name) === normalizedName(name))
+              .map((value) => `${id(value)}:${text(value.Name)}`)
+              .join(", ");
+          throw new Site99RunError(
+            stage,
+            matches.length === 0 ? "SELECTOR_NO_MATCH" : "SELECTOR_AMBIGUOUS",
+            null,
+            `${family.id}:${family.name} ${selector[stage]}=${name}; candidates=${candidates || "none"}`,
+          );
+        }
+        return matches[0];
+      };
+      activeClassFamilies = Object.freeze(classFamilies.map((family) => Object.freeze({
+        ...family,
+        mappings: Object.freeze(family.selectors.map((selector) => {
+          const location = findUnique(
+            locationsByName,
+            selector.locationName,
+            "locationName",
+            family,
+            selector,
+          );
+          const program = findUnique(
+            programsByName,
+            selector.programName,
+            "programName",
+            family,
+            selector,
+          );
+          const description = findUnique(
+            descriptionsByName,
+            selector.classDescriptionName,
+            "classDescriptionName",
+            family,
+            selector,
+            id(program),
+          );
+          const sessionType = findUnique(
+            sessionTypesByName,
+            selector.sessionTypeName,
+            "sessionTypeName",
+            family,
+            selector,
+            id(program),
+          );
+          return Object.freeze({
+            providerLocationId: id(location),
+            providerClassDescriptionId: id(description),
+            providerProgramId: id(program),
+            providerSessionTypeId: id(sessionType),
+          });
+        })),
+      })));
+      const resolvedLocations = new Set(activeClassFamilies.flatMap((family) => family.mappings
+        .map((mapping) => mapping.providerLocationId)));
+      if (resolvedLocations.size !== 1) {
+        throw new Site99RunError("public_location_discovery", "SELECTOR_LOCATION_NOT_SHARED", null,
+          [...resolvedLocations].join(","));
+      }
+      locationId = [...resolvedLocations][0];
     }
     return {
       sites: "accepted",
       locations: "accepted",
       programs: "accepted",
       classDescriptions: "accepted",
+      ...(selectorMode ? { sessionTypes: "accepted" } : {}),
       classes: "accepted",
       services: "accepted",
     };
@@ -418,20 +534,20 @@ export function createSite99Runner({
 
   async function discoverFixtures({ forClient = false, classFamilyId = null, classId = null } = {}) {
     const requestedFamily = familyById(classFamilyId);
-    const targetFamilies = requestedFamily ? [requestedFamily] : classFamilies;
+    const targetFamilies = requestedFamily ? [requestedFamily] : activeClassFamilies;
     const classDescriptionIds = [...new Set(targetFamilies.flatMap((family) => family.mappings
       .map((mapping) => mapping.providerClassDescriptionId)))];
     const start = new Date(clock().getTime() + 24 * 60 * 60 * 1000);
     const end = new Date(clock().getTime() + 14 * 24 * 60 * 60 * 1000);
     const classes = await request(forClient ? "client_class_discovery" : "public_class_discovery", "class/classes", {
       searchParams: query({
-        StartDateTime: classId ? undefined : start.toISOString(),
-        EndDateTime: classId ? undefined : end.toISOString(),
-        ClassIds: classId ? [classId] : undefined,
-        LocationIds: classId ? undefined : [locationId],
-        ClassDescriptionIds: classId ? undefined : classDescriptionIds,
-        ClientId: forClient ? clientId : undefined,
-        Limit: 100,
+        "request.startDateTime": start.toISOString(),
+        "request.endDateTime": end.toISOString(),
+        "request.classIds": classId ? [classId] : undefined,
+        "request.locationIds": classId ? undefined : [locationId],
+        "request.classDescriptionIds": classId ? undefined : classDescriptionIds,
+        "request.clientId": forClient ? clientId : undefined,
+        "request.limit": 100,
       }),
     });
     const candidates = array(classes?.Classes)
@@ -440,7 +556,7 @@ export function createSite99Runner({
         && (!forClient || candidate.IsEnrolled !== true)
         && id(candidate.Location) === locationId)
       .sort((left, right) => String(left.StartDateTime).localeCompare(String(right.StartDateTime)));
-    const fixtures = [];
+    const candidatesWithServices = [];
     let hadMatchingOccurrence = false;
     for (const occurrence of candidates) {
       const matches = mappingsForCandidate(occurrence);
@@ -461,23 +577,98 @@ export function createSite99Runner({
       const services = await request(
         forClient ? "client_service_discovery" : "public_service_discovery",
         "sale/services",
-        { searchParams: query({ ClassId: id(occurrence), LocationId: locationId, SellOnline: true, Limit: 100 }) },
+        { searchParams: query({
+          "request.classId": id(occurrence),
+          "request.locationId": locationId,
+          "request.sellOnline": true,
+          "request.limit": 100,
+        }) },
       );
-      const service = array(services?.Services).find((candidate) => id(candidate.ProductId) === productId
-        && candidate.SellOnline === true
-        && candidate.Discontinued !== true
-        && array(candidate.SellAtLocationIds).map(String).includes(locationId)
-        && array(candidate.UseAtLocationIds).map(String).includes(locationId));
-      if (!service) {
-        if (classId && id(occurrence) === String(classId)) {
+      const applicableServices = array(services?.Services)
+        .filter((candidate) => candidate.SellOnline === true
+          && candidate.Discontinued !== true
+          && array(candidate.SellAtLocationIds).map(String).includes(locationId)
+          && array(candidate.UseAtLocationIds).map(String).includes(locationId)
+          && id(candidate.ProductId));
+      const allServicesByProduct = new Map(applicableServices.map((service) => [id(service.ProductId), service]));
+      const namedServices = family.pricingOptionName
+        ? applicableServices.filter((candidate) => normalizedName(candidate.Name) === normalizedName(family.pricingOptionName))
+        : applicableServices;
+      const servicesByProduct = new Map(namedServices.map((service) => [id(service.ProductId), service]));
+      const serviceCandidates = [...allServicesByProduct.values()]
+        .map((candidate) => `${id(candidate.ProductId)}:${text(candidate.Name) ?? "unnamed"}`)
+        .join(",");
+      if (family.pricingOptionName && servicesByProduct.size !== 1) {
+        throw new Site99RunError(
+          forClient ? "client_service_discovery" : "public_service_discovery",
+          servicesByProduct.size === 0 ? "PRODUCT_SELECTOR_NO_MATCH" : "PRODUCT_SELECTOR_AMBIGUOUS",
+          null,
+          `${id(occurrence)} pricingOptionName=${family.pricingOptionName}; candidates=${serviceCandidates || "none"}`,
+        );
+      }
+      const service = productId ? servicesByProduct.get(productId) : null;
+      if (productId && !service) {
+        if (selectorMode || (classId && id(occurrence) === String(classId))) {
           throw new Site99RunError(
             forClient ? "client_service_discovery" : "public_service_discovery",
             "PRODUCT_NOT_APPLICABLE",
+            null,
+            `${id(occurrence)} product=${productId}; candidates=${serviceCandidates || "none"}`,
           );
         }
         continue;
       }
-      fixtures.push({
+      if (!productId && servicesByProduct.size === 0) {
+        if (selectorMode || (classId && id(occurrence) === String(classId))) {
+          throw new Site99RunError(
+            forClient ? "client_service_discovery" : "public_service_discovery",
+            "PRODUCT_NOT_APPLICABLE",
+            null,
+            `${id(occurrence)} candidates=none`,
+          );
+        }
+        continue;
+      }
+      if (!productId && servicesByProduct.size > 1) {
+        throw new Site99RunError(
+          forClient ? "client_service_discovery" : "public_service_discovery",
+          "AMBIGUOUS_PRODUCT",
+          null,
+          `${id(occurrence)} candidates=${serviceCandidates}`,
+        );
+      }
+      candidatesWithServices.push({
+        occurrence,
+        family,
+        mapping,
+        service: service ?? [...servicesByProduct.values()][0],
+      });
+    }
+    if (candidatesWithServices.length === 0) {
+      throw new Site99RunError(
+        forClient ? "client_class_discovery" : "public_class_discovery",
+        hadMatchingOccurrence ? "PRODUCT_NOT_APPLICABLE" : "NO_ELIGIBLE_CLASS",
+        null,
+        requestedFamily?.id ?? null,
+      );
+    }
+    if (!productId) {
+      const sharedProducts = [...candidatesWithServices.reduce((shared, candidate) => {
+        const candidateProduct = id(candidate.service.ProductId);
+        return shared === null ? new Set([candidateProduct])
+          : new Set([...shared].filter((candidateId) => candidateId === candidateProduct));
+      }, null)];
+      if (sharedProducts.length !== 1) {
+        throw new Site99RunError(
+          forClient ? "client_service_discovery" : "public_service_discovery",
+          sharedProducts.length === 0 ? "NO_SHARED_PRODUCT" : "AMBIGUOUS_PRODUCT",
+          null,
+          `families=${candidatesWithServices.map((candidate) => candidate.family.id).join(",")}; candidates=${sharedProducts.join(",") || "none"}`,
+        );
+      }
+      productId = sharedProducts[0];
+    }
+    return candidatesWithServices.map(({ occurrence, family, mapping, service }) => ({
         classId: id(occurrence),
         classFamilyId: family.id,
         classFamilyName: family.name,
@@ -491,17 +682,7 @@ export function createSite99Runner({
         staffId: id(occurrence.Staff),
         productId,
         paymentSeed: paymentSeed(service),
-      });
-    }
-    if (fixtures.length === 0) {
-      throw new Site99RunError(
-        forClient ? "client_class_discovery" : "public_class_discovery",
-        hadMatchingOccurrence ? "PRODUCT_NOT_APPLICABLE" : "NO_ELIGIBLE_CLASS",
-        null,
-        requestedFamily?.id ?? null,
-      );
-    }
-    return fixtures;
+      }));
   }
 
   async function discoverFixture(options = {}) {
@@ -903,13 +1084,39 @@ export function createSite99Runner({
       if (policy.retainsInspection && pendingInspection) {
         throw new Site99RunError("configuration", "INSPECTION_ALREADY_ACTIVE");
       }
+      if (selectorMode && !policy.requiresInspection) productId = null;
       let auth = null;
       try {
+        if (policy.outcome === "cleanup") {
+          const inspection = pendingInspection;
+          const site = await connectSite();
+          const apiKeyOnly = await readPublicCatalogue();
+          const staff = await issueStaffToken();
+          auth = {
+            ...site,
+            ...staff,
+            endpointAuthMatrix: {
+              apiKeyOnly,
+              staffToken: { issue: "accepted", harmlessClientRead: "accepted" },
+            },
+            staffTokenRevoked: false,
+          };
+          clientId = inspection.clientId;
+          const cleanup = await cleanPendingInspection(inspection);
+          pendingInspection = null;
+          return {
+            result: "passed",
+            mode,
+            auth,
+            fixture: inspection.fixture,
+            booking: { ...inspection.booking, ...cleanup, inspectionStatus: "cleaned" },
+          };
+        }
         const site = await connectSite();
         const apiKeyOnly = await readPublicCatalogue();
         const publicFixtures = await discoverFixtures({ classFamilyId, classId });
         const fixture = publicFixtures[0];
-        const familyAvailability = classFamilies.map((family) => ({
+        const familyAvailability = activeClassFamilies.map((family) => ({
           id: family.id,
           name: family.name,
           ...(family.description ? { description: family.description } : {}),
@@ -934,19 +1141,6 @@ export function createSite99Runner({
           },
           staffTokenRevoked: false,
         };
-        if (policy.outcome === "cleanup") {
-          const inspection = pendingInspection;
-          clientId = inspection.clientId;
-          const cleanup = await cleanPendingInspection(inspection);
-          pendingInspection = null;
-          return {
-            result: "passed",
-            mode,
-            auth,
-            fixture: inspection.fixture,
-            booking: { ...inspection.booking, ...cleanup, inspectionStatus: "cleaned" },
-          };
-        }
         if (!policy.quotes) {
           return {
             result: "passed",

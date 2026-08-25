@@ -4,20 +4,49 @@ import test from "node:test";
 
 const embed = readFileSync(new URL("../../webflow/embed.html", import.meta.url), "utf8");
 const history = readFileSync(new URL("../../webflow/history.html", import.meta.url), "utf8");
+const demoDocs = readFileSync(new URL("../../docs/operations/webflow-site-99-demo.md", import.meta.url), "utf8");
+const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
 const bundle = readFileSync(new URL("../../webflow/dist/revvi-booking.js", import.meta.url), "utf8");
 
-test("the Webflow markup binds one stable Offer and preselected Location with an in-Offer Class-family selector", () => {
+test("the Webflow markup binds one stable Offer and preselected Location for the /book route", () => {
   assert.match(embed, /data-business-slug=/);
   assert.match(embed, /data-location-id=/);
   assert.match(embed, /data-offer-id=/);
   assert.match(embed, /data-booking-date/);
   assert.match(embed, /data-booking-location/);
-  assert.match(embed, /data-booking-families/);
+  assert.match(embed, /data-booking-class-choices/);
   assert.match(embed, /data-booking-occurrences/);
   assert.match(embed, /data-availability-endpoint="SUPABASE_FUNCTIONS_URL\/offer-class-availability"/);
   assert.match(embed, /data-payment-completion-endpoint="SUPABASE_FUNCTIONS_URL\/complete-paid-booking"/);
   assert.doesNotMatch(embed, /data-location-select/i);
   assert.doesNotMatch(embed, /data-booking-session|data-session-/i);
+});
+
+test("the Webflow booking route uses the prototype-shaped class, time, and review steps", () => {
+  assert.match(embed, /data-booking-step-panel="1"/);
+  assert.match(embed, /data-booking-step-panel="2"/);
+  assert.match(embed, /data-booking-step-panel="3"/);
+  assert.match(embed, /data-booking-class-choices/);
+  assert.match(embed, /data-booking-time-options/);
+  assert.match(embed, /data-booking-continue/);
+  assert.match(embed, /Choose your class/);
+  assert.match(embed, /Pick a time that works/);
+  assert.match(embed, /Review and reserve/);
+  assert.doesNotMatch(embed, /data-booking-family-select/);
+});
+
+test("the Site -99 demo manifest names the currently observed Yoga Session Type", () => {
+  assert.match(demoDocs, /programName":"Yoga","classDescriptionName":"Yoga","sessionTypeName":"Hatha Yoga"/);
+  assert.match(demoDocs, /pricingOptionName":"5 Class Card"/);
+  assert.match(demoDocs, /clears inherited provider variables before loading `webflow\/\.env`/);
+});
+
+test("the Site -99 dev command loads the ignored Webflow environment file", () => {
+  const command = packageJson.scripts["demo:webflow:site99"];
+  assert.match(command, /env -u MINDBODY_API_KEY/);
+  assert.match(command, /-u MINDBODY_SANDBOX_PRODUCT_ID/);
+  assert.match(command, /-u MINDBODY_SANDBOX_CLASS_FAMILIES_JSON/);
+  assert.match(command, /--env-file=webflow\/\.env/);
 });
 
 test("the browser bundle contains no provider credential, raw-card, Appointment, or fulfilment-mode contract", () => {
