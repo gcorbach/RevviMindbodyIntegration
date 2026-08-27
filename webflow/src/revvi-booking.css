@@ -6,29 +6,38 @@
   font-display: swap;
 }
 
-[data-revvi-booking], [data-revvi-booking] * {
+[data-revvi-booking], [data-revvi-booking] *,
+[data-booking-confirmation], [data-booking-confirmation] * {
   box-sizing: border-box;
   max-width: 100%;
 }
 
-[data-revvi-booking] {
+[data-revvi-booking],
+[data-booking-confirmation] {
   --revvi-ink: #353a57;
   --revvi-copy: rgba(53, 58, 87, 0.62);
   --revvi-muted: rgba(53, 58, 87, 0.5);
   --revvi-line: rgba(53, 58, 87, 0.14);
   --revvi-paper: #f6f1e8;
   --revvi-soft: #eee6db;
+  font: 16px/1.45 Satoshi, "Satoshi Variable", Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+[data-revvi-booking] {
   background: var(--revvi-soft);
   border-radius: 24px;
   color: var(--revvi-ink);
   display: grid;
-  font: 16px/1.45 Satoshi, "Satoshi Variable", Inter, ui-sans-serif, system-ui, sans-serif;
   grid-template-columns: 312px minmax(0, 1fr);
   height: 620px;
   margin: 0 auto;
   max-width: 960px;
   overflow: hidden;
   width: 100%;
+}
+
+[data-revvi-booking][hidden] {
+  display: none;
 }
 
 [data-revvi-booking] [hidden] {
@@ -603,8 +612,15 @@
 [data-booking-reconciliation],
 [data-booking-confirmation] {
   animation: revvi-booking-fade 0.3s ease both;
+  background: var(--revvi-paper);
+  border: 1px solid rgba(53, 58, 87, 0.1);
+  border-radius: 24px;
+  box-shadow: 0 18px 55px rgba(53, 58, 87, 0.12);
   color: var(--revvi-copy);
-  margin: auto 0;
+  margin: 40px auto;
+  max-width: 720px;
+  padding: 48px;
+  width: calc(100% - 32px);
 }
 
 [data-booking-error],
@@ -650,7 +666,47 @@
 }
 
 [data-booking-confirmation] h1 {
+  color: var(--revvi-ink);
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-size: 42px;
+  font-weight: 400;
+  line-height: 1.05;
   margin-bottom: 16px;
+}
+
+[data-booking-provider-evidence] {
+  background: #f5f3ff;
+  border: 1px solid #c4b5fd;
+  border-radius: 12px;
+  margin-top: 24px;
+  padding: 20px;
+}
+
+[data-booking-provider-evidence] h2 {
+  font-family: "Satoshi", Arial, sans-serif;
+  font-size: 18px;
+  margin: 0 0 8px;
+}
+
+[data-booking-provider-evidence] dl {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+[data-booking-provider-evidence] dl > div {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 110px 1fr;
+}
+
+[data-booking-provider-evidence] dt {
+  color: var(--revvi-muted);
+}
+
+[data-booking-provider-evidence] dd {
+  font-weight: 600;
+  margin: 0;
 }
 
 [data-booking-demo-cleanup] {
@@ -745,6 +801,16 @@
 }
 
 @media (max-width: 480px) {
+  [data-booking-confirmation] {
+    border-radius: 16px;
+    padding: 28px 22px;
+  }
+
+  [data-booking-provider-evidence] dl > div {
+    gap: 2px;
+    grid-template-columns: 1fr;
+  }
+
   [data-revvi-booking] {
     border-radius: 16px;
   }

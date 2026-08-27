@@ -69,6 +69,7 @@ test("the Site -99 runner accepts stable family selectors without daily provider
     classFamilyId: "00000000-0000-4000-8000-000000000101",
     classFamilyName: "Yoga",
     classStart: "2026-08-18T10:00:00",
+    classEnd: "2026-08-18T11:00:00",
     className: "Yoga",
     locationId: "1",
     programId: "27",
@@ -76,6 +77,7 @@ test("the Site -99 runner accepts stable family selectors without daily provider
     sessionTypeId: "250",
     classScheduleId: "2152",
     staffId: "9",
+    staffName: "Sandbox Staff",
     productId: "1424",
     paymentSeed: 13,
   });
@@ -308,6 +310,7 @@ function sandboxProvider({
           {
             Id: 19364,
             StartDateTime: "2026-08-18T10:00:00",
+            EndDateTime: "2026-08-18T11:00:00",
             IsCanceled: false,
             IsAvailable: true,
             IsEnrolled: visitActive && requestedClientId === clientId,
@@ -321,6 +324,7 @@ function sandboxProvider({
           ...(multiFamily ? [{
             Id: 19365,
             StartDateTime: "2026-08-18T11:00:00",
+            EndDateTime: "2026-08-18T12:00:00",
             IsCanceled: false,
             IsAvailable: true,
             IsEnrolled: false,
@@ -613,6 +617,10 @@ test("probe mode exposes live occurrences grouped by configured Class family", a
   assert.deepEqual(result.fixtures.map((fixture) => [fixture.classFamilyId, fixture.classId]), [
     ["00000000-0000-4000-8000-000000000101", "19364"],
     ["00000000-0000-4000-8000-000000000102", "19365"],
+  ]);
+  assert.deepEqual(result.fixtures.map((fixture) => [fixture.classEnd, fixture.staffName]), [
+    ["2026-08-18T11:00:00", "Sandbox Staff"],
+    ["2026-08-18T12:00:00", "Sandbox Staff"],
   ]);
   const selected = await runner(provider, { environment: environmentWithFamilies })
     .run("probe", { classFamilyId: "00000000-0000-4000-8000-000000000102" });

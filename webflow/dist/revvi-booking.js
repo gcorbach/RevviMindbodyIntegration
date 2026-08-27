@@ -321,8 +321,15 @@ var RevviBooking = (() => {
     return `Booking confirmed: ${booking.className} at ${formatDateTime(booking.startAt, booking.timezone)} \u2014 ${locationName}.`;
   }
   function createBookingWidgetUi(root) {
+    const externalConfirmation = root.previousElementSibling;
+    if (!externalConfirmation?.matches?.("[data-booking-confirmation]")) {
+      throw new Error("Revvi Booking markup is missing external confirmation.");
+    }
     const views = Object.fromEntries(
-      Object.entries(VIEW_SELECTORS).map(([name, selector]) => [name, element(root, selector)])
+      Object.entries(VIEW_SELECTORS).map(([name, selector]) => [
+        name,
+        name === "confirmation" ? externalConfirmation : element(root, selector)
+      ])
     );
     const classTemplate = element(root, "[data-booking-class-template]");
     const timeTemplate = element(root, "[data-booking-time-template]");
@@ -356,6 +363,7 @@ var RevviBooking = (() => {
     function show(status, viewName) {
       root.dataset.bookingState = status;
       root.setAttribute("aria-busy", String(status.startsWith("loading-") || status === "submitting"));
+      root.hidden = viewName === "confirmation";
       for (const [name, view] of Object.entries(views)) view.hidden = name !== viewName;
       const step = viewName === "occurrences" ? 1 : viewName === "times" ? 2 : ["quote", "confirmation"].includes(viewName) ? 3 : null;
       if (step) setStep(step);
@@ -618,10 +626,23 @@ var RevviBooking = (() => {
         freshness.textContent = "Class times are stale and could not yet be refreshed.";
       },
       success(booking) {
-        setText(root, "[data-booking-confirmation-message]", bookingConfirmationText(booking, root.dataset.locationName));
-        const cleanupButton = element(root, "[data-booking-demo-cleanup]");
-        const cleanupMessage = element(root, "[data-booking-demo-cleanup-message]");
+        setText(views.confirmation, "[data-booking-confirmation-message]", bookingConfirmationText(booking, root.dataset.locationName));
+        const cleanupButton = element(views.confirmation, "[data-booking-demo-cleanup]");
+        const cleanupMessage = element(views.confirmation, "[data-booking-demo-cleanup-message]");
         const cleanupStatus = booking?.sandboxDemo?.cleanupStatus;
+        const references = booking?.sandboxDemo?.references;
+        const providerEvidence = element(views.confirmation, "[data-booking-provider-evidence]");
+        const hasProviderEvidence = typeof booking?.classId === "string" && typeof references?.clientId === "string" && typeof references?.clientName === "string" && typeof references?.saleId === "string" && typeof references?.paymentId === "string" && typeof references?.visitId === "string";
+        providerEvidence.hidden = !hasProviderEvidence;
+        if (hasProviderEvidence) {
+          setText(providerEvidence, "[data-booking-evidence-status]", cleanupStatus === "pending" ? "Active in Mindbody now. Keep this page open while you verify the Client schedule or Class roster." : "Cancellation confirmed. The Cash Sale remains available as retained sandbox evidence.");
+          setText(providerEvidence, "[data-booking-evidence-class-id]", booking.classId);
+          setText(providerEvidence, "[data-booking-evidence-client-name]", references.clientName);
+          setText(providerEvidence, "[data-booking-evidence-client-id]", references.clientId);
+          setText(providerEvidence, "[data-booking-evidence-sale-id]", references.saleId);
+          setText(providerEvidence, "[data-booking-evidence-payment-id]", references.paymentId);
+          setText(providerEvidence, "[data-booking-evidence-visit-id]", references.visitId);
+        }
         root.dataset.demoCleanupStatus = cleanupStatus ?? "not-applicable";
         cleanupButton.hidden = cleanupStatus !== "pending";
         cleanupButton.disabled = false;
@@ -631,16 +652,16 @@ var RevviBooking = (() => {
         show("success", "confirmation");
       },
       cleaningDemoBooking() {
-        const cleanupButton = element(root, "[data-booking-demo-cleanup]");
-        const cleanupMessage = element(root, "[data-booking-demo-cleanup-message]");
+        const cleanupButton = element(views.confirmation, "[data-booking-demo-cleanup]");
+        const cleanupMessage = element(views.confirmation, "[data-booking-demo-cleanup-message]");
         cleanupButton.disabled = true;
         cleanupButton.textContent = "Cleaning up\u2026";
         cleanupMessage.hidden = false;
         cleanupMessage.textContent = "Removing the exact sandbox Booking from Mindbody\u2026";
       },
       demoCleanupFailed() {
-        const cleanupButton = element(root, "[data-booking-demo-cleanup]");
-        const cleanupMessage = element(root, "[data-booking-demo-cleanup-message]");
+        const cleanupButton = element(views.confirmation, "[data-booking-demo-cleanup]");
+        const cleanupMessage = element(views.confirmation, "[data-booking-demo-cleanup-message]");
         cleanupButton.disabled = false;
         cleanupButton.textContent = "Retry demo cleanup";
         cleanupMessage.hidden = false;
@@ -658,7 +679,7 @@ var RevviBooking = (() => {
       continueButton,
       stepOneButton: element(root, '[data-booking-step-link="1"]'),
       stepTwoButton: element(root, '[data-booking-step-link="2"]'),
-      demoCleanupButton: element(root, "[data-booking-demo-cleanup]"),
+      demoCleanupButton: element(views.confirmation, "[data-booking-demo-cleanup]"),
       changeLocationButton: element(root, "[data-booking-change-location]")
     });
   }
@@ -739,6 +760,12 @@ var RevviBooking = (() => {
     let activeDemoBookingId = null;
     let activeDemoBooking = null;
     let loadSequence = 0;
+    function announce(name, detail) {
+      const CustomEvent = root.ownerDocument?.defaultView?.CustomEvent;
+      if (typeof CustomEvent === "function") {
+        root.dispatchEvent(new CustomEvent(name, { bubbles: true, detail }));
+      }
+    }
     function availabilityContext() {
       const startDate = dateInput.value?.trim();
       if (!ISO_DATE.test(startDate ?? "")) throw new Error("Choose a valid Class date.");
@@ -772,6 +799,11 @@ var RevviBooking = (() => {
         if (sequence !== loadSequence) return;
         occurrences = exactAvailability(data, context);
         families = Array.isArray(data?.classFamilies) ? data.classFamilies : [];
+        announce("revvi:availability-loaded", {
+          business: data.business,
+          offer: data.offer,
+          occurrences
+        });
         ui.businessName(data?.business?.name);
         selectedClassKey = null;
         selectedClassOccurrences = [];
@@ -855,6 +887,11 @@ var RevviBooking = (() => {
       try {
         const data = await api.availability(authorization, availabilityContext());
         occurrences = exactAvailability(data, context);
+        announce("revvi:availability-loaded", {
+          business: data.business,
+          offer: data.offer,
+          occurrences
+        });
         root.dataset.availabilityStale = "false";
         ui.markAvailabilityRefreshed();
       } catch {
@@ -875,7 +912,9 @@ var RevviBooking = (() => {
         if (booking?.status === "confirmed") {
           activeDemoBookingId = booking?.sandboxDemo?.cleanupStatus === "pending" && UUID.test(booking?.sandboxDemo?.demoBookingId ?? "") ? booking.sandboxDemo.demoBookingId : null;
           activeDemoBooking = activeDemoBookingId ? booking : null;
-          ui.success({ ...booking, timezone: quote.occurrence?.timezone ?? selectedOccurrence?.timezone });
+          const confirmed = { ...booking, timezone: quote.occurrence?.timezone ?? selectedOccurrence?.timezone };
+          ui.success(confirmed);
+          announce("revvi:booking-confirmed", { booking: confirmed });
         } else if (booking?.status === "requires_action") {
           const redirectUrl = paymentActionUrl(booking.redirectUrl ?? data.redirectUrl);
           if (!redirectUrl) throw new Error("The payment action URL was invalid.");
@@ -920,7 +959,9 @@ var RevviBooking = (() => {
         };
         activeDemoBookingId = null;
         activeDemoBooking = null;
-        ui.success({ ...booking, timezone: quote?.occurrence?.timezone ?? selectedOccurrence?.timezone });
+        const cleaned = { ...booking, timezone: quote?.occurrence?.timezone ?? selectedOccurrence?.timezone };
+        ui.success(cleaned);
+        announce("revvi:booking-cleaned", { booking: cleaned });
       } catch {
         ui.demoCleanupFailed();
       } finally {
@@ -946,7 +987,9 @@ var RevviBooking = (() => {
         const data = await api.completePaidBooking(authorization, returnedBookingId);
         const booking = data?.booking;
         if (booking?.status === "confirmed") {
-          ui.success({ ...booking, timezone: root.dataset.locationTimezone });
+          const confirmed = { ...booking, timezone: root.dataset.locationTimezone };
+          ui.success(confirmed);
+          announce("revvi:booking-confirmed", { booking: confirmed });
         } else if (["unknown", "pending", "requires_action", "reconciliation"].includes(booking?.status)) {
           ui.reconciliation("Your payment and Class Booking are being reconciled. Do not submit another Booking.");
         } else {

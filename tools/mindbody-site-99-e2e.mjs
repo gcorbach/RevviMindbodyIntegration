@@ -674,6 +674,7 @@ export function createSite99Runner({
         classFamilyId: family.id,
         classFamilyName: family.name,
         classStart: text(occurrence.StartDateTime),
+        classEnd: text(occurrence.EndDateTime),
         className: text(occurrence.ClassDescription?.Name),
         locationId,
         programId: mapping.providerProgramId,
@@ -681,6 +682,7 @@ export function createSite99Runner({
         sessionTypeId: mapping.providerSessionTypeId,
         classScheduleId: text(occurrence.ClassScheduleId),
         staffId: id(occurrence.Staff),
+        staffName: text(occurrence.Staff?.Name),
         productId,
         paymentSeed: paymentSeed(service),
       }));

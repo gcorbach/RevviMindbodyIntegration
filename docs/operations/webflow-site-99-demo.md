@@ -5,11 +5,11 @@ This preview lets Revvi demonstrate the existing Webflow Booking widget against 
 ## What the audience sees
 
 1. The already-selected Revvi partner, Offer, and Mindbody public-sandbox Location.
-2. Live Class choices grouped from the current Site `-99` inventory.
+2. A purple evidence panel listing the exact live Mindbody Class IDs, instructor, availability state, and times returned by the current Site `-99` inventory read. No schedule fixture is embedded in the manual demo.
 3. Real dates and times for the selected Class, with no illustrative schedule values.
 4. A client-aware provider quote calculated twice with `Test=true` and no provider mutation.
 5. A **Reserve my spot** action using fictitious sandbox Cash; no card details are collected.
-6. A truthful confirmation only after the Sale, Cash Payment, ClientService, Visit, roster, and Client Schedule converge.
+6. A truthful confirmation outside the booking widget only after the Sale, Cash Payment, ClientService, Visit, roster, and Client Schedule converge.
 7. A ten-minute inspection window in which the exact Visit remains active in Mindbody Business.
 8. Manual cleanup from the widget, with automatic and shutdown cleanup as safety backstops.
 
@@ -74,9 +74,9 @@ Use this short script during the demonstration:
 2. Show that the Class choices, instructor, dates, times, and provisional terms load from Mindbody rather than being typed into the page.
 3. Select a Class, choose one of its live dates, choose a live time, and click **Continue**.
 4. Review the provider-calculated quote and cancellation explanation, then click **Reserve my spot** once. The operation can take several seconds because it waits for six independent Mindbody evidence surfaces.
-5. Leave the confirmation page open. It gives the searchable synthetic Client name/ID, Cash Sale ID, Visit ID, and automatic-cleanup time.
+5. Leave the external confirmation page open. Its **Mindbody provider evidence** block gives the exact Site, Class ID, synthetic Client name/ID, Cash Sale ID, Payment ID, Visit ID, and automatic-cleanup time. It explicitly says when the Visit is active.
 6. In a second tab, sign in at [Mindbody Business](https://business.mindbodyonline.com/) and select Site `-99`.
-7. Search Clients for the exact `Revvi Sandbox …` name or Client ID shown by the widget. Open that Client and inspect its upcoming schedule/visits; the displayed Visit should still be active. The displayed Cash Sale is available in the Client's purchase history.
+7. Search Clients for the exact `Revvi Sandbox …` name or Client ID shown in the evidence block. Open that Client and inspect its upcoming schedule/visits; match the displayed Class ID and Visit ID. You can also open the Class roster for that Class occurrence and find the same Client/Visit. The displayed Cash Sale and Payment are available in the Client's purchase history.
 8. Return to the widget and click **Clean up demo Booking**. Double-clicking is suppressed. Wait for **Sandbox Booking verified and removed safely**.
 9. Refresh the Mindbody Client or Class roster and confirm the Visit is gone. The sandbox Sale can remain as retained evidence.
 10. Refresh the demo page to demonstrate fresh live discovery rather than cached fixture data.

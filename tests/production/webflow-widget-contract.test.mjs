@@ -35,6 +35,17 @@ test("the Webflow booking route uses the prototype-shaped class, time, and revie
   assert.doesNotMatch(embed, /data-booking-family-select/);
 });
 
+test("Booking confirmation renders outside the booking widget", () => {
+  const widgetStart = embed.indexOf("<div\n  data-revvi-booking");
+  const scriptStart = embed.indexOf("<script src=\"/assets/revvi-booking.js\"");
+  const confirmation = embed.indexOf("data-booking-confirmation");
+
+  assert.notEqual(widgetStart, -1);
+  assert.notEqual(scriptStart, -1);
+  assert.notEqual(confirmation, -1);
+  assert.ok(confirmation < widgetStart || confirmation > scriptStart);
+});
+
 test("the Site -99 demo manifest names the currently observed Yoga Session Type", () => {
   assert.match(demoDocs, /programName":"Yoga","classDescriptionName":"Yoga","sessionTypeName":"Hatha Yoga"/);
   assert.match(demoDocs, /pricingOptionName":"5 Class Card"/);

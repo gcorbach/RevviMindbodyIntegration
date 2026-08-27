@@ -131,8 +131,15 @@ export function bookingConfirmationText(booking, fallbackLocationName) {
 }
 
 export function createBookingWidgetUi(root) {
+  const externalConfirmation = root.previousElementSibling;
+  if (!externalConfirmation?.matches?.("[data-booking-confirmation]")) {
+    throw new Error("Revvi Booking markup is missing external confirmation.");
+  }
   const views = Object.fromEntries(
-    Object.entries(VIEW_SELECTORS).map(([name, selector]) => [name, element(root, selector)]),
+    Object.entries(VIEW_SELECTORS).map(([name, selector]) => [
+      name,
+      name === "confirmation" ? externalConfirmation : element(root, selector),
+    ]),
   );
   const classTemplate = element(root, "[data-booking-class-template]");
   const timeTemplate = element(root, "[data-booking-time-template]");
@@ -169,6 +176,7 @@ export function createBookingWidgetUi(root) {
   function show(status, viewName) {
     root.dataset.bookingState = status;
     root.setAttribute("aria-busy", String(status.startsWith("loading-") || status === "submitting"));
+    root.hidden = viewName === "confirmation";
     for (const [name, view] of Object.entries(views)) view.hidden = name !== viewName;
     const step = viewName === "occurrences" ? 1 : viewName === "times" ? 2 : ["quote", "confirmation"].includes(viewName) ? 3 : null;
     if (step) setStep(step);
@@ -440,10 +448,30 @@ export function createBookingWidgetUi(root) {
       freshness.textContent = "Class times are stale and could not yet be refreshed.";
     },
     success(booking) {
-      setText(root, "[data-booking-confirmation-message]", bookingConfirmationText(booking, root.dataset.locationName));
-      const cleanupButton = element(root, "[data-booking-demo-cleanup]");
-      const cleanupMessage = element(root, "[data-booking-demo-cleanup-message]");
+      setText(views.confirmation, "[data-booking-confirmation-message]", bookingConfirmationText(booking, root.dataset.locationName));
+      const cleanupButton = element(views.confirmation, "[data-booking-demo-cleanup]");
+      const cleanupMessage = element(views.confirmation, "[data-booking-demo-cleanup-message]");
       const cleanupStatus = booking?.sandboxDemo?.cleanupStatus;
+      const references = booking?.sandboxDemo?.references;
+      const providerEvidence = element(views.confirmation, "[data-booking-provider-evidence]");
+      const hasProviderEvidence = typeof booking?.classId === "string"
+        && typeof references?.clientId === "string"
+        && typeof references?.clientName === "string"
+        && typeof references?.saleId === "string"
+        && typeof references?.paymentId === "string"
+        && typeof references?.visitId === "string";
+      providerEvidence.hidden = !hasProviderEvidence;
+      if (hasProviderEvidence) {
+        setText(providerEvidence, "[data-booking-evidence-status]", cleanupStatus === "pending"
+          ? "Active in Mindbody now. Keep this page open while you verify the Client schedule or Class roster."
+          : "Cancellation confirmed. The Cash Sale remains available as retained sandbox evidence.");
+        setText(providerEvidence, "[data-booking-evidence-class-id]", booking.classId);
+        setText(providerEvidence, "[data-booking-evidence-client-name]", references.clientName);
+        setText(providerEvidence, "[data-booking-evidence-client-id]", references.clientId);
+        setText(providerEvidence, "[data-booking-evidence-sale-id]", references.saleId);
+        setText(providerEvidence, "[data-booking-evidence-payment-id]", references.paymentId);
+        setText(providerEvidence, "[data-booking-evidence-visit-id]", references.visitId);
+      }
       root.dataset.demoCleanupStatus = cleanupStatus ?? "not-applicable";
       cleanupButton.hidden = cleanupStatus !== "pending";
       cleanupButton.disabled = false;
@@ -453,16 +481,16 @@ export function createBookingWidgetUi(root) {
       show("success", "confirmation");
     },
     cleaningDemoBooking() {
-      const cleanupButton = element(root, "[data-booking-demo-cleanup]");
-      const cleanupMessage = element(root, "[data-booking-demo-cleanup-message]");
+      const cleanupButton = element(views.confirmation, "[data-booking-demo-cleanup]");
+      const cleanupMessage = element(views.confirmation, "[data-booking-demo-cleanup-message]");
       cleanupButton.disabled = true;
       cleanupButton.textContent = "Cleaning up…";
       cleanupMessage.hidden = false;
       cleanupMessage.textContent = "Removing the exact sandbox Booking from Mindbody…";
     },
     demoCleanupFailed() {
-      const cleanupButton = element(root, "[data-booking-demo-cleanup]");
-      const cleanupMessage = element(root, "[data-booking-demo-cleanup-message]");
+      const cleanupButton = element(views.confirmation, "[data-booking-demo-cleanup]");
+      const cleanupMessage = element(views.confirmation, "[data-booking-demo-cleanup-message]");
       cleanupButton.disabled = false;
       cleanupButton.textContent = "Retry demo cleanup";
       cleanupMessage.hidden = false;
@@ -480,7 +508,7 @@ export function createBookingWidgetUi(root) {
     continueButton,
     stepOneButton: element(root, "[data-booking-step-link=\"1\"]"),
     stepTwoButton: element(root, "[data-booking-step-link=\"2\"]"),
-    demoCleanupButton: element(root, "[data-booking-demo-cleanup]"),
+    demoCleanupButton: element(views.confirmation, "[data-booking-demo-cleanup]"),
     changeLocationButton: element(root, "[data-booking-change-location]"),
   });
 }

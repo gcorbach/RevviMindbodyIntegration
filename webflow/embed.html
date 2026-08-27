@@ -1,5 +1,26 @@
 <link rel="stylesheet" href="/assets/revvi-booking.css">
 
+<section data-booking-confirmation hidden>
+  <div class="revvi-booking-check" aria-hidden="true">✓</div>
+  <h1>You’re booked</h1>
+  <p data-booking-confirmation-message></p>
+  <section data-booking-provider-evidence hidden>
+    <h2>Mindbody provider evidence</h2>
+    <p data-booking-evidence-status></p>
+    <dl>
+      <div><dt>Site</dt><dd>-99</dd></div>
+      <div><dt>Class ID</dt><dd data-booking-evidence-class-id></dd></div>
+      <div><dt>Client</dt><dd><span data-booking-evidence-client-name></span> · <span data-booking-evidence-client-id></span></dd></div>
+      <div><dt>Cash Sale ID</dt><dd data-booking-evidence-sale-id></dd></div>
+      <div><dt>Payment ID</dt><dd data-booking-evidence-payment-id></dd></div>
+      <div><dt>Visit ID</dt><dd data-booking-evidence-visit-id></dd></div>
+    </dl>
+    <a href="https://business.mindbodyonline.com/" target="_blank" rel="noopener noreferrer">Open Mindbody Business</a>
+  </section>
+  <p data-booking-demo-cleanup-message hidden></p>
+  <button type="button" data-booking-demo-cleanup hidden>Clean up demo Booking</button>
+</section>
+
 <div
   data-revvi-booking
   data-business-slug="WEBFLOW_BUSINESS_SLUG"
@@ -112,13 +133,6 @@
       <a data-booking-payment-link class="revvi-booking-cta" rel="noopener noreferrer">Continue secure payment</a>
     </section>
     <p data-booking-reconciliation hidden></p>
-    <section data-booking-confirmation data-booking-step-panel="3" hidden>
-      <div class="revvi-booking-check" aria-hidden="true">✓</div>
-      <h1>You’re booked</h1>
-      <p data-booking-confirmation-message></p>
-      <p data-booking-demo-cleanup-message hidden></p>
-      <button type="button" data-booking-demo-cleanup hidden>Clean up demo Booking</button>
-    </section>
   </main>
 
   <template data-booking-class-template>

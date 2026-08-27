@@ -97,6 +97,13 @@ export function mountBookingWidget(root, dependencies = {}) {
   let activeDemoBooking = null;
   let loadSequence = 0;
 
+  function announce(name, detail) {
+    const CustomEvent = root.ownerDocument?.defaultView?.CustomEvent;
+    if (typeof CustomEvent === "function") {
+      root.dispatchEvent(new CustomEvent(name, { bubbles: true, detail }));
+    }
+  }
+
   function availabilityContext() {
     const startDate = dateInput.value?.trim();
     if (!ISO_DATE.test(startDate ?? "")) throw new Error("Choose a valid Class date.");
@@ -132,6 +139,11 @@ export function mountBookingWidget(root, dependencies = {}) {
       if (sequence !== loadSequence) return;
       occurrences = exactAvailability(data, context);
       families = Array.isArray(data?.classFamilies) ? data.classFamilies : [];
+      announce("revvi:availability-loaded", {
+        business: data.business,
+        offer: data.offer,
+        occurrences,
+      });
       ui.businessName(data?.business?.name);
       selectedClassKey = null;
       selectedClassOccurrences = [];
@@ -222,6 +234,11 @@ export function mountBookingWidget(root, dependencies = {}) {
     try {
       const data = await api.availability(authorization, availabilityContext());
       occurrences = exactAvailability(data, context);
+      announce("revvi:availability-loaded", {
+        business: data.business,
+        offer: data.offer,
+        occurrences,
+      });
       root.dataset.availabilityStale = "false";
       ui.markAvailabilityRefreshed();
     } catch {
@@ -246,7 +263,9 @@ export function mountBookingWidget(root, dependencies = {}) {
           ? booking.sandboxDemo.demoBookingId
           : null;
         activeDemoBooking = activeDemoBookingId ? booking : null;
-        ui.success({ ...booking, timezone: quote.occurrence?.timezone ?? selectedOccurrence?.timezone });
+        const confirmed = { ...booking, timezone: quote.occurrence?.timezone ?? selectedOccurrence?.timezone };
+        ui.success(confirmed);
+        announce("revvi:booking-confirmed", { booking: confirmed });
       } else if (booking?.status === "requires_action") {
         const redirectUrl = paymentActionUrl(booking.redirectUrl ?? data.redirectUrl);
         if (!redirectUrl) throw new Error("The payment action URL was invalid.");
@@ -294,7 +313,9 @@ export function mountBookingWidget(root, dependencies = {}) {
       };
       activeDemoBookingId = null;
       activeDemoBooking = null;
-      ui.success({ ...booking, timezone: quote?.occurrence?.timezone ?? selectedOccurrence?.timezone });
+      const cleaned = { ...booking, timezone: quote?.occurrence?.timezone ?? selectedOccurrence?.timezone };
+      ui.success(cleaned);
+      announce("revvi:booking-cleaned", { booking: cleaned });
     } catch {
       ui.demoCleanupFailed();
     } finally {
@@ -321,7 +342,9 @@ export function mountBookingWidget(root, dependencies = {}) {
       const data = await api.completePaidBooking(authorization, returnedBookingId);
       const booking = data?.booking;
       if (booking?.status === "confirmed") {
-        ui.success({ ...booking, timezone: root.dataset.locationTimezone });
+        const confirmed = { ...booking, timezone: root.dataset.locationTimezone };
+        ui.success(confirmed);
+        announce("revvi:booking-confirmed", { booking: confirmed });
       } else if (["unknown", "pending", "requires_action", "reconciliation"].includes(booking?.status)) {
         ui.reconciliation("Your payment and Class Booking are being reconciled. Do not submit another Booking.");
       } else {

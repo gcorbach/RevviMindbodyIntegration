@@ -23,8 +23,17 @@ const localToday = new Intl.DateTimeFormat("en-CA", {
 }).format(new Date());
 const canonicalEmbed = readFileSync(new URL("../../webflow/embed.html", import.meta.url), "utf8");
 const canonicalHistoryEmbed = readFileSync(new URL("../../webflow/history.html", import.meta.url), "utf8");
-const canonicalWidgetMarkup = canonicalEmbed.match(/<div[\s\S]*<\/div>/)?.[0];
+const canonicalWidgetStart = canonicalEmbed.indexOf("<div\n  data-revvi-booking");
+const canonicalWidgetEnd = canonicalEmbed.indexOf("\n\n<script src=", canonicalWidgetStart);
+const canonicalWidgetMarkup = canonicalWidgetStart >= 0 && canonicalWidgetEnd > canonicalWidgetStart
+  ? canonicalEmbed.slice(canonicalWidgetStart, canonicalWidgetEnd)
+  : null;
 assert.ok(canonicalWidgetMarkup, "The canonical Webflow embed must contain the widget root.");
+const canonicalConfirmationStart = canonicalEmbed.indexOf("<section data-booking-confirmation");
+const canonicalConfirmationMarkup = canonicalConfirmationStart >= 0 && canonicalWidgetStart > canonicalConfirmationStart
+  ? canonicalEmbed.slice(canonicalConfirmationStart, canonicalWidgetStart).trim()
+  : null;
+assert.ok(canonicalConfirmationMarkup, "The canonical Webflow embed must contain external confirmation markup.");
 const canonicalHistoryMarkup = canonicalHistoryEmbed.match(/<section[\s\S]*<\/section>/)?.[0];
 assert.ok(canonicalHistoryMarkup, "The canonical Webflow history embed must contain the component root.");
 
@@ -147,6 +156,7 @@ function page({
   inspectDesignerJourney = false, scenario = "available",
 } = {}) {
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/revvi-booking.css"></head><body>
+    ${canonicalConfirmationMarkup}
     ${widgetMarkup(scenario)}
     <script>
       window.$memberstackDom = {
@@ -154,6 +164,13 @@ function page({
         getMemberCookie: async () => "memberstack.jwt.signature"
       };
       const root = document.querySelector("[data-revvi-booking]");
+      root.dataset.confirmationOutside = String(!root.contains(document.querySelector("[data-booking-confirmation]")));
+      document.addEventListener("revvi:availability-loaded", (event) => {
+        root.dataset.liveClassIds = event.detail.occurrences.map((occurrence) => occurrence.classId).join(",");
+      });
+      document.addEventListener("revvi:booking-confirmed", (event) => {
+        root.dataset.confirmedBookingEvent = event.detail.booking.id ?? "provider-confirmed";
+      });
       const states = [];
       new MutationObserver(() => {
         if (root.dataset.bookingState && states.at(-1) !== root.dataset.bookingState) states.push(root.dataset.bookingState);
@@ -164,7 +181,7 @@ function page({
           if (root.dataset.demoCleanupStatus === "confirmed") { clearInterval(automation); return; }
           if (root.dataset.bookingState === "success") {
             ${automateDemoCleanup ? `
-              const cleanup = root.querySelector("[data-booking-demo-cleanup]:not([hidden]):not([disabled])");
+              const cleanup = document.querySelector("[data-booking-demo-cleanup]:not([hidden]):not([disabled])");
               if (cleanup) { cleanup.click(); cleanup.click(); }
               return;` : "clearInterval(automation); return;"}
           }
@@ -372,6 +389,9 @@ test("the Webflow widget shows approved Class times responsively and suppresses 
       assert.match(result.stdout, /Amina/);
       assert.doesNotMatch(result.stdout, /null spots/);
       assert.match(result.stdout, /data-booking-state="success"/);
+      assert.match(result.stdout, /data-confirmation-outside="true"/);
+      assert.match(result.stdout, /data-live-class-ids="501,502,503,504,505,506,507"/);
+      assert.match(result.stdout, /data-confirmed-booking-event="booking-a"/);
       assert.match(result.stdout, /loading-eligibility,loading-availability,showing-classes,showing-times,loading-quote,confirming,submitting,success/);
       assert.match(result.stdout, /Booking confirmed/);
       assert.match(result.stdout, /Cancel with the studio before the cutoff/);
@@ -431,6 +451,7 @@ test("the Site -99 demo lets the operator clean the visible sandbox Booking exac
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, data: { booking: {
         status: "confirmed",
+        classId: "501",
         className: "Yoga Flow",
         startAt: "2026-08-12T16:00:00.000Z",
         locationName: "Rosebank Studio",
@@ -478,6 +499,12 @@ test("the Site -99 demo lets the operator clean the visible sandbox Booking exac
     assert.equal(cleanupCalls, 1);
     assert.match(result.stdout, /data-demo-cleanup-status="confirmed"/);
     assert.match(result.stdout, /Sandbox Booking verified and removed safely/);
+    assert.match(result.stdout, /Mindbody provider evidence/);
+    assert.match(result.stdout, /data-booking-evidence-class-id="">501</);
+    assert.match(result.stdout, /data-booking-evidence-client-id="">100200001</);
+    assert.match(result.stdout, /data-booking-evidence-sale-id="">100170591</);
+    assert.match(result.stdout, /data-booking-evidence-payment-id="">168233</);
+    assert.match(result.stdout, /data-booking-evidence-visit-id="">100343812</);
     assert.match(result.stdout, /100170591/);
     assert.match(result.stdout, /100343812/);
   } finally {

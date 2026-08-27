@@ -84,7 +84,7 @@ export function renderSite99WebflowDemoPage({ demoBearerToken, automateBooking =
           return;
         }
         if (state === "success") {
-          root.querySelector("[data-booking-demo-cleanup]:not([hidden]):not([disabled])")?.click();
+          document.querySelector("[data-booking-demo-cleanup]:not([hidden]):not([disabled])")?.click();
         }
       }, 50);
       setTimeout(() => {
@@ -103,12 +103,34 @@ export function renderSite99WebflowDemoPage({ demoBearerToken, automateBooking =
     <strong>Local provider demo</strong>
     <p>This uses live Mindbody Site -99 data and fictitious sandbox Cash. It does not prove Memberstack authentication or production payment.</p>
     <p>Confirming creates and verifies one sandbox Booking. It stays active for inspection for up to ten minutes; use the cleanup button when you are finished.</p>
+    <section data-site99-live-inventory data-state="loading">
+      <h2 style="font-size:1rem">Live Mindbody inventory evidence</h2>
+      <p data-site99-live-inventory-status>Waiting for the live Site -99 Classes response…</p>
+      <ul data-site99-live-inventory-classes></ul>
+    </section>
   </aside>
   <script>
     window.$memberstackDom = {
       getCurrentMember: async () => ({ data: { id: "local-site-99-demo-customer" } }),
       getMemberCookie: async () => ${JSON.stringify(demoBearerToken)}
     };
+    document.addEventListener("revvi:availability-loaded", (event) => {
+      const panel = document.querySelector("[data-site99-live-inventory]");
+      const status = panel.querySelector("[data-site99-live-inventory-status]");
+      const list = panel.querySelector("[data-site99-live-inventory-classes]");
+      const occurrences = Array.isArray(event.detail?.occurrences) ? event.detail.occurrences : [];
+      panel.dataset.state = "live";
+      status.textContent = "Live response from Mindbody Site -99: " + occurrences.length + " available Class occurrence" + (occurrences.length === 1 ? "" : "s") + ". These rows are not embedded fixtures.";
+      list.replaceChildren();
+      for (const occurrence of occurrences) {
+        const item = document.createElement("li");
+        const time = new Intl.DateTimeFormat(undefined, {
+          dateStyle: "medium", timeStyle: "short", timeZone: occurrence.timezone,
+        }).format(new Date(occurrence.startAt));
+        item.textContent = "Mindbody Class " + occurrence.classId + " — " + occurrence.name + " — " + time + " — " + (occurrence.staffName ?? "instructor not returned") + " — " + occurrence.availabilityState;
+        list.append(item);
+      }
+    });
   </script>
   ${widget}
   ${browserAutomation}
@@ -316,7 +338,10 @@ export function createSite99WebflowDemoHandler({
       return json(200, {
         ok: true,
         data: {
-          business: { slug: SITE_99_DEMO_CONTEXT.businessSlug },
+          business: {
+            slug: SITE_99_DEMO_CONTEXT.businessSlug,
+            name: result?.auth?.siteName ?? "Mindbody Site -99",
+          },
           offer: { id: SITE_99_DEMO_CONTEXT.offerId, name: SITE_99_DEMO_CONTEXT.offerName },
           ...(Array.isArray(result?.families) ? { families: result.families } : {}),
           sessions: fixtures.map((fixture) => ({
@@ -324,8 +349,9 @@ export function createSite99WebflowDemoHandler({
             ...(fixture.classFamilyId ? { classFamilyId: String(fixture.classFamilyId) } : {}),
             name: fixture.className,
             startAt: site99DateTime(fixture.classStart),
+            ...(fixture.classEnd ? { endAt: site99DateTime(fixture.classEnd) } : {}),
             timezone: SITE_99_DEMO_CONTEXT.locationTimezone,
-            staffName: "Mindbody sandbox instructor",
+            staffName: fixture.staffName ?? "Instructor to be confirmed",
             availabilityState: "available",
             estimatedAvailableSlots: null,
             provisionalPrice: { amount: fixture.paymentSeed, currency: "USD" },
@@ -479,6 +505,7 @@ export function createSite99WebflowDemoHandler({
         data: {
           booking: {
             status: "confirmed",
+            classId: String(fixture.classId),
             ...(fixture.classFamilyId ? { classFamilyId: String(fixture.classFamilyId) } : {}),
             className: fixture.className,
             startAt: site99DateTime(fixture.classStart),

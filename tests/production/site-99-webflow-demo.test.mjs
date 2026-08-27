@@ -30,11 +30,14 @@ test("the local Webflow demo shows a live Site -99 Class through the widget cont
       assert.equal(mode, "probe");
       return {
         result: "passed",
+        auth: { siteName: "LastSpot" },
         fixture: {
           classId: "19364",
           classStart: "2026-08-18T10:00:00",
+          classEnd: "2026-08-18T11:00:00",
           className: "Yoga",
           staffId: "100000285",
+          staffName: "Site -99 Teacher",
           locationId: "1",
           paymentSeed: 13,
         },
@@ -54,14 +57,15 @@ test("the local Webflow demo shows a live Site -99 Class through the widget cont
   assert.deepEqual(await response.json(), {
     ok: true,
     data: {
-      business: { slug: "mindbody-sandbox" },
+      business: { slug: "mindbody-sandbox", name: "LastSpot" },
       offer: { id: SITE_99_DEMO_CONTEXT.offerId, name: "Revvi Sandbox Yoga" },
       sessions: [{
         classId: "19364",
         name: "Yoga",
         startAt: "2026-08-18T10:00:00+02:00",
+        endAt: "2026-08-18T11:00:00+02:00",
         timezone: "Africa/Johannesburg",
-        staffName: "Mindbody sandbox instructor",
+        staffName: "Site -99 Teacher",
         availabilityState: "available",
         estimatedAvailableSlots: null,
         provisionalPrice: { amount: 13, currency: "USD" },
@@ -383,6 +387,7 @@ test("the local Webflow demo leaves a fully evidenced Booking active for Busines
     data: {
       booking: {
         status: "confirmed",
+        classId: "19364",
         className: "Yoga",
         startAt: "2026-08-18T10:00:00+02:00",
         locationName: "Mindbody public sandbox",
@@ -917,6 +922,10 @@ test("the physical preview is the Webflow widget and labels its sandbox and auth
   assert.match(page, /does not prove Memberstack/);
   assert.match(page, /fictitious sandbox Cash/);
   assert.match(page, /stays active for inspection for up to ten minutes/);
+  assert.match(page, /data-site99-live-inventory/);
+  assert.match(page, /revvi:availability-loaded/);
+  assert.match(page, /Live Mindbody inventory evidence/);
+  assert.match(page, /Mindbody Class/);
   assert.match(page, /data-booking-demo-cleanup/);
   assert.match(page, /data-demo-cleanup-endpoint="\/cleanup-demo-booking"/);
   assert.match(page, /\/assets\/revvi-booking-rail\.png/);
