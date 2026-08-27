@@ -11,8 +11,10 @@
     "prototype:appointment": "node docs/prototypes/serve-booking-prototype.mjs",
     "prototype:appointment:functions": "node tools/serve-appointment-prototype-functions.mjs",
     "sandbox:mindbody": "node tools/mindbody-site-99-e2e.mjs",
+    "sandbox:webflow:e2e": "pnpm build:webflow && env -u MINDBODY_API_KEY -u MINDBODY_SANDBOX_USERNAME -u MINDBODY_SANDBOX_PASSWORD -u MINDBODY_SANDBOX_SITE_ID -u MINDBODY_SANDBOX_CLIENT_ID -u MINDBODY_SANDBOX_PRODUCT_ID -u MINDBODY_SANDBOX_CLASS_FAMILIES_JSON -u MINDBODY_SANDBOX_LOCATION_ID -u MINDBODY_SANDBOX_PROGRAM_ID -u MINDBODY_SANDBOX_CLASS_DESCRIPTION_ID -u MINDBODY_SANDBOX_SESSION_TYPE_ID -u MINDBODY_SANDBOX_WRITE_CONFIRM -u MINDBODY_BASE_URL node --env-file=webflow/.env tools/webflow-site-99-browser-e2e.mjs",
     "predemo:webflow:site99": "pnpm build:webflow",
-    "demo:webflow:site99": "node tools/serve-site-99-webflow-demo.mjs",
+    "demo:webflow:site99": "env -u MINDBODY_API_KEY -u MINDBODY_SANDBOX_USERNAME -u MINDBODY_SANDBOX_PASSWORD -u MINDBODY_SANDBOX_SITE_ID -u MINDBODY_SANDBOX_CLIENT_ID -u MINDBODY_SANDBOX_PRODUCT_ID -u MINDBODY_SANDBOX_CLASS_FAMILIES_JSON -u MINDBODY_SANDBOX_LOCATION_ID -u MINDBODY_SANDBOX_PROGRAM_ID -u MINDBODY_SANDBOX_CLASS_DESCRIPTION_ID -u MINDBODY_SANDBOX_SESSION_TYPE_ID -u MINDBODY_SANDBOX_WRITE_CONFIRM -u MINDBODY_BASE_URL node --env-file=webflow/.env tools/serve-site-99-webflow-demo.mjs",
+    "test:e2e:local": "supabase test db",
     "test": "node --test --test-concurrency=1 tests/production/**/*.test.mjs",
     "test:prototype:appointment": "node tests/run-appointment-prototype.mjs"
   },

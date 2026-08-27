@@ -22,8 +22,8 @@ function parseRequest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new BookingQuoteRequestError("INVALID_REQUEST", "A booking quote request is required.");
   }
-  if (Object.keys(value).some((key) => !["offerId", "sessionId"].includes(key))) {
-    throw new BookingQuoteRequestError("UNEXPECTED_FIELD", "Only offerId and sessionId are accepted.");
+  if (Object.keys(value).some((key) => !["offerId", "sessionId", "classFamilyId"].includes(key))) {
+    throw new BookingQuoteRequestError("UNEXPECTED_FIELD", "Only offerId, classFamilyId, and sessionId are accepted.");
   }
   if (typeof value.offerId !== "string" || !UUID.test(value.offerId)) {
     throw new BookingQuoteRequestError("INVALID_OFFER", "A valid Revvi Offer ID is required.");
@@ -32,7 +32,15 @@ function parseRequest(value) {
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(sessionId)) {
     throw new BookingQuoteRequestError("INVALID_CLASS", "A valid Class occurrence ID is required.");
   }
-  return { offerId: value.offerId, classId: sessionId };
+  if (value.classFamilyId !== undefined
+    && (typeof value.classFamilyId !== "string" || !UUID.test(value.classFamilyId))) {
+    throw new BookingQuoteRequestError("INVALID_CLASS_FAMILY", "A valid Class family ID is required.");
+  }
+  return {
+    offerId: value.offerId,
+    classId: sessionId,
+    ...(value.classFamilyId !== undefined ? { classFamilyId: value.classFamilyId } : {}),
+  };
 }
 
 function requestId(request) {
@@ -104,6 +112,7 @@ export async function handleClassBookingQuote(request, dependencies) {
       customer: authorization.customer,
       identity: authorization.customer.identity,
       classId: input.classId,
+      ...(input.classFamilyId ? { classFamilyId: input.classFamilyId } : {}),
       context,
     }, {
       ...dependencies.quoteDependencies,

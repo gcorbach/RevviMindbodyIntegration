@@ -5,7 +5,9 @@ import {
   createSite99WebflowDemoHandler,
   renderSite99WebflowDemoPage,
   SITE_99_DEMO_CONTEXT,
+  createSite99WebflowDemoServer,
 } from "../../tools/serve-site-99-webflow-demo.mjs";
+import { Site99RunError } from "../../tools/mindbody-site-99-e2e.mjs";
 import { bookingConfirmationText } from "../../webflow/src/ui.js";
 
 const DEMO_TOKEN = "demo-header.demo-payload.demo-signature";
@@ -28,11 +30,14 @@ test("the local Webflow demo shows a live Site -99 Class through the widget cont
       assert.equal(mode, "probe");
       return {
         result: "passed",
+        auth: { siteName: "LastSpot" },
         fixture: {
           classId: "19364",
           classStart: "2026-08-18T10:00:00",
+          classEnd: "2026-08-18T11:00:00",
           className: "Yoga",
           staffId: "100000285",
+          staffName: "Site -99 Teacher",
           locationId: "1",
           paymentSeed: 13,
         },
@@ -52,20 +57,197 @@ test("the local Webflow demo shows a live Site -99 Class through the widget cont
   assert.deepEqual(await response.json(), {
     ok: true,
     data: {
-      business: { slug: "mindbody-sandbox" },
+      business: { slug: "mindbody-sandbox", name: "LastSpot" },
       offer: { id: SITE_99_DEMO_CONTEXT.offerId, name: "Revvi Sandbox Yoga" },
       sessions: [{
         classId: "19364",
         name: "Yoga",
         startAt: "2026-08-18T10:00:00+02:00",
+        endAt: "2026-08-18T11:00:00+02:00",
         timezone: "Africa/Johannesburg",
-        staffName: "Mindbody sandbox instructor",
+        staffName: "Site -99 Teacher",
         availabilityState: "available",
         estimatedAvailableSlots: null,
         provisionalPrice: { amount: 13, currency: "USD" },
       }],
     },
   });
+});
+
+test("the local Webflow demo logs safe selector diagnostics", async () => {
+  const logs = [];
+  const server = createSite99WebflowDemoServer({
+    demoBearerToken: DEMO_TOKEN,
+    logger: { error: (message, facts) => logs.push({ message, facts }) },
+    handler: async () => {
+      throw new Site99RunError(
+        "sessionTypeName",
+        "SELECTOR_NO_MATCH",
+        null,
+        "00000000-0000-4000-8000-000000000101:Yoga sessionTypeName=Yoga; candidates=250:Hatha Yoga",
+      );
+    },
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/offer-class-availability`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${DEMO_TOKEN}`, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(response.status, 502);
+    assert.deepEqual(logs, [{
+      message: "Site -99 Webflow demo request failed.",
+      facts: {
+        name: "Site99RunError",
+        stage: "sessionTypeName",
+        code: "SELECTOR_NO_MATCH",
+        status: null,
+        detail: "00000000-0000-4000-8000-000000000101:Yoga sessionTypeName=Yoga; candidates=250:Hatha Yoga",
+      },
+    }]);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("the local Webflow demo exposes and filters live Class families", async () => {
+  const familyYoga = "00000000-0000-4000-8000-000000000101";
+  const familyStrength = "00000000-0000-4000-8000-000000000102";
+  const calls = [];
+  const runner = {
+    async run(mode, options = {}) {
+      assert.equal(mode, "probe");
+      calls.push(options);
+      const fixtures = options.classFamilyId === familyStrength
+        ? [{ classId: "19365", classFamilyId: familyStrength, classFamilyName: "Strength Yoga", classStart: "2026-08-18T11:00:00", className: "Strength Yoga", paymentSeed: 13 }]
+        : [
+          { classId: "19364", classFamilyId: familyYoga, classFamilyName: "Yoga", classStart: "2026-08-18T10:00:00", className: "Yoga", paymentSeed: 13 },
+          { classId: "19365", classFamilyId: familyStrength, classFamilyName: "Strength Yoga", classStart: "2026-08-18T11:00:00", className: "Strength Yoga", paymentSeed: 13 },
+        ];
+      return {
+        result: "passed",
+        fixtures,
+        families: [
+          { id: familyYoga, name: "Yoga", available: true },
+          { id: familyStrength, name: "Strength Yoga", available: true },
+        ],
+      };
+    },
+  };
+  const handler = createSite99WebflowDemoHandler({ runner, demoBearerToken: DEMO_TOKEN });
+  const body = {
+    businessSlug: SITE_99_DEMO_CONTEXT.businessSlug,
+    locationId: SITE_99_DEMO_CONTEXT.locationId,
+    offerId: SITE_99_DEMO_CONTEXT.offerId,
+  };
+
+  const allResponse = await handler(request("/offer-class-availability", body));
+  const all = await allResponse.json();
+  assert.equal(allResponse.status, 200);
+  assert.deepEqual(all.data.families, [
+    { id: familyYoga, name: "Yoga", available: true },
+    { id: familyStrength, name: "Strength Yoga", available: true },
+  ]);
+  assert.deepEqual(all.data.sessions.map((session) => [session.classFamilyId, session.classId]), [
+    [familyYoga, "19364"],
+    [familyStrength, "19365"],
+  ]);
+
+  const selectedResponse = await handler(request("/offer-class-availability", {
+    ...body,
+    classFamilyId: familyStrength,
+  }));
+  const selected = await selectedResponse.json();
+  assert.equal(selectedResponse.status, 200);
+  assert.deepEqual(selected.data.sessions.map((session) => session.classId), ["19365"]);
+  assert.deepEqual(calls, [{}, { classFamilyId: familyStrength }]);
+});
+
+test("the local Webflow demo carries the selected family through quote and Booking", async () => {
+  const familyId = "00000000-0000-4000-8000-000000000101";
+  const calls = [];
+  const fixture = {
+    classId: "19364",
+    classFamilyId: familyId,
+    classFamilyName: "Yoga",
+    classStart: "2026-08-18T10:00:00",
+    className: "Yoga",
+  };
+  const runner = {
+    async run(mode, options) {
+      calls.push({ mode, options });
+      if (mode === "quote") {
+        return {
+          result: "passed",
+          fixture,
+          quote: {
+            subtotal: 13,
+            discountTotal: 0,
+            taxTotal: 0,
+            grandTotal: 13,
+            totalsUnchanged: true,
+            testCreatedProviderState: false,
+          },
+        };
+      }
+      return {
+        result: "passed",
+        fixture,
+        syntheticClient: {
+          syntheticClientCreated: true,
+          reference: {
+            clientId: "100200001",
+            displayName: "Revvi Sandbox A1B2C3D4",
+            email: "revvi-sandbox-a1b2c3d4@example.test",
+          },
+        },
+        booking: {
+          saleId: "100170591",
+          paymentId: "168233",
+          paymentType: "Cash",
+          clientServiceId: "100257607",
+          visitId: "100343812",
+          clientVisitConfirmed: true,
+          rosterConfirmed: true,
+          clientScheduleConfirmed: true,
+          inspectionStatus: "active",
+        },
+      };
+    },
+  };
+  const handler = createSite99WebflowDemoHandler({
+    runner,
+    demoBearerToken: DEMO_TOKEN,
+    now: () => new Date("2026-08-17T12:00:00Z"),
+    randomUuid: (() => {
+      const values = [
+        "00000000-0000-4000-8000-000000000058",
+        "00000000-0000-4000-8000-000000000060",
+      ];
+      return () => values.shift();
+    })(),
+  });
+  const quoteResponse = await handler(request("/booking-quote", {
+    offerId: SITE_99_DEMO_CONTEXT.offerId,
+    sessionId: fixture.classId,
+    classFamilyId: familyId,
+  }));
+  const quote = (await quoteResponse.json()).data;
+  assert.equal(quoteResponse.status, 200);
+  assert.equal(quote.session.classFamilyId, familyId);
+
+  const bookingResponse = await handler(request("/create-booking", {
+    quoteId: quote.quoteId,
+    idempotencyKey: "00000000-0000-4000-8000-000000000059",
+  }));
+  assert.equal(bookingResponse.status, 200);
+  assert.equal((await bookingResponse.json()).data.booking.classFamilyId, familyId);
+  assert.deepEqual(calls.map(({ mode, options }) => [mode, options]), [
+    ["quote", { classFamilyId: familyId, classId: fixture.classId }],
+    ["book-for-inspection", { classFamilyId: familyId, classId: fixture.classId }],
+  ]);
 });
 
 test("the local Webflow demo returns a client-aware Site -99 quote", async () => {
@@ -205,6 +387,7 @@ test("the local Webflow demo leaves a fully evidenced Booking active for Busines
     data: {
       booking: {
         status: "confirmed",
+        classId: "19364",
         className: "Yoga",
         startAt: "2026-08-18T10:00:00+02:00",
         locationName: "Mindbody public sandbox",
@@ -429,26 +612,16 @@ test("the local Webflow demo cleans up the exact inspected Booking on request", 
   }))).json();
 
   const response = await handler(request("/cleanup-demo-booking", {
-    demoBookingId: created.data.booking.sandboxDemo.demoBookingId,
+    bookingId: created.data.booking.sandboxDemo.demoBookingId,
+    reason: "Revvi hosted sandbox demonstration cleanup",
   }));
 
   assert.equal(response.status, 200);
   assert.deepEqual(modes, ["quote", "book-for-inspection", "cleanup-inspection"]);
-  assert.deepEqual((await response.json()).data.booking.sandboxDemo, {
-    paymentType: "Fictitious Cash",
-    providerEvidenceConfirmed: true,
-    demoBookingId: "00000000-0000-4000-8000-000000000060",
-    cleanupStatus: "confirmed",
-    autoCleanupAt: "2026-08-17T12:10:00.000Z",
-    entitlementRestorationObserved: null,
-    references: {
-      clientId: "100200001",
-      clientName: "Revvi Sandbox A1B2C3D4",
-      clientEmail: "revvi-sandbox-a1b2c3d4@example.test",
-      saleId: "100170591",
-      paymentId: "168233",
-      visitId: "100343812",
-    },
+  assert.deepEqual((await response.json()).data, {
+    bookingId: "00000000-0000-4000-8000-000000000060",
+    status: "cancelled",
+    passRestoration: "unknown",
   });
 });
 
@@ -556,11 +729,16 @@ test("the local Webflow demo automatically cleans an inspected Booking after ten
   await concurrentProbe;
   await scheduledCleanups[1].callback();
   const inspected = await handler(request("/cleanup-demo-booking", {
-    demoBookingId: created.data.booking.sandboxDemo.demoBookingId,
+    bookingId: created.data.booking.sandboxDemo.demoBookingId,
+    reason: "Revvi hosted sandbox demonstration cleanup",
   }));
 
   assert.deepEqual(modes, ["quote", "book-for-inspection", "probe", "cleanup-inspection"]);
-  assert.equal((await inspected.json()).data.booking.sandboxDemo.cleanupStatus, "confirmed");
+  assert.deepEqual((await inspected.json()).data, {
+    bookingId: "00000000-0000-4000-8000-000000000060",
+    status: "cancelled",
+    passRestoration: "not_restored",
+  });
 });
 
 test("the local Webflow demo cleans every pending Booking before shutdown", async () => {
@@ -744,9 +922,31 @@ test("the physical preview is the Webflow widget and labels its sandbox and auth
   assert.match(page, /does not prove Memberstack/);
   assert.match(page, /fictitious sandbox Cash/);
   assert.match(page, /stays active for inspection for up to ten minutes/);
+  assert.match(page, /data-site99-live-inventory/);
+  assert.match(page, /revvi:availability-loaded/);
+  assert.match(page, /Live Mindbody inventory evidence/);
+  assert.match(page, /Mindbody Class/);
   assert.match(page, /data-booking-demo-cleanup/);
+  assert.match(page, /data-demo-cleanup-endpoint="\/cleanup-demo-booking"/);
+  assert.match(page, /\/assets\/revvi-booking-rail\.png/);
   assert.match(page, /\/assets\/revvi-booking\.js/);
+  assert.doesNotMatch(page, /SUPABASE_FUNCTIONS_URL/);
   assert.doesNotMatch(page, /MINDBODY_API_KEY|MINDBODY_SANDBOX_PASSWORD/);
+});
+
+test("live browser automation is explicit and drives only the production widget controls", () => {
+  const ordinaryPage = renderSite99WebflowDemoPage({ demoBearerToken: DEMO_TOKEN });
+  const automatedPage = renderSite99WebflowDemoPage({ demoBearerToken: DEMO_TOKEN, automateBooking: true });
+
+  assert.doesNotMatch(ordinaryPage, /data-live-browser-e2e/);
+  assert.match(automatedPage, /data-live-browser-e2e/);
+  assert.match(automatedPage, /data-class-select/);
+  assert.match(automatedPage, /data-booking-class-continue/);
+  assert.match(automatedPage, /data-time-select/);
+  assert.match(automatedPage, /data-booking-continue/);
+  assert.match(automatedPage, /data-quote-confirm/);
+  assert.match(automatedPage, /data-booking-demo-cleanup/);
+  assert.doesNotMatch(automatedPage, /MINDBODY_API_KEY|MINDBODY_SANDBOX_PASSWORD/);
 });
 
 test("the demo confirmation explains how to inspect the active Mindbody Booking", () => {

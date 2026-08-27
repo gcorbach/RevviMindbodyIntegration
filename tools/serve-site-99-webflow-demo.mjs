@@ -14,11 +14,15 @@ export const SITE_99_DEMO_CONTEXT = Object.freeze({
   locationTimezone: "Africa/Johannesburg",
 });
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const WEBFLOW_EMBED = readFileSync(new URL("../webflow/embed.html", import.meta.url), "utf8");
 const WEBFLOW_SCRIPT = readFileSync(new URL("../webflow/dist/revvi-booking.js", import.meta.url));
 const WEBFLOW_STYLES = readFileSync(new URL("../webflow/dist/revvi-booking.css", import.meta.url));
+const WEBFLOW_RAIL_IMAGE = readFileSync(new URL("../webflow/dist/revvi-booking-rail.png", import.meta.url));
+const WEBFLOW_HEADING_FONT = readFileSync(new URL("../webflow/dist/CormorantGaramond-Regular.ttf", import.meta.url));
 
-export function renderSite99WebflowDemoPage({ demoBearerToken }) {
+export function renderSite99WebflowDemoPage({ demoBearerToken, automateBooking = false }) {
   if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(demoBearerToken ?? "")) {
     throw new Error("The local demo token must use a JWT-shaped value.");
   }
@@ -33,7 +37,64 @@ export function renderSite99WebflowDemoPage({ demoBearerToken }) {
     .replace("SUPABASE_FUNCTIONS_URL/booking-quote", "/booking-quote")
     .replace("SUPABASE_FUNCTIONS_URL/create-booking", "/create-booking")
     .replace("SUPABASE_FUNCTIONS_URL/complete-paid-booking", "/complete-paid-booking")
-    .replace("SUPABASE_FUNCTIONS_URL/cleanup-demo-booking", "/cleanup-demo-booking");
+    .replace("SUPABASE_FUNCTIONS_URL/cancel-booking", "/cleanup-demo-booking");
+  const browserAutomation = automateBooking ? `<script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const root = document.querySelector("[data-revvi-booking]");
+      const states = [];
+      root.setAttribute("data-live-browser-e2e", "running");
+      new MutationObserver(() => {
+        const state = root.dataset.bookingState;
+        if (state && states.at(-1) !== state) states.push(state);
+        root.dataset.liveBrowserE2eStates = states.join(",");
+      }).observe(root, { attributes: true, attributeFilter: ["data-booking-state"] });
+      const timer = setInterval(() => {
+        const state = root.dataset.bookingState;
+        if (root.dataset.demoCleanupStatus === "confirmed") {
+          root.dataset.liveBrowserE2e = "passed";
+          clearInterval(timer);
+          return;
+        }
+        if (["ineligible", "empty", "stale", "pending-reconciliation", "requires-payment-action", "error"].includes(state)) {
+          root.dataset.liveBrowserE2e = "failed-" + state;
+          clearInterval(timer);
+          return;
+        }
+        if (state === "showing-classes") {
+          const control = root.dataset.selectedClassKey
+            ? root.querySelector("[data-booking-class-continue]:not([disabled])")
+            : root.querySelector("[data-class-select]:not([disabled])");
+          control?.click();
+          return;
+        }
+        if (state === "showing-times") {
+          const calendar = root.querySelector("[data-booking-calendar-toggle]");
+          if (calendar && !root.dataset.liveBrowserE2eCalendarOpened) {
+            root.dataset.liveBrowserE2eCalendarOpened = "true";
+            calendar.click();
+          }
+          const control = root.dataset.selectedClassId
+            ? root.querySelector("[data-booking-continue]:not([disabled])")
+            : root.querySelector("[data-time-select]:not([disabled])");
+          control?.click();
+          return;
+        }
+        if (state === "confirming") {
+          root.querySelector("[data-quote-confirm]:not([disabled])")?.click();
+          return;
+        }
+        if (state === "success") {
+          document.querySelector("[data-booking-demo-cleanup]:not([hidden]):not([disabled])")?.click();
+        }
+      }, 50);
+      setTimeout(() => {
+        if (root.dataset.liveBrowserE2e === "running") {
+          root.dataset.liveBrowserE2e = "failed-timeout";
+          clearInterval(timer);
+        }
+      }, 90000);
+    }, { once: true });
+  </script>` : "";
   return `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Revvi Site -99 Booking Demo</title></head>
@@ -42,14 +103,37 @@ export function renderSite99WebflowDemoPage({ demoBearerToken }) {
     <strong>Local provider demo</strong>
     <p>This uses live Mindbody Site -99 data and fictitious sandbox Cash. It does not prove Memberstack authentication or production payment.</p>
     <p>Confirming creates and verifies one sandbox Booking. It stays active for inspection for up to ten minutes; use the cleanup button when you are finished.</p>
+    <section data-site99-live-inventory data-state="loading">
+      <h2 style="font-size:1rem">Live Mindbody inventory evidence</h2>
+      <p data-site99-live-inventory-status>Waiting for the live Site -99 Classes response…</p>
+      <ul data-site99-live-inventory-classes></ul>
+    </section>
   </aside>
   <script>
     window.$memberstackDom = {
       getCurrentMember: async () => ({ data: { id: "local-site-99-demo-customer" } }),
       getMemberCookie: async () => ${JSON.stringify(demoBearerToken)}
     };
+    document.addEventListener("revvi:availability-loaded", (event) => {
+      const panel = document.querySelector("[data-site99-live-inventory]");
+      const status = panel.querySelector("[data-site99-live-inventory-status]");
+      const list = panel.querySelector("[data-site99-live-inventory-classes]");
+      const occurrences = Array.isArray(event.detail?.occurrences) ? event.detail.occurrences : [];
+      panel.dataset.state = "live";
+      status.textContent = "Live response from Mindbody Site -99: " + occurrences.length + " available Class occurrence" + (occurrences.length === 1 ? "" : "s") + ". These rows are not embedded fixtures.";
+      list.replaceChildren();
+      for (const occurrence of occurrences) {
+        const item = document.createElement("li");
+        const time = new Intl.DateTimeFormat(undefined, {
+          dateStyle: "medium", timeStyle: "short", timeZone: occurrence.timezone,
+        }).format(new Date(occurrence.startAt));
+        item.textContent = "Mindbody Class " + occurrence.classId + " — " + occurrence.name + " — " + time + " — " + (occurrence.staffName ?? "instructor not returned") + " — " + occurrence.availabilityState;
+        list.append(item);
+      }
+    });
   </script>
   ${widget}
+  ${browserAutomation}
 </body>
 </html>`;
 }
@@ -95,11 +179,11 @@ export function createSite99WebflowDemoHandler({
   let shuttingDown = false;
   let providerIdleWaiters = [];
 
-  async function runProvider(mode) {
+  async function runProvider(mode, options = {}) {
     if (providerActive) return null;
     providerActive = true;
     try {
-      return await runner.run(mode);
+      return await runner.run(mode, options);
     } finally {
       providerActive = false;
       const waiters = providerIdleWaiters;
@@ -241,24 +325,37 @@ export function createSite99WebflowDemoHandler({
       if (!exactContext(body)) {
         return json(403, { ok: false, error: { code: "OFFER_CONTEXT_MISMATCH" } });
       }
-      const result = await runProvider("probe");
+      if (body?.classFamilyId !== undefined && !UUID.test(body.classFamilyId ?? "")) {
+        return json(422, { ok: false, error: { code: "INVALID_CLASS_FAMILY" } });
+      }
+      const result = await runProvider("probe", {
+        ...(body?.classFamilyId ? { classFamilyId: body.classFamilyId } : {}),
+      });
       if (!result) return busy();
-      const fixture = result?.fixture;
+      const fixtures = Array.isArray(result?.fixtures)
+        ? result.fixtures
+        : result?.fixture ? [result.fixture] : [];
       return json(200, {
         ok: true,
         data: {
-          business: { slug: SITE_99_DEMO_CONTEXT.businessSlug },
+          business: {
+            slug: SITE_99_DEMO_CONTEXT.businessSlug,
+            name: result?.auth?.siteName ?? "Mindbody Site -99",
+          },
           offer: { id: SITE_99_DEMO_CONTEXT.offerId, name: SITE_99_DEMO_CONTEXT.offerName },
-          sessions: [{
+          ...(Array.isArray(result?.families) ? { families: result.families } : {}),
+          sessions: fixtures.map((fixture) => ({
             classId: String(fixture.classId),
+            ...(fixture.classFamilyId ? { classFamilyId: String(fixture.classFamilyId) } : {}),
             name: fixture.className,
             startAt: site99DateTime(fixture.classStart),
+            ...(fixture.classEnd ? { endAt: site99DateTime(fixture.classEnd) } : {}),
             timezone: SITE_99_DEMO_CONTEXT.locationTimezone,
-            staffName: "Mindbody sandbox instructor",
+            staffName: fixture.staffName ?? "Instructor to be confirmed",
             availabilityState: "available",
             estimatedAvailableSlots: null,
             provisionalPrice: { amount: fixture.paymentSeed, currency: "USD" },
-          }],
+          })),
         },
       });
     }
@@ -266,18 +363,26 @@ export function createSite99WebflowDemoHandler({
       if (body?.offerId !== SITE_99_DEMO_CONTEXT.offerId || !body?.sessionId) {
         return json(403, { ok: false, error: { code: "OFFER_CONTEXT_MISMATCH" } });
       }
-      const result = await runProvider("quote");
+      if (body?.classFamilyId !== undefined && !UUID.test(body.classFamilyId ?? "")) {
+        return json(422, { ok: false, error: { code: "INVALID_CLASS_FAMILY" } });
+      }
+      const classFamilyId = body?.classFamilyId ?? null;
+      const result = await runProvider("quote", {
+        ...(classFamilyId ? { classFamilyId } : {}),
+        classId: String(body.sessionId),
+      });
       if (!result) return busy();
       const fixture = result?.fixture;
       const quote = result?.quote;
       if (String(fixture?.classId) !== String(body.sessionId)
+        || (classFamilyId !== null && String(fixture?.classFamilyId) !== classFamilyId)
         || quote?.totalsUnchanged !== true
         || quote?.testCreatedProviderState !== false) {
         return json(409, { ok: false, error: { code: "QUOTE_CHANGED" } });
       }
       const quoteId = randomUuid();
       const expiresAt = new Date(now().getTime() + 10 * 60 * 1000);
-      quotes.set(quoteId, { fixture, expiresAt });
+      quotes.set(quoteId, { fixture, classFamilyId, expiresAt });
       return json(200, {
         ok: true,
         data: {
@@ -285,6 +390,7 @@ export function createSite99WebflowDemoHandler({
           expiresAt: expiresAt.toISOString(),
           session: {
             classId: String(fixture.classId),
+            ...(fixture.classFamilyId ? { classFamilyId: String(fixture.classFamilyId) } : {}),
             name: fixture.className,
             startAt: site99DateTime(fixture.classStart),
             locationName: SITE_99_DEMO_CONTEXT.locationName,
@@ -304,8 +410,21 @@ export function createSite99WebflowDemoHandler({
       });
     }
     if (pathname === "/cleanup-demo-booking") {
-      const cleaned = await cleanupDemoBooking(body?.demoBookingId);
-      return json(cleaned.status, cleaned.payload);
+      const demoBookingId = body?.bookingId;
+      const cleaned = await cleanupDemoBooking(demoBookingId);
+      if (cleaned.status !== 200) return json(cleaned.status, cleaned.payload);
+      const restorationObserved = cleaned.payload?.data?.booking?.sandboxDemo
+        ?.entitlementRestorationObserved;
+      return json(200, {
+        ok: true,
+        data: {
+          bookingId: demoBookingId,
+          status: "cancelled",
+          passRestoration: restorationObserved === true
+            ? "restored"
+            : restorationObserved === false ? "not_restored" : "unknown",
+        },
+      });
     }
     if (pathname === "/create-booking") {
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -334,7 +453,10 @@ export function createSite99WebflowDemoHandler({
       }
       let result;
       try {
-        result = await runProvider("book-for-inspection");
+        result = await runProvider("book-for-inspection", {
+          ...(storedQuote.classFamilyId ? { classFamilyId: storedQuote.classFamilyId } : {}),
+          classId: String(storedQuote.fixture.classId),
+        });
       } catch (error) {
         const emergencyCleanupId = registerEmergencyCleanup();
         await attemptEmergencyCleanup(emergencyCleanupId);
@@ -383,6 +505,8 @@ export function createSite99WebflowDemoHandler({
         data: {
           booking: {
             status: "confirmed",
+            classId: String(fixture.classId),
+            ...(fixture.classFamilyId ? { classFamilyId: String(fixture.classFamilyId) } : {}),
             className: fixture.className,
             startAt: site99DateTime(fixture.classStart),
             locationName: SITE_99_DEMO_CONTEXT.locationName,
@@ -452,9 +576,9 @@ async function requestBody(request) {
   return Buffer.concat(chunks);
 }
 
-export function createSite99WebflowDemoServer({ handler, demoBearerToken, logger = console }) {
+export function createSite99WebflowDemoServer({ handler, demoBearerToken, logger = console, automateBooking = false }) {
   if (typeof handler !== "function") throw new Error("A demo HTTP handler is required.");
-  const page = renderSite99WebflowDemoPage({ demoBearerToken });
+  const page = renderSite99WebflowDemoPage({ demoBearerToken, automateBooking });
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1:3000");
@@ -473,6 +597,16 @@ export function createSite99WebflowDemoServer({ handler, demoBearerToken, logger
         response.end(WEBFLOW_STYLES);
         return;
       }
+      if (request.method === "GET" && url.pathname === "/assets/revvi-booking-rail.png") {
+        response.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
+        response.end(WEBFLOW_RAIL_IMAGE);
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/assets/CormorantGaramond-Regular.ttf") {
+        response.writeHead(200, { "Content-Type": "font/ttf", "Cache-Control": "no-store" });
+        response.end(WEBFLOW_HEADING_FONT);
+        return;
+      }
       const body = request.method === "POST" ? await requestBody(request) : undefined;
       const webRequest = new Request(url, {
         method: request.method,
@@ -486,6 +620,7 @@ export function createSite99WebflowDemoServer({ handler, demoBearerToken, logger
         stage: error?.stage ?? null,
         code: error?.code ?? "UNEXPECTED_ERROR",
         status: error?.status ?? null,
+        ...(error?.detail ? { detail: error.detail } : {}),
       });
       response.writeHead(502, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       response.end(JSON.stringify({

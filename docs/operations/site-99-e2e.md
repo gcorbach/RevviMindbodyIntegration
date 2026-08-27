@@ -12,9 +12,14 @@ $env:MINDBODY_SANDBOX_USERNAME = Read-Host "Mindbody sandbox staff username"
 $mindbodyPassword = Read-Host "Mindbody sandbox staff password" -AsSecureString
 $env:MINDBODY_SANDBOX_PASSWORD = [System.Net.NetworkCredential]::new("", $mindbodyPassword).Password
 $env:MINDBODY_SANDBOX_SITE_ID = "-99"
+$env:MINDBODY_SANDBOX_CLASS_FAMILIES_JSON = '[{"id":"00000000-0000-4000-8000-000000000101","name":"Yoga","selectors":[{"locationName":"Clubville","programName":"Yoga","classDescriptionName":"Yoga","sessionTypeName":"Yoga"}]}]'
 ```
 
-The runner defaults to the current public-sandbox Client, Yoga taxonomy, Location, and Product search hints. `probe` and `quote` use that harmless sample Client. `book-and-cancel` instead creates a run-unique, non-personal synthetic Client after checking required fields. Override search hints only with currently re-read Site `-99` identifiers:
+The normal manifest is Revvi-owned family presentation plus normalized, reviewed names for the current Site `-99` Location, Program, Class Description, and Session Type. The runner resolves the current provider IDs at startup, so daily-resetting taxonomy IDs and Product IDs do not belong in the normal configuration. Each selector must resolve uniquely; a missing or ambiguous taxonomy candidate fails closed with a diagnostic naming the selector and safe current candidates.
+
+For every discovered occurrence, the runner reads `/sale/services` and accepts only an online, non-discontinued Product whose sale and use Location restrictions include the resolved Location. Selector mode fails closed when no Product applies, more than one Product applies, or the selected live formats do not share exactly one applicable Product. It never chooses by numeric ID or price. `probe` and `quote` use the harmless sample Client. `book-and-cancel` instead creates a run-unique, non-personal synthetic Client after checking required fields.
+
+For a controlled investigation, an explicit raw-ID override remains available. Supply the current Product ID and the legacy exact mapping manifest; use IDs freshly read from Site `-99`, and do not treat this as the daily demo configuration:
 
 ```powershell
 $env:MINDBODY_SANDBOX_CLIENT_ID = "<sandbox client ID>"
@@ -22,7 +27,8 @@ $env:MINDBODY_SANDBOX_LOCATION_ID = "1"
 $env:MINDBODY_SANDBOX_PROGRAM_ID = "27"
 $env:MINDBODY_SANDBOX_CLASS_DESCRIPTION_ID = "223"
 $env:MINDBODY_SANDBOX_SESSION_TYPE_ID = "250"
-$env:MINDBODY_SANDBOX_PRODUCT_ID = "1424"
+$env:MINDBODY_SANDBOX_PRODUCT_ID = "<current applicable Product ID>"
+$env:MINDBODY_SANDBOX_CLASS_FAMILIES_JSON = '<current Revvi family manifest JSON>'
 ```
 
 ## Modes
@@ -55,7 +61,13 @@ Remove-Item Env:MINDBODY_API_KEY -ErrorAction SilentlyContinue
 Remove-Item Env:MINDBODY_SANDBOX_USERNAME -ErrorAction SilentlyContinue
 Remove-Item Env:MINDBODY_SANDBOX_PASSWORD -ErrorAction SilentlyContinue
 Remove-Item Env:MINDBODY_SANDBOX_SITE_ID -ErrorAction SilentlyContinue
+Remove-Item Env:MINDBODY_SANDBOX_PRODUCT_ID -ErrorAction SilentlyContinue
+Remove-Item Env:MINDBODY_SANDBOX_CLASS_FAMILIES_JSON -ErrorAction SilentlyContinue
 Remove-Item Env:MINDBODY_SANDBOX_CLIENT_ID -ErrorAction SilentlyContinue
+Remove-Item Env:MINDBODY_SANDBOX_LOCATION_ID -ErrorAction SilentlyContinue
+Remove-Item Env:MINDBODY_SANDBOX_PROGRAM_ID -ErrorAction SilentlyContinue
+Remove-Item Env:MINDBODY_SANDBOX_CLASS_DESCRIPTION_ID -ErrorAction SilentlyContinue
+Remove-Item Env:MINDBODY_SANDBOX_SESSION_TYPE_ID -ErrorAction SilentlyContinue
 Remove-Item Env:MINDBODY_SANDBOX_WRITE_CONFIRM -ErrorAction SilentlyContinue
 $mindbodyPassword = $null
 ```

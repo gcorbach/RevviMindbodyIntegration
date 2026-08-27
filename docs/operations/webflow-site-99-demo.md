@@ -4,60 +4,79 @@ This preview lets Revvi demonstrate the existing Webflow Booking widget against 
 
 ## What the audience sees
 
-1. A Revvi Yoga Offer at the Mindbody public-sandbox Location.
-2. A current Yoga Class occurrence discovered live from Site `-99`.
-3. A client-aware `$13 USD` quote calculated twice with `Test=true` and no provider mutation.
-4. A **Confirm Booking** action using fictitious sandbox Cash; no card details are collected.
-5. A truthful confirmation only after the Sale, Cash Payment, ClientService, Visit, roster, and Client Schedule converge.
-6. A ten-minute inspection window in which the exact Visit remains active in Mindbody Business.
-7. Manual cleanup from the widget, with automatic and shutdown cleanup as safety backstops.
+1. The already-selected Revvi partner, Offer, and Mindbody public-sandbox Location.
+2. A purple evidence panel listing the exact live Mindbody Class IDs, instructor, availability state, and times returned by the current Site `-99` inventory read. No schedule fixture is embedded in the manual demo.
+3. Real dates and times for the selected Class, with no illustrative schedule values.
+4. A client-aware provider quote calculated twice with `Test=true` and no provider mutation.
+5. A **Reserve my spot** action using fictitious sandbox Cash; no card details are collected.
+6. A truthful confirmation outside the booking widget only after the Sale, Cash Payment, ClientService, Visit, roster, and Client Schedule converge.
+7. A ten-minute inspection window in which the exact Visit remains active in Mindbody Business.
+8. Manual cleanup from the widget, with automatic and shutdown cleanup as safety backstops.
 
 The page labels that its local identity does not prove Memberstack. The hosted Webflow staging demo must use a real Memberstack test member instead.
 
+The review step intentionally says **Reserve my spot**, not checkout or pay. Site `-99` proves only the fictitious Cash route. Production payment remains gated until an approved hosted, redirect, opaque-token, or saved-card route is known and tested without raw card data entering Revvi.
+
 ## Start the preview
 
-Build the committed Webflow assets:
+From the repository root, install dependencies if needed and build the committed Webflow assets:
 
-```powershell
+```bash
+pnpm install
 pnpm build:webflow
 ```
 
-Load the Site `-99` credentials into the current PowerShell process without saving them to a file or command history:
+Create `webflow/.env` once with the Site `-99` credentials and stable selectors. The file is gitignored and loaded directly by the dev command, including when it has CRLF line endings:
 
-```powershell
-$env:MINDBODY_API_KEY = Read-Host "Mindbody sandbox API key"
-$env:MINDBODY_SANDBOX_USERNAME = Read-Host "Mindbody sandbox staff username"
-$mindbodyPassword = Read-Host "Mindbody sandbox staff password" -AsSecureString
-$env:MINDBODY_SANDBOX_PASSWORD = [System.Net.NetworkCredential]::new("", $mindbodyPassword).Password
-$env:MINDBODY_SANDBOX_SITE_ID = "-99"
-$env:MINDBODY_SANDBOX_WRITE_CONFIRM = "BOOK_AND_CANCEL_SITE_-99"
+```dotenv
+MINDBODY_API_KEY=<sandbox-api-key>
+MINDBODY_SANDBOX_USERNAME=<sandbox-staff-username>
+MINDBODY_SANDBOX_PASSWORD=<sandbox-staff-password>
+MINDBODY_SANDBOX_SITE_ID=-99
+MINDBODY_SANDBOX_CLASS_FAMILIES_JSON='[{"id":"00000000-0000-4000-8000-000000000101","name":"Yoga","pricingOptionName":"5 Class Card","selectors":[{"locationName":"Clubville","programName":"Yoga","classDescriptionName":"Yoga","sessionTypeName":"Hatha Yoga"}]}]'
+MINDBODY_SANDBOX_WRITE_CONFIRM=BOOK_AND_CANCEL_SITE_-99
+```
+
+Restrict the local file and start the preview from the repository root:
+
+```bash
+chmod 600 webflow/.env
 pnpm demo:webflow:site99
 ```
 
+The command clears inherited Mindbody variables before loading `webflow/.env`, so stale values exported by an earlier shell cannot override this file. Do not run `source webflow/.env`; Node's dotenv loader handles quoting and line endings.
+
+If startup stops with `SELECTOR_NO_MATCH` or `PRODUCT_SELECTOR_NO_MATCH`, read the terminal's `detail` and `candidates=` value. Update only the affected stable name to the exact current live record shown there, then restart; do not guess a numeric provider ID.
+
+The selector manifest is stable Revvi configuration. For every demo operation, the runner reads the current Site `-99` Location, Program, Class Description, Session Type, Class occurrence, and Class-filtered `/sale/services` data, then resolves the provider IDs for that operation. Taxonomy and pricing-option names are matched case- and whitespace-insensitively but must identify exactly one current live record. Selector mode ignores any stale `MINDBODY_SANDBOX_PRODUCT_ID`; the package command clears inherited provider variables before loading `webflow/.env`, keeping the normal shell environment separate from the legacy raw-ID investigation path.
+
+The sandbox demo is configured to use the finite `5 Class Card` pricing option because the public sandbox exposes several valid purchase options for the same Class. Its Product ID may change after a reset. The resolved Product must still be returned by Mindbody for the exact current Class, online, not discontinued, valid for sale and use at the selected Location, and shared across the selected live formats. Site `-99` attaches these Yoga pricing options through a related Program, so the runner deliberately keeps related-program results and then applies the exact stable pricing-option name. Missing or duplicate name matches stop the demo with a safe `ProductId:Name` diagnostic. The runner never chooses by price or numeric ID. For controlled investigations only, it still accepts the legacy exact-ID manifest together with a freshly re-read `MINDBODY_SANDBOX_PRODUCT_ID`.
+
 Open [http://127.0.0.1:3000](http://127.0.0.1:3000) on the same computer. The server binds only to `127.0.0.1`; it is not exposed to the local network or internet.
 
-Stop it with `Ctrl+C`. The server first cleans any active demo Booking and only exits after Mindbody confirms removal. If cleanup is not confirmed, it remains running so you can retry. Then clear the process environment:
+Stop it with `Ctrl+C`. The server first cleans any active demo Booking and only exits after Mindbody confirms removal. If cleanup is not confirmed, it remains running so you can retry. The ignored `webflow/.env` remains available for the next local run; remove it when this sandbox work is finished.
 
-```powershell
-Remove-Item Env:MINDBODY_API_KEY -ErrorAction SilentlyContinue
-Remove-Item Env:MINDBODY_SANDBOX_USERNAME -ErrorAction SilentlyContinue
-Remove-Item Env:MINDBODY_SANDBOX_PASSWORD -ErrorAction SilentlyContinue
-Remove-Item Env:MINDBODY_SANDBOX_SITE_ID -ErrorAction SilentlyContinue
-Remove-Item Env:MINDBODY_SANDBOX_WRITE_CONFIRM -ErrorAction SilentlyContinue
-$mindbodyPassword = $null
+## Automated browser E2E
+
+With the same restricted `webflow/.env`, run:
+
+```bash
+pnpm sandbox:webflow:e2e
 ```
+
+This launches Chrome against the loopback server and drives only the production widget controls: select a live Class, continue, select a live time, obtain the twice-calculated quote, reserve with fictitious Cash, wait for provider evidence, and request exact cleanup from the confirmation screen. The command passes only when the UI confirms cancellation and shutdown confirms that every tracked sandbox Booking was cleaned. It clears inherited provider variables, binds only to `127.0.0.1:3000`, never prints credentials, and always attempts shutdown cleanup even when the browser journey fails.
 
 ## How to test it physically
 
 Use this short script during the demonstration:
 
-1. Point out the purple sandbox boundary banner.
-2. Show that the Class name, time, and provisional price load from Mindbody rather than being typed into the page.
-3. Select the Class and show the provider-calculated quote and cancellation explanation.
-4. Click **Confirm Booking** once. The operation can take several seconds because it waits for six independent Mindbody evidence surfaces.
-5. Leave the confirmation page open. It gives the searchable synthetic Client name/ID, Cash Sale ID, Visit ID, and automatic-cleanup time.
+1. Point out the purple sandbox boundary banner and the already-selected partner and Location.
+2. Show that the Class choices, instructor, dates, times, and provisional terms load from Mindbody rather than being typed into the page.
+3. Select a Class, choose one of its live dates, choose a live time, and click **Continue**.
+4. Review the provider-calculated quote and cancellation explanation, then click **Reserve my spot** once. The operation can take several seconds because it waits for six independent Mindbody evidence surfaces.
+5. Leave the external confirmation page open. Its **Mindbody provider evidence** block gives the exact Site, Class ID, synthetic Client name/ID, Cash Sale ID, Payment ID, Visit ID, and automatic-cleanup time. It explicitly says when the Visit is active.
 6. In a second tab, sign in at [Mindbody Business](https://business.mindbodyonline.com/) and select Site `-99`.
-7. Search Clients for the exact `Revvi Sandbox …` name or Client ID shown by the widget. Open that Client and inspect its upcoming schedule/visits; the displayed Visit should still be active. The displayed Cash Sale is available in the Client's purchase history.
+7. Search Clients for the exact `Revvi Sandbox …` name or Client ID shown in the evidence block. Open that Client and inspect its upcoming schedule/visits; match the displayed Class ID and Visit ID. You can also open the Class roster for that Class occurrence and find the same Client/Visit. The displayed Cash Sale and Payment are available in the Client's purchase history.
 8. Return to the widget and click **Clean up demo Booking**. Double-clicking is suppressed. Wait for **Sandbox Booking verified and removed safely**.
 9. Refresh the Mindbody Client or Class roster and confirm the Visit is gone. The sandbox Sale can remain as retained evidence.
 10. Refresh the demo page to demonstrate fresh live discovery rather than cached fixture data.

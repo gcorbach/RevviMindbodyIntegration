@@ -76,6 +76,69 @@ test("an exact resolved client receives a short-lived provider-calculated paid q
   assert.equal(checkoutFacts.classLocationId, "7");
 });
 
+test("a paid quote selects the one applicable Product from an approved Product set", async () => {
+  const deps = dependencies();
+  const selected = {
+    ...context(),
+    mapping: {
+      ...context().mapping,
+      providerServiceProductIds: ["product-shared", "product-strength"],
+    },
+  };
+  let checkoutProduct;
+  deps.provider.getServices = async () => [{
+    ProductId: "product-strength",
+    OnlinePrice: 44,
+    SellOnline: true,
+    Discontinued: false,
+    SellAtLocationIds: [7],
+    UseAtLocationIds: [7],
+  }];
+  deps.provider.testCheckout = async (facts) => {
+    checkoutProduct = facts.productId;
+    return { subtotal: 44, discountTotal: 0, taxTotal: 0, grandTotal: 44 };
+  };
+  const result = await createClassBookingQuote({
+    customer: { id: "customer-a" },
+    identity,
+    classId: "771",
+    context: selected,
+  }, deps);
+  assert.equal(checkoutProduct, "product-strength");
+  assert.equal(result.price.serviceProductId, "product-strength");
+});
+
+test("a quote revalidates the selected Class family tuple", async () => {
+  const deps = dependencies();
+  const familyContext = context();
+  familyContext.classFamilies = [{
+    id: "family-hot",
+    status: "active",
+    providerMappings: [{
+      providerLocationId: "7",
+      providerClassDescriptionId: "13",
+      providerProgramId: "11",
+      providerSessionTypeId: "23",
+    }],
+  }];
+  const result = await createClassBookingQuote({
+    customer: { id: "customer-a" },
+    identity,
+    classId: "771",
+    classFamilyId: "family-hot",
+    context: familyContext,
+  }, deps);
+  assert.equal(result.occurrence.classFamilyId, "family-hot");
+  assert.equal(deps.saved[0].classFamilyId, "family-hot");
+
+  await assert.rejects(
+    createClassBookingQuote({
+      customer: { id: "customer-a" }, identity, classId: "771", classFamilyId: "family-other", context: familyContext,
+    }, dependencies()),
+    (error) => error.code === "CLASS_FAMILY_NOT_APPROVED",
+  );
+});
+
 test("ambiguous exact identities create support work and stop before Class or cart operations", async () => {
   let supportFacts;
   let classReads = 0;

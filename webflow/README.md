@@ -2,6 +2,8 @@
 
 This directory contains the production Webflow widget for one already-selected Revvi Offer and Business Location. Webflow supplies presentation text and the stable Supabase references only. Eligibility, approved Class inventory, price, and Offer fulfilment mode remain server-owned.
 
+The `/book` route follows the approved prototype flow: choose a live Class, choose one of its real dates and times, then review the server-owned quote before reserving. Step 2 presents the first three bookable dates directly and exposes later bookable dates through the calendar. The class rows and time buttons are built from the live availability response; the prototype's example studio, Class names, times, and prices are not copied into the production widget.
+
 ## Webflow installation
 
 1. Add the markup from `embed.html` to the existing Offer page.
@@ -13,12 +15,12 @@ The production endpoint attributes may be omitted when the functions use their s
 
 ## Build
 
-Run `pnpm build:webflow`. The committed `dist/` files are the only browser assets Webflow needs.
+Run `pnpm build:webflow`. The committed `dist/` files—including the stylesheet, script, rail image, and heading font—are the only browser assets Webflow needs.
 
 The browser sends exactly one Memberstack bearer JWT. It never sends Memberstack plan IDs, a Mindbody credential, a price, a ProductId, or an Offer fulfilment mode. A displayed price is provisional until the client-aware quote is accepted, and the widget never collects raw card data.
 
 ## Physical Site -99 preview
 
-The repository also has a loopback-only preview that renders this exact widget bundle against live Mindbody public-sandbox data. It uses a clearly labelled local demo identity, creates one unique synthetic Mindbody Client, performs a fictitious Cash purchase plus Class Booking, and verifies the provider evidence. The Visit remains active for up to ten minutes so it can be inspected in Mindbody Business. The widget offers exact manual cleanup; the server also cleans on timeout and before shutdown.
+The repository also has a loopback-only preview that renders this exact widget bundle against live Mindbody public-sandbox data. The demo shell visibly lists the exact Class IDs, times, instructor, and availability returned by Mindbody; no manual-demo schedule fixture is embedded. It uses a clearly labelled local identity, creates one unique synthetic Mindbody Client, performs a fictitious Cash purchase plus Class Booking, and verifies the provider evidence. The confirmation renders outside the booking widget and shows searchable Client, Class, Sale, Payment, and Visit IDs. The Visit remains active for up to ten minutes so it can be inspected in Mindbody Business. The external confirmation offers exact manual cleanup; the server also cleans on timeout and before shutdown.
 
-Run `pnpm demo:webflow:site99` after loading the sandbox credentials and exact write confirmation described in `docs/operations/webflow-site-99-demo.md`. This preview proves the browser-to-provider demonstration seam; it deliberately does not claim Memberstack authentication, hosted Webflow deployment, or production payment.
+Run `pnpm demo:webflow:site99` after loading the sandbox credentials and exact write confirmation described in `docs/operations/webflow-site-99-demo.md`. Run `pnpm sandbox:webflow:e2e` for the unattended production-control journey through Chrome; it books, verifies, and cancels the exact sandbox Visit before exiting. These paths prove the browser-to-provider demonstration seam; they deliberately do not claim Memberstack authentication, hosted Webflow deployment, or production payment.

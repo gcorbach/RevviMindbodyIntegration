@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -22,8 +23,17 @@ const localToday = new Intl.DateTimeFormat("en-CA", {
 }).format(new Date());
 const canonicalEmbed = readFileSync(new URL("../../webflow/embed.html", import.meta.url), "utf8");
 const canonicalHistoryEmbed = readFileSync(new URL("../../webflow/history.html", import.meta.url), "utf8");
-const canonicalWidgetMarkup = canonicalEmbed.match(/<div[\s\S]*<\/div>/)?.[0];
+const canonicalWidgetStart = canonicalEmbed.indexOf("<div\n  data-revvi-booking");
+const canonicalWidgetEnd = canonicalEmbed.indexOf("\n\n<script src=", canonicalWidgetStart);
+const canonicalWidgetMarkup = canonicalWidgetStart >= 0 && canonicalWidgetEnd > canonicalWidgetStart
+  ? canonicalEmbed.slice(canonicalWidgetStart, canonicalWidgetEnd)
+  : null;
 assert.ok(canonicalWidgetMarkup, "The canonical Webflow embed must contain the widget root.");
+const canonicalConfirmationStart = canonicalEmbed.indexOf("<section data-booking-confirmation");
+const canonicalConfirmationMarkup = canonicalConfirmationStart >= 0 && canonicalWidgetStart > canonicalConfirmationStart
+  ? canonicalEmbed.slice(canonicalConfirmationStart, canonicalWidgetStart).trim()
+  : null;
+assert.ok(canonicalConfirmationMarkup, "The canonical Webflow embed must contain external confirmation markup.");
 const canonicalHistoryMarkup = canonicalHistoryEmbed.match(/<section[\s\S]*<\/section>/)?.[0];
 assert.ok(canonicalHistoryMarkup, "The canonical Webflow history embed must contain the component root.");
 
@@ -83,6 +93,58 @@ function availabilityBody() {
           availabilityState: "unknown",
           availabilityReasons: ["provider_availability_unknown"],
         },
+        {
+          sessionId: "504",
+          classId: "504",
+          name: "Yoga Flow",
+          staffName: "Amina",
+          startAt: "2026-08-15T08:00:00.000Z",
+          endAt: "2026-08-15T09:00:00.000Z",
+          timezone: "Africa/Johannesburg",
+          estimatedAvailableSlots: 2,
+          availabilityState: "available",
+          availabilityReasons: [],
+          provisionalPrice: { amount: 32, currency: "ZAR", serviceProductId: "revvi-yoga" },
+        },
+        {
+          sessionId: "505",
+          classId: "505",
+          name: "Yoga Flow",
+          staffName: "Amina",
+          startAt: "2026-08-16T08:00:00.000Z",
+          endAt: "2026-08-16T09:00:00.000Z",
+          timezone: "Africa/Johannesburg",
+          estimatedAvailableSlots: 4,
+          availabilityState: "available",
+          availabilityReasons: [],
+          provisionalPrice: { amount: 32, currency: "ZAR", serviceProductId: "revvi-yoga" },
+        },
+        {
+          sessionId: "506",
+          classId: "506",
+          name: "Yoga Flow",
+          staffName: "Amina",
+          startAt: "2026-08-17T08:00:00.000Z",
+          endAt: "2026-08-17T09:00:00.000Z",
+          timezone: "Africa/Johannesburg",
+          estimatedAvailableSlots: 3,
+          availabilityState: "available",
+          availabilityReasons: [],
+          provisionalPrice: { amount: 32, currency: "ZAR", serviceProductId: "revvi-yoga" },
+        },
+        {
+          sessionId: "507",
+          classId: "507",
+          name: "Yoga Flow",
+          staffName: "Amina",
+          startAt: "2026-08-18T08:00:00.000Z",
+          endAt: "2026-08-18T09:00:00.000Z",
+          timezone: "Africa/Johannesburg",
+          estimatedAvailableSlots: 1,
+          availabilityState: "available",
+          availabilityReasons: [],
+          provisionalPrice: { amount: 32, currency: "ZAR", serviceProductId: "revvi-yoga" },
+        },
       ],
     },
     requestId: "request-a",
@@ -90,9 +152,11 @@ function availabilityBody() {
 }
 
 function page({
-  loggedOut = false, automateBooking = false, automateDemoCleanup = false, scenario = "available",
+  loggedOut = false, automateBooking = false, automateDemoCleanup = false,
+  inspectDesignerJourney = false, scenario = "available",
 } = {}) {
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/revvi-booking.css"></head><body>
+    ${canonicalConfirmationMarkup}
     ${widgetMarkup(scenario)}
     <script>
       window.$memberstackDom = {
@@ -100,6 +164,13 @@ function page({
         getMemberCookie: async () => "memberstack.jwt.signature"
       };
       const root = document.querySelector("[data-revvi-booking]");
+      root.dataset.confirmationOutside = String(!root.contains(document.querySelector("[data-booking-confirmation]")));
+      document.addEventListener("revvi:availability-loaded", (event) => {
+        root.dataset.liveClassIds = event.detail.occurrences.map((occurrence) => occurrence.classId).join(",");
+      });
+      document.addEventListener("revvi:booking-confirmed", (event) => {
+        root.dataset.confirmedBookingEvent = event.detail.booking.id ?? "provider-confirmed";
+      });
       const states = [];
       new MutationObserver(() => {
         if (root.dataset.bookingState && states.at(-1) !== root.dataset.bookingState) states.push(root.dataset.bookingState);
@@ -110,19 +181,54 @@ function page({
           if (root.dataset.demoCleanupStatus === "confirmed") { clearInterval(automation); return; }
           if (root.dataset.bookingState === "success") {
             ${automateDemoCleanup ? `
-              const cleanup = root.querySelector("[data-booking-demo-cleanup]:not([hidden]):not([disabled])");
+              const cleanup = document.querySelector("[data-booking-demo-cleanup]:not([hidden]):not([disabled])");
               if (cleanup) { cleanup.click(); cleanup.click(); }
               return;` : "clearInterval(automation); return;"}
           }
           if (["stale", "requires-payment-action", "pending-reconciliation", "error"].includes(root.dataset.bookingState)) { clearInterval(automation); return; }
-          const confirm = root.querySelector("[data-quote-confirm]");
+          const confirm = root.querySelector("[data-quote-confirm]:not([data-booking-continue])");
           if (confirm && !confirm.closest("[hidden]") && !confirm.disabled) {
             confirm.click();
             confirm.click();
             return;
           }
-          const book = root.querySelector("[data-occurrence-book]:not([disabled])");
-          if (book) { book.click(); return; }
+          const chooseClass = !root.dataset.selectedClassKey
+            && root.querySelector("[data-class-select]:not([disabled])");
+          if (chooseClass && !chooseClass.closest("[hidden]")) { chooseClass.click(); return; }
+          const classContinue = root.querySelector("[data-booking-class-continue]:not([disabled])");
+          if (classContinue && !classContinue.closest("[hidden]")) { classContinue.click(); return; }
+          const chooseTime = !root.dataset.selectedClassId
+            && root.querySelector("[data-time-select]:not([disabled])");
+          if (chooseTime && !chooseTime.closest("[hidden]")) { chooseTime.click(); return; }
+          const continueButton = root.querySelector("[data-booking-continue]:not([disabled])");
+          if (continueButton && !continueButton.closest("[hidden]")) { continueButton.click(); return; }
+        }, 20);` : ""}
+      ${inspectDesignerJourney ? `
+        const designerInspection = setInterval(() => {
+          if (root.dataset.bookingState !== "showing-classes") return;
+          clearInterval(designerInspection);
+          root.querySelector("[data-class-select]:not([disabled])")?.click();
+          setTimeout(() => {
+            root.dataset.stateAfterClassSelect = root.dataset.bookingState;
+            const classContinue = root.querySelector("[data-booking-class-continue]");
+            root.dataset.classContinueAvailable = String(Boolean(classContinue && !classContinue.disabled));
+            classContinue?.click();
+            setTimeout(() => {
+              root.dataset.quickDateCount = String(root.querySelectorAll("[data-booking-date-option]").length);
+              const calendarToggle = root.querySelector("[data-booking-calendar-toggle]");
+              root.dataset.calendarAvailable = String(Boolean(calendarToggle && !calendarToggle.hidden));
+              calendarToggle?.click();
+              root.dataset.calendarOpen = String(Boolean(root.querySelector("[data-booking-calendar]:not([hidden])")));
+              const cardStyle = getComputedStyle(root);
+              const rail = root.querySelector("[data-booking-brand-panel]");
+              const heading = root.querySelector('[data-booking-step-panel="2"] h1');
+              root.dataset.designerCardWidth = String(Math.round(root.getBoundingClientRect().width));
+              root.dataset.designerCardHeight = String(Math.round(root.getBoundingClientRect().height));
+              root.dataset.designerRailWidth = String(Math.round(rail.getBoundingClientRect().width));
+              root.dataset.designerRadius = cardStyle.borderRadius;
+              root.dataset.designerHeadingFont = getComputedStyle(heading).fontFamily;
+            }, 80);
+          }, 80);
         }, 20);` : ""}
       setTimeout(() => {
         root.dataset.viewportWidth = String(window.innerWidth);
@@ -134,8 +240,51 @@ function page({
   </body></html>`;
 }
 
+test("the designer journey selects a Class in place and puts later available dates in a calendar", { skip: !chromePath }, async () => {
+  const widget = readFileSync(new URL("../../webflow/dist/revvi-booking.js", import.meta.url), "utf8");
+  const stylesheet = readFileSync(new URL("../../webflow/dist/revvi-booking.css", import.meta.url), "utf8");
+  const server = createServer((request, response) => {
+    if (request.url === "/revvi-booking.js") {
+      response.writeHead(200, { "content-type": "text/javascript" }); response.end(widget); return;
+    }
+    if (request.url === "/revvi-booking.css") {
+      response.writeHead(200, { "content-type": "text/css" }); response.end(stylesheet); return;
+    }
+    if (request.url?.startsWith("/functions/v1/offer-class-availability")) {
+      response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(availabilityBody())); return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(page({ inspectDesignerJourney: true }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const result = await launchChrome(`http://127.0.0.1:${server.address().port}/designer-journey`, "1440,900");
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /data-state-after-class-select="showing-classes"/);
+    assert.match(result.stdout, /data-class-continue-available="true"/);
+    assert.match(result.stdout, /data-quick-date-count="3"/);
+    assert.match(result.stdout, /data-calendar-available="true"/);
+    assert.match(result.stdout, /data-calendar-open="true"/);
+    assert.match(result.stdout, /data-designer-card-width="960"/);
+    assert.match(result.stdout, /data-designer-card-height="620"/);
+    assert.match(result.stdout, /data-designer-rail-width="312"/);
+    assert.match(result.stdout, /data-designer-radius="24px"/);
+    assert.match(result.stdout, /data-designer-heading-font="[^\"]*Cormorant Garamond/);
+    assert.match(result.stdout, /Revvi partner/);
+    assert.match(result.stdout, /Change studio/);
+  } finally {
+    server.closeAllConnections(); server.close();
+  }
+});
+
 async function launchChrome(url, size = "390,844") {
-  const profile = mkdtempSync(join(tmpdir(), "revvi-class-widget-"));
+  const windowsChromeFromWsl = process.platform !== "win32" && chromePath?.toLowerCase().endsWith(".exe");
+  const profile = windowsChromeFromWsl
+    ? mkdtempSync("/mnt/c/Windows/Temp/revvi-class-widget-")
+    : mkdtempSync(join(tmpdir(), "revvi-class-widget-"));
+  const chromeProfile = windowsChromeFromWsl
+    ? execFileSync("wslpath", ["-w", profile], { encoding: "utf8" }).trim()
+    : profile;
   try {
     return await new Promise((resolve) => {
       const child = spawn(chromePath, [
@@ -146,8 +295,8 @@ async function launchChrome(url, size = "390,844") {
         "--no-default-browser-check",
         `--window-size=${size}`,
         "--dump-dom",
-        "--virtual-time-budget=1200",
-        `--user-data-dir=${profile}`,
+        "--virtual-time-budget=4000",
+        `--user-data-dir=${chromeProfile}`,
         url,
       ], { windowsHide: true });
       let stdout = "";
@@ -237,12 +386,13 @@ test("the Webflow widget shows approved Class times responsively and suppresses 
       assert.match(result.stdout, /data-viewport-fits="true"/);
       assert.match(result.stdout, /Rosebank Studio/);
       assert.match(result.stdout, /Revvi Yoga Access/);
-      assert.match(result.stdout, /3 spots left/);
-      assert.match(result.stdout, /Class is full/);
-      assert.match(result.stdout, /Availability to be confirmed/);
+      assert.match(result.stdout, /Amina/);
       assert.doesNotMatch(result.stdout, /null spots/);
       assert.match(result.stdout, /data-booking-state="success"/);
-      assert.match(result.stdout, /loading-eligibility,loading-availability,showing-availability,loading-quote,confirming,submitting,success/);
+      assert.match(result.stdout, /data-confirmation-outside="true"/);
+      assert.match(result.stdout, /data-live-class-ids="501,502,503,504,505,506,507"/);
+      assert.match(result.stdout, /data-confirmed-booking-event="booking-a"/);
+      assert.match(result.stdout, /loading-eligibility,loading-availability,showing-classes,showing-times,loading-quote,confirming,submitting,success/);
       assert.match(result.stdout, /Booking confirmed/);
       assert.match(result.stdout, /Cancel with the studio before the cutoff/);
       assert.match(result.stdout, /data-availability-stale="false"/);
@@ -301,6 +451,7 @@ test("the Site -99 demo lets the operator clean the visible sandbox Booking exac
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true, data: { booking: {
         status: "confirmed",
+        classId: "501",
         className: "Yoga Flow",
         startAt: "2026-08-12T16:00:00.000Z",
         locationName: "Rosebank Studio",
@@ -348,6 +499,12 @@ test("the Site -99 demo lets the operator clean the visible sandbox Booking exac
     assert.equal(cleanupCalls, 1);
     assert.match(result.stdout, /data-demo-cleanup-status="confirmed"/);
     assert.match(result.stdout, /Sandbox Booking verified and removed safely/);
+    assert.match(result.stdout, /Mindbody provider evidence/);
+    assert.match(result.stdout, /data-booking-evidence-class-id="">501</);
+    assert.match(result.stdout, /data-booking-evidence-client-id="">100200001</);
+    assert.match(result.stdout, /data-booking-evidence-sale-id="">100170591</);
+    assert.match(result.stdout, /data-booking-evidence-payment-id="">168233</);
+    assert.match(result.stdout, /data-booking-evidence-visit-id="">100343812</);
     assert.match(result.stdout, /100170591/);
     assert.match(result.stdout, /100343812/);
   } finally {

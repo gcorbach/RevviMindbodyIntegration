@@ -85,6 +85,11 @@ export function mountBookingWidget(root, dependencies = {}) {
   const randomUuid = dependencies.randomUuid ?? (() => browser.crypto.randomUUID());
   let authorization;
   let occurrences = [];
+  let families = [];
+  let selectedClassKey = null;
+  let selectedClassOccurrences = [];
+  let selectedClassName = null;
+  let selectedDateKey = null;
   let selectedOccurrence = null;
   let quote = null;
   let requestActive = false;
@@ -92,10 +97,32 @@ export function mountBookingWidget(root, dependencies = {}) {
   let activeDemoBooking = null;
   let loadSequence = 0;
 
+  function announce(name, detail) {
+    const CustomEvent = root.ownerDocument?.defaultView?.CustomEvent;
+    if (typeof CustomEvent === "function") {
+      root.dispatchEvent(new CustomEvent(name, { bubbles: true, detail }));
+    }
+  }
+
   function availabilityContext() {
     const startDate = dateInput.value?.trim();
     if (!ISO_DATE.test(startDate ?? "")) throw new Error("Choose a valid Class date.");
     return { ...context, startDate };
+  }
+
+  function occurrenceDateKey(occurrence) {
+    try {
+      const parts = new Intl.DateTimeFormat("en", {
+        timeZone: occurrence.timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).formatToParts(new Date(occurrence.startAt));
+      const fields = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+      return `${fields.year}-${fields.month}-${fields.day}`;
+    } catch {
+      return null;
+    }
   }
 
   async function loadAvailability() {
@@ -111,8 +138,20 @@ export function mountBookingWidget(root, dependencies = {}) {
       const data = await api.availability(authorization, availabilityContext());
       if (sequence !== loadSequence) return;
       occurrences = exactAvailability(data, context);
+      families = Array.isArray(data?.classFamilies) ? data.classFamilies : [];
+      announce("revvi:availability-loaded", {
+        business: data.business,
+        offer: data.offer,
+        occurrences,
+      });
+      ui.businessName(data?.business?.name);
+      selectedClassKey = null;
+      selectedClassOccurrences = [];
+      selectedClassName = null;
+      selectedDateKey = null;
+      selectedOccurrence = null;
       if (occurrences.length === 0) ui.empty();
-      else ui.occurrences(occurrences, selectOccurrence);
+      else ui.classChoices(occurrences, selectClass, families);
     } catch (error) {
       if (sequence !== loadSequence) return;
       if (error instanceof BookingWidgetRequestError && [401, 403].includes(error.status)) {
@@ -125,30 +164,63 @@ export function mountBookingWidget(root, dependencies = {}) {
     }
   }
 
-  async function selectOccurrence(occurrence) {
+  function selectClass(classKey, classOccurrences, priceLabel) {
+    if (requestActive || !classKey || !Array.isArray(classOccurrences) || classOccurrences.length === 0) return;
+    selectedClassKey = classKey;
+    selectedClassOccurrences = [...classOccurrences].sort((left, right) => String(left.startAt).localeCompare(String(right.startAt)));
+    selectedClassName = families.find((family) => String(family.id) === String(selectedClassOccurrences[0]?.classFamilyId))?.displayName
+      ?? selectedClassOccurrences[0]?.name
+      ?? "Class";
+    const firstBookable = selectedClassOccurrences.find((occurrence) => ["available", "waitlist_available"].includes(occurrence.availabilityState));
+    selectedDateKey = occurrenceDateKey(firstBookable ?? selectedClassOccurrences[0]);
+    selectedOccurrence = null;
+    quote = null;
+    ui.clearSelection();
+    ui.selectedClass(classKey, selectedClassName, priceLabel);
+  }
+
+  function selectDate(dateKey) {
+    if (requestActive || !selectedClassKey) return;
+    selectedDateKey = dateKey;
+    selectedOccurrence = null;
+    quote = null;
+    ui.clearSelection();
+    ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+  }
+
+  function selectOccurrence(occurrence) {
     if (requestActive) return;
-    requestActive = true;
     selectedOccurrence = occurrence;
-    dateInput.disabled = true;
     root.dataset.selectedClassId = occurrence.classId;
     root.dataset.selectedClassTime = occurrence.startAt;
     ui.selected(occurrence);
+  }
+
+  async function continueToQuote() {
+    if (requestActive || !selectedOccurrence) return;
+    requestActive = true;
+    dateInput.disabled = true;
     ui.loadingQuote();
     try {
       const providerQuote = exactQuote(
-        await api.quote(authorization, context.offerId, occurrence.classId),
-        occurrence,
+        await api.quote(
+          authorization,
+          context.offerId,
+          selectedOccurrence.classId,
+          selectedOccurrence.classFamilyId,
+        ),
+        selectedOccurrence,
       );
       quote = {
         ...providerQuote,
-        occurrence: { ...providerQuote.occurrence, timezone: occurrence.timezone },
+        occurrence: { ...providerQuote.occurrence, timezone: selectedOccurrence.timezone },
       };
       ui.quote(quote);
     } catch (error) {
       quote = null;
       if (error instanceof BookingWidgetRequestError && STALE_CODES.has(error.code)) {
-        root.dataset.selectedClassId = occurrence.classId;
-        root.dataset.selectedClassTime = occurrence.startAt;
+        root.dataset.selectedClassId = selectedOccurrence.classId;
+        root.dataset.selectedClassTime = selectedOccurrence.startAt;
         ui.stale(error.message);
       } else {
         ui.error("This Class could not be checked safely.", error?.retryable === true);
@@ -162,6 +234,11 @@ export function mountBookingWidget(root, dependencies = {}) {
     try {
       const data = await api.availability(authorization, availabilityContext());
       occurrences = exactAvailability(data, context);
+      announce("revvi:availability-loaded", {
+        business: data.business,
+        offer: data.offer,
+        occurrences,
+      });
       root.dataset.availabilityStale = "false";
       ui.markAvailabilityRefreshed();
     } catch {
@@ -186,7 +263,9 @@ export function mountBookingWidget(root, dependencies = {}) {
           ? booking.sandboxDemo.demoBookingId
           : null;
         activeDemoBooking = activeDemoBookingId ? booking : null;
-        ui.success({ ...booking, timezone: quote.occurrence?.timezone ?? selectedOccurrence?.timezone });
+        const confirmed = { ...booking, timezone: quote.occurrence?.timezone ?? selectedOccurrence?.timezone };
+        ui.success(confirmed);
+        announce("revvi:booking-confirmed", { booking: confirmed });
       } else if (booking?.status === "requires_action") {
         const redirectUrl = paymentActionUrl(booking.redirectUrl ?? data.redirectUrl);
         if (!redirectUrl) throw new Error("The payment action URL was invalid.");
@@ -234,7 +313,9 @@ export function mountBookingWidget(root, dependencies = {}) {
       };
       activeDemoBookingId = null;
       activeDemoBooking = null;
-      ui.success({ ...booking, timezone: quote?.occurrence?.timezone ?? selectedOccurrence?.timezone });
+      const cleaned = { ...booking, timezone: quote?.occurrence?.timezone ?? selectedOccurrence?.timezone };
+      ui.success(cleaned);
+      announce("revvi:booking-cleaned", { booking: cleaned });
     } catch {
       ui.demoCleanupFailed();
     } finally {
@@ -261,7 +342,9 @@ export function mountBookingWidget(root, dependencies = {}) {
       const data = await api.completePaidBooking(authorization, returnedBookingId);
       const booking = data?.booking;
       if (booking?.status === "confirmed") {
-        ui.success({ ...booking, timezone: root.dataset.locationTimezone });
+        const confirmed = { ...booking, timezone: root.dataset.locationTimezone };
+        ui.success(confirmed);
+        announce("revvi:booking-confirmed", { booking: confirmed });
       } else if (["unknown", "pending", "requires_action", "reconciliation"].includes(booking?.status)) {
         ui.reconciliation("Your payment and Class Booking are being reconciled. Do not submit another Booking.");
       } else {
@@ -280,8 +363,18 @@ export function mountBookingWidget(root, dependencies = {}) {
   }
 
   ui.confirmButton.addEventListener("click", submitBooking);
+  ui.classContinueButton.addEventListener("click", () => {
+    if (!requestActive && selectedClassOccurrences.length > 0) {
+      ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+    }
+  });
+  ui.continueButton.addEventListener("click", continueToQuote);
   ui.demoCleanupButton.addEventListener("click", cleanupDemoBooking);
   function resetSelection() {
+    selectedClassKey = null;
+    selectedClassOccurrences = [];
+    selectedClassName = null;
+    selectedDateKey = null;
     selectedOccurrence = null;
     quote = null;
     dateInput.disabled = false;
@@ -290,9 +383,33 @@ export function mountBookingWidget(root, dependencies = {}) {
     ui.clearSelection();
   }
   ui.backButton.addEventListener("click", () => {
-    if (!requestActive && occurrences.length > 0) {
+    if (!requestActive && selectedClassOccurrences.length > 0) {
+      selectedOccurrence = null;
+      quote = null;
+      dateInput.disabled = false;
+      ui.clearSelection();
+      ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+    }
+  });
+  ui.backToClassesButton.addEventListener("click", () => {
+    if (!requestActive) {
       resetSelection();
-      ui.occurrences(occurrences, selectOccurrence);
+      ui.classChoices(occurrences, selectClass, families);
+    }
+  });
+  ui.changeLocationButton.addEventListener("click", () => {
+    if (root.dataset.changeLocationUrl) browser.location.assign(root.dataset.changeLocationUrl);
+    else browser.history?.back?.();
+  });
+  ui.stepOneButton.addEventListener("click", () => {
+    if (!requestActive) {
+      resetSelection();
+      ui.classChoices(occurrences, selectClass, families);
+    }
+  });
+  ui.stepTwoButton.addEventListener("click", () => {
+    if (!requestActive && selectedClassOccurrences.length > 0) {
+      ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, selectedOccurrence, selectedClassName);
     }
   });
   ui.refreshButton.addEventListener("click", () => {
@@ -302,7 +419,10 @@ export function mountBookingWidget(root, dependencies = {}) {
     }
   });
   dateInput.addEventListener("change", () => {
-    if (!requestActive) void loadAvailability();
+    if (!requestActive) {
+      resetSelection();
+      void loadAvailability();
+    }
   });
   void (async () => {
     if (!await completeReturnedPayment()) await loadAvailability();

@@ -138,12 +138,23 @@ export function parseClassAvailabilityRequest(value) {
   if (typeof value.locationId !== "string" || !UUID.test(value.locationId)) {
     throw new ClassAvailabilityRequestError("INVALID_LOCATION", "A valid Location ID is required.");
   }
+  if (value.classFamilyId !== undefined
+    && (typeof value.classFamilyId !== "string" || !UUID.test(value.classFamilyId))) {
+    throw new ClassAvailabilityRequestError("INVALID_CLASS_FAMILY", "A valid Class family ID is required.");
+  }
   const startDate = parseDate(value.startDate, "startDate");
   const endDate = parseDate(value.endDate, "endDate");
   if (!startDate && endDate) {
     throw new ClassAvailabilityRequestError("INVALID_DATE_RANGE", "startDate is required when endDate is supplied.");
   }
-  return { businessSlug, offerId: value.offerId, locationId: value.locationId, startDate, endDate };
+  return {
+    businessSlug,
+    offerId: value.offerId,
+    locationId: value.locationId,
+    ...(value.classFamilyId !== undefined ? { classFamilyId: value.classFamilyId } : {}),
+    startDate,
+    endDate,
+  };
 }
 
 export function resolveClassAvailabilityDateRange({ startDate, endDate, timezone, now }) {

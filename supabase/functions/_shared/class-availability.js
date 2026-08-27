@@ -41,6 +41,60 @@ function normalizedAllowlist(value) {
   return normalized;
 }
 
+function selectedClassFamily(context, classFamilyId) {
+  if (!Array.isArray(context?.classFamilies)) return null;
+  if (classFamilyId === undefined || classFamilyId === null || classFamilyId === "") return null;
+  const family = context.classFamilies.find((candidate) => id(candidate?.id) === id(classFamilyId));
+  if (!family || family.status === "inactive" || family.status === "disabled") {
+    throw new ClassAvailabilityError("CLASS_FAMILY_NOT_FOUND", "This Class family is not available.", 404);
+  }
+  const mappings = (family.providerMappings ?? []).filter((mapping) => mapping?.status !== "inactive"
+    && mapping?.status !== "disabled");
+  if (!mappings.length) {
+    throw new ClassAvailabilityError("CLASS_FAMILY_UNAVAILABLE", "This Class family has no active provider mapping.");
+  }
+  return { ...family, providerMappings: mappings };
+}
+
+function familyAllowlist(family, fallback) {
+  if (!family) return fallback;
+  return familiesAllowlist([family], fallback);
+}
+
+function familiesAllowlist(families, fallback) {
+  if (!Array.isArray(families) || families.length === 0) return fallback;
+  const values = (field) => [...new Set(families.flatMap((family) => family.providerMappings ?? [])
+    .map((mapping) => id(mapping[field]))
+    .filter(Boolean))];
+  return {
+    location: values("providerLocationId"),
+    program: values("providerProgramId"),
+    classDescription: values("providerClassDescriptionId"),
+    sessionType: values("providerSessionTypeId"),
+    classSchedule: values("providerClassScheduleId"),
+  };
+}
+
+function familyMappingMatches(family, locationId, taxonomy, classScheduleId) {
+  if (!family) return true;
+  return family.providerMappings.some((mapping) => id(mapping.providerLocationId) === locationId
+    && id(mapping.providerClassDescriptionId) === taxonomy.classDescriptionId
+    && id(mapping.providerProgramId) === taxonomy.programId
+    && id(mapping.providerSessionTypeId) === taxonomy.sessionTypeId
+    && (!mapping.providerClassScheduleId || id(mapping.providerClassScheduleId) === id(classScheduleId)));
+}
+
+function matchingClassFamily(families, locationId, taxonomy, classScheduleId) {
+  if (!Array.isArray(families) || families.length === 0) return null;
+  return families.find((family) => family.status !== "inactive" && family.status !== "disabled"
+    && family.providerMappings?.some((mapping) => id(mapping.providerLocationId) === locationId
+      && id(mapping.providerClassDescriptionId) === taxonomy.classDescriptionId
+      && id(mapping.providerProgramId) === taxonomy.programId
+      && id(mapping.providerSessionTypeId) === taxonomy.sessionTypeId
+      && (!mapping.providerClassScheduleId
+        || id(mapping.providerClassScheduleId) === id(classScheduleId)))) ?? null;
+}
+
 function requireConfiguredContext(context) {
   if (context?.integration?.status !== "active" || context?.mapping?.status !== "active") {
     throw new ClassAvailabilityError("OFFER_MAPPING_INACTIVE", "This Revvi Offer is not available.");
@@ -176,8 +230,16 @@ function locationListIncludes(values, locationId) {
   return Array.isArray(values) && values.map((value) => id(value?.Id ?? value)).includes(locationId);
 }
 
-function selectMappedService(services, productId, locationId) {
-  const matches = services.filter((service) => id(service?.ProductId) === productId);
+function mappedProductIds(mapping) {
+  const configured = Array.isArray(mapping?.providerServiceProductIds)
+    ? mapping.providerServiceProductIds
+    : [mapping?.providerServiceProductId];
+  return [...new Set(configured.map(id).filter(Boolean))];
+}
+
+export function selectMappedService(services, productIds, locationId) {
+  const allowedProductIds = new Set((Array.isArray(productIds) ? productIds : [productIds]).map(id).filter(Boolean));
+  const matches = services.filter((service) => allowedProductIds.has(id(service?.ProductId)));
   if (matches.length !== 1) return null;
   const service = matches[0];
   if (service.SellOnline !== true || service.Discontinued === true) return null;
@@ -190,6 +252,10 @@ function selectMappedService(services, productId, locationId) {
 export async function discoverOfferClassAvailability(input, dependencies) {
   const context = input?.context;
   const allowlist = requireConfiguredContext(context);
+  const family = selectedClassFamily(context, input?.classFamilyId);
+  const queryAllowlist = family
+    ? familyAllowlist(family, allowlist)
+    : familiesAllowlist(context.classFamilies, allowlist);
   const provider = dependencies?.provider;
   const now = dependencies?.now?.() ?? new Date();
   const siteId = id(context.integration.providerSiteId);
@@ -204,20 +270,20 @@ export async function discoverOfferClassAvailability(input, dependencies) {
   const [sites, locations, programs, descriptions, schedules] = await Promise.all([
     provider.getSites({ siteIds: [siteId], includePerStaffPricing: true }),
     provider.getLocations(),
-    provider.getPrograms({ programIds: allowlist.program, scheduleType: "Class" }),
+    provider.getPrograms({ programIds: queryAllowlist.program, scheduleType: "Class" }),
     provider.getClassDescriptions({
-      programIds: allowlist.program,
+      programIds: queryAllowlist.program,
       locationId,
       startClassDateTime: startAt,
       endClassDateTime: endAt,
       includeInactive: false,
     }),
-    allowlist.classSchedule?.length
+    queryAllowlist.classSchedule?.length
       ? provider.getClassSchedules({
-        classScheduleIds: allowlist.classSchedule,
+        classScheduleIds: queryAllowlist.classSchedule,
         locationIds: [locationId],
-        programIds: allowlist.program,
-        sessionTypeIds: allowlist.sessionType,
+        programIds: queryAllowlist.program,
+        sessionTypeIds: queryAllowlist.sessionType,
       })
       : Promise.resolve([]),
   ]);
@@ -229,21 +295,21 @@ export async function discoverOfferClassAvailability(input, dependencies) {
   const approvedProgramIds = new Set(programs
     .filter((program) => program.ScheduleType === "Class")
     .map((program) => id(program.Id))
-    .filter((programId) => isAllowed(allowlist.program, programId)));
+    .filter((programId) => isAllowed(queryAllowlist.program, programId)));
   const approvedDescriptions = new Map(descriptions
     .filter((description) => description.Active === true)
-    .filter((description) => isAllowed(allowlist.classDescription, description.Id))
+    .filter((description) => isAllowed(queryAllowlist.classDescription, description.Id))
     .filter((description) => approvedProgramIds.has(id(description.Program?.Id)))
-    .filter((description) => isAllowed(allowlist.sessionType, description.SessionType?.Id))
+    .filter((description) => isAllowed(queryAllowlist.sessionType, description.SessionType?.Id))
     .map((description) => [id(description.Id), description]));
   const approvedScheduleIds = new Set(schedules.map((schedule) => id(schedule.Id)));
 
   const classes = await provider.getClasses({
     locationIds: [locationId],
-    programIds: allowlist.program,
-    classDescriptionIds: allowlist.classDescription,
-    sessionTypeIds: allowlist.sessionType,
-    ...(allowlist.classSchedule?.length ? { classScheduleIds: allowlist.classSchedule } : {}),
+    programIds: queryAllowlist.program,
+    classDescriptionIds: queryAllowlist.classDescription,
+    sessionTypeIds: queryAllowlist.sessionType,
+    ...(queryAllowlist.classSchedule?.length ? { classScheduleIds: queryAllowlist.classSchedule } : {}),
     startDateTime: startAt,
     endDateTime: endAt,
     ...(context.customerProviderProfile?.providerClientId
@@ -267,6 +333,7 @@ export async function discoverOfferClassAvailability(input, dependencies) {
     const taxonomy = occurrenceTaxonomy(item, description);
     const occurrenceStart = normalizeInstant(item?.StartDateTime, timezone);
     const occurrenceEnd = normalizeInstant(item?.EndDateTime, timezone);
+    const matchedFamily = matchingClassFamily(context.classFamilies, locationId, taxonomy, item?.ClassScheduleId);
     return Boolean(
       id(item?.Id)
       && occurrenceStart && occurrenceStart >= startAt && occurrenceStart <= endAt
@@ -276,11 +343,13 @@ export async function discoverOfferClassAvailability(input, dependencies) {
       && item?.Active === true
       && item?.IsCanceled !== true
       && description
-      && isAllowed(allowlist.classDescription, taxonomy.classDescriptionId)
+      && isAllowed(queryAllowlist.classDescription, taxonomy.classDescriptionId)
       && approvedProgramIds.has(taxonomy.programId)
-      && isAllowed(allowlist.sessionType, taxonomy.sessionTypeId)
-      && (!allowlist.classSchedule?.length
-        || (isAllowed(allowlist.classSchedule, item?.ClassScheduleId)
+      && isAllowed(queryAllowlist.sessionType, taxonomy.sessionTypeId)
+      && familyMappingMatches(family, locationId, taxonomy, item?.ClassScheduleId)
+      && (!Array.isArray(context.classFamilies) || context.classFamilies.length === 0 || matchedFamily)
+      && (!queryAllowlist.classSchedule?.length
+        || (isAllowed(queryAllowlist.classSchedule, item?.ClassScheduleId)
           && approvedScheduleIds.has(id(item?.ClassScheduleId))))
     );
   });
@@ -289,6 +358,12 @@ export async function discoverOfferClassAvailability(input, dependencies) {
   for (const item of candidates) {
     const description = approvedDescriptions.get(id(item.ClassDescription?.Id));
     const taxonomy = occurrenceTaxonomy(item, description);
+    const matchedFamily = family ?? matchingClassFamily(
+      context.classFamilies,
+      locationId,
+      taxonomy,
+      item?.ClassScheduleId,
+    );
     let provisionalPrice;
     if (context.offer.fulfilmentMode === "purchase_pricing_option") {
       const services = await provider.getServices({
@@ -298,7 +373,7 @@ export async function discoverOfferClassAvailability(input, dependencies) {
         sellOnline: true,
         includeDiscontinued: false,
       });
-      const mappedService = selectMappedService(services, id(context.mapping.providerServiceProductId), locationId);
+      const mappedService = selectMappedService(services, mappedProductIds(context.mapping), locationId);
       if (!mappedService) continue;
       provisionalPrice = {
         amount: mappedService.amount,
@@ -322,6 +397,7 @@ export async function discoverOfferClassAvailability(input, dependencies) {
       classDescriptionId: taxonomy.classDescriptionId,
       programId: taxonomy.programId,
       sessionTypeId: taxonomy.sessionTypeId,
+      ...(matchedFamily ? { classFamilyId: id(matchedFamily.id) } : {}),
       name: String(item.ClassDescription?.Name ?? description?.Name ?? "Class"),
       ...(item.ClassDescription?.Description ?? description?.Description
         ? { description: String(item.ClassDescription?.Description ?? description?.Description) }
@@ -352,6 +428,22 @@ export async function discoverOfferClassAvailability(input, dependencies) {
       slug: context.business.slug,
     },
     offer: { id: context.offer.id, title: context.offer.displayName },
+    ...(Array.isArray(context.classFamilies) && !family ? {
+      classFamilies: context.classFamilies
+        .filter((candidate) => candidate.status !== "inactive" && candidate.status !== "disabled")
+        .map((candidate) => ({
+          id: id(candidate.id),
+          name: String(candidate.displayName ?? candidate.name ?? "Class family"),
+          ...(candidate.description ? { description: String(candidate.description) } : {}),
+          available: sessions.some((session) => session.classFamilyId === id(candidate.id)),
+        })),
+    } : {}),
+    ...(family ? {
+      classFamily: {
+        id: id(family.id),
+        name: String(family.displayName ?? family.name ?? "Class family"),
+      },
+    } : {}),
     sessions,
   };
 }

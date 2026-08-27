@@ -1,3 +1,5 @@
+import { selectMappedService } from "./class-availability.js";
+
 export class BookingQuoteError extends Error {
   constructor(code, message, status = 409) {
     super(message);
@@ -125,6 +127,21 @@ function classOccurrenceFacts(occurrence, input) {
       && !approved("classSchedule", occurrence.classScheduleId))) {
     throw new BookingQuoteError("CLASS_NOT_APPROVED", "This Class is not approved for the selected Revvi Offer.", 409);
   }
+  const families = input.context.classFamilies;
+  if (Array.isArray(families) && families.length > 0) {
+    const family = families.find((candidate) => String(candidate.id) === String(input.classFamilyId ?? "")
+      && candidate.status !== "inactive"
+      && candidate.status !== "disabled"
+      && candidate.providerMappings?.some((mapping) => String(mapping.providerLocationId) === providerLocationId
+        && String(mapping.providerClassDescriptionId) === String(occurrence.classDescriptionId ?? "")
+        && String(mapping.providerProgramId) === String(occurrence.programId ?? "")
+        && String(mapping.providerSessionTypeId) === String(occurrence.sessionTypeId ?? "")
+        && (!mapping.providerClassScheduleId
+          || String(mapping.providerClassScheduleId) === String(occurrence.classScheduleId ?? ""))));
+    if (!family) {
+      throw new BookingQuoteError("CLASS_FAMILY_NOT_APPROVED", "This Class is not approved for the selected Class family.", 409);
+    }
+  }
   const startAt = new Date(occurrence.startAt);
   if (Number.isNaN(startAt.getTime())) throw new BookingQuoteError("CLASS_CONTRACT_INVALID", "Mindbody returned an invalid Class time.", 502);
   return {
@@ -138,6 +155,7 @@ function classOccurrenceFacts(occurrence, input) {
     startAt: startAt.toISOString(),
     endAt: occurrence.endAt == null ? null : new Date(occurrence.endAt).toISOString(),
     locationName: String(occurrence.locationName ?? input.context.location.displayName),
+    ...(input.classFamilyId ? { classFamilyId: String(input.classFamilyId) } : {}),
   };
 }
 
@@ -149,6 +167,13 @@ function eligibleEntitlement(service, now) {
     || (expiresAt && (Number.isNaN(expiresAt.getTime()) || expiresAt < now))) return false;
   return service.unlimited === true
     || (Number.isFinite(Number(service.remaining)) && Number(service.remaining) > 0);
+}
+
+function mappedProductIds(mapping) {
+  const configured = Array.isArray(mapping?.providerServiceProductIds)
+    ? mapping.providerServiceProductIds
+    : [mapping?.providerServiceProductId];
+  return [...new Set(configured.map((value) => String(value ?? "").trim()).filter(Boolean))];
 }
 
 async function sha256(value) {
@@ -181,7 +206,8 @@ export async function createClassBookingQuote(input, dependencies) {
   }
   let fulfilment;
   if (mode === "purchase_pricing_option") {
-    if (!input.context.mapping.providerServiceProductId
+    const configuredProductIds = mappedProductIds(input.context.mapping);
+    if (configuredProductIds.length === 0
       || !Number.isSafeInteger(input.context.mapping.paidCheckoutLocationId)) {
       throw new BookingQuoteError(
         "PAID_ROUTE_NOT_CONFIGURED",
@@ -189,17 +215,42 @@ export async function createClassBookingQuote(input, dependencies) {
         503,
       );
     }
+    let providerServiceProductId = configuredProductIds[0];
+    if (configuredProductIds.length > 1) {
+      if (typeof dependencies.provider.getServices !== "function") {
+        throw new BookingQuoteError(
+          "PRODUCT_MAPPING_AMBIGUOUS",
+          "This paid Offer has more than one approved Mindbody Product and the selected Class cannot be priced safely.",
+          409,
+        );
+      }
+      const services = await dependencies.provider.getServices({
+        classId: input.classId,
+        locationId: input.context.location.providerLocationId,
+        sellOnline: true,
+        includeDiscontinued: false,
+      });
+      const mappedService = selectMappedService(services, configuredProductIds, input.context.location.providerLocationId);
+      if (!mappedService) {
+        throw new BookingQuoteError(
+          "PRODUCT_NOT_APPLICABLE",
+          "No single approved Mindbody Product applies to the selected Class.",
+          409,
+        );
+      }
+      providerServiceProductId = String(mappedService.service.ProductId);
+    }
     const calculation = await dependencies.provider.testCheckout({
       siteId: input.context.integration.providerSiteId,
       classId: input.classId,
       clientId: profile.providerClientId,
       checkoutLocationId: input.context.mapping.paidCheckoutLocationId,
       classLocationId: input.context.location.providerLocationId,
-      productId: input.context.mapping.providerServiceProductId,
+      productId: providerServiceProductId,
     });
     fulfilment = {
       ...calculation,
-      providerServiceProductId: input.context.mapping.providerServiceProductId,
+      providerServiceProductId,
       providerClientServiceId: null,
       providerCalculation: "checkout_test_cart",
       publicProviderCalculation: "mindbody_test_cart",
@@ -242,6 +293,7 @@ export async function createClassBookingQuote(input, dependencies) {
     offerId: input.context.offer.id,
     mappingId: input.context.mapping.id,
     mappingVersion: input.context.mapping.version,
+    classFamilyId: input.classFamilyId ?? null,
     classId: input.classId,
     fulfilmentMode: mode,
     providerSiteId: input.context.integration.providerSiteId,
@@ -263,6 +315,7 @@ export async function createClassBookingQuote(input, dependencies) {
     customerProviderProfileId: profile.id,
     providerLocationId: input.context.location.providerLocationId,
     providerClassScheduleId: classOccurrence.classScheduleId,
+    classFamilyId: input.classFamilyId ?? null,
     providerCalculation: fulfilment.providerCalculation,
     quoteFingerprint,
     quotedAt: quotedAt.toISOString(),
@@ -319,7 +372,11 @@ export async function revalidateClassBookingQuoteBeforeWrite(input, dependencies
     uniqueClientId: quote.providerClientUniqueId,
     timezone: context.location.timezone,
   });
-  const classOccurrence = classOccurrenceFacts(occurrence, { classId: quote.classId, context });
+  const classOccurrence = classOccurrenceFacts(occurrence, {
+    classId: quote.classId,
+    classFamilyId: quote.classFamilyId,
+    context,
+  });
   if (quote.fulfilmentMode === "existing_entitlement") {
     const services = await dependencies.provider.getClientServices({
       classId: quote.classId,
@@ -337,6 +394,14 @@ export async function revalidateClassBookingQuoteBeforeWrite(input, dependencies
     return { changed: false, occurrence: classOccurrence };
   }
   if (quote.fulfilmentMode !== "purchase_pricing_option") return { changed: false, occurrence: classOccurrence };
+  const configuredProductIds = mappedProductIds(context.mapping);
+  if (!configuredProductIds.includes(String(quote.providerServiceProductId ?? ""))) {
+    throw new BookingQuoteError(
+      "QUOTE_BINDING_CHANGED",
+      "The quoted Mindbody Product is no longer approved for this Offer; request a new quote.",
+      409,
+    );
+  }
   if (!Number.isSafeInteger(context.mapping.paidCheckoutLocationId)) {
     throw new BookingQuoteError(
       "PAID_ROUTE_NOT_CONFIGURED",

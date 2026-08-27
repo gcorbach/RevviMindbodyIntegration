@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Revvi — book a session</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background:#EDE6D8; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:40px 20px; }
+  .card { display:flex; max-width:900px; width:100%; min-height:560px; border-radius:24px; overflow:hidden; box-shadow:0 20px 60px rgba(53,58,87,0.15); background:#F6F1E8; }
+  .photo { width:320px; flex-shrink:0; background:#C9A98C; padding:32px; display:flex; flex-direction:column; justify-content:space-between; }
+  .logo { font-family: Georgia, 'Times New Roman', serif; font-style:italic; font-size:26px; color:#FFFFFF; }
+  .photo-caption { font-size:13px; color:#F3E9DA; }
+  .panel { flex:1; padding:48px 56px; display:none; flex-direction:column; }
+  .panel.active { display:flex; }
+  .crumbs { font-size:12px; letter-spacing:0.02em; margin-bottom:26px; }
+  .crumbs .done { color:#353A57; cursor:pointer; }
+  .crumbs .current { color:#353A57; font-weight:500; text-decoration:underline; }
+  .crumbs .todo { color:#B1B2BA; }
+  .crumbs .sep { margin:0 8px; color:#B1B2BA; }
+  .badge { display:inline-flex; align-items:center; gap:6px; background:#EDE6D8; color:#353A57; font-size:11px; font-weight:500; letter-spacing:0.05em; padding:5px 12px; border-radius:999px; margin-bottom:20px; width:fit-content; }
+  .badge-dot { width:6px; height:6px; background:#353A57; border-radius:50%; }
+  h1 { font-family: Georgia, 'Times New Roman', serif; font-weight:400; font-size:32px; color:#353A57; margin:0 0 8px; }
+  .eyebrow { font-size:12px; letter-spacing:0.03em; color:#8C8574; margin:0 0 26px; }
+  .eyebrow a { color:#353A57; text-decoration:underline; font-weight:500; cursor:pointer; }
+  .sub { font-size:15px; color:#4A4E68; margin:0 0 6px; }
+  .classrow { display:flex; align-items:center; justify-content:space-between; border:1px solid #E4DCC8; border-radius:12px; padding:14px 16px; margin-bottom:12px; cursor:pointer; transition:border-color .15s; }
+  .classrow:hover { border-color:#353A57; }
+  .swatch { width:38px; height:38px; border-radius:9px; background:#EDE6D8; flex-shrink:0; }
+  .classname { margin:0; font-size:15px; font-weight:500; color:#353A57; }
+  .classmeta { margin:0; font-size:13px; color:#4A4E68; }
+  .selectbtn { border:1px solid #353A57; background:#F6F1E8; color:#353A57; border-radius:8px; padding:8px 18px; font-size:13px; cursor:pointer; }
+  .daybtn, .timebtn { border:1px solid #D9CFBB; background:#FFFFFF; color:#353A57; border-radius:9px; padding:10px 16px; font-size:14px; cursor:pointer; }
+  .daybtn.active, .timebtn.active { background:#353A57; color:#F6F1E8; border-color:#353A57; }
+  .row-gap { display:flex; gap:10px; margin-bottom:22px; flex-wrap:wrap; }
+  .timegrid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:32px; }
+  .notebox { background:#EDE6D8; border-radius:12px; padding:14px 16px; font-size:13px; color:#4A4E68; margin:20px 0 28px; }
+  .cta { width:100%; background:#353A57; color:#F6F1E8; border:none; border-radius:9px; padding:15px; font-size:15px; font-weight:500; cursor:pointer; margin-top:auto; }
+  .cta:hover { background:#2A2E45; }
+  .ctaoutline { width:100%; background:#F6F1E8; color:#353A57; border:1px solid #353A57; border-radius:9px; padding:15px; font-size:15px; font-weight:500; cursor:pointer; }
+  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(20px); background:#353A57; color:#F6F1E8; padding:12px 20px; border-radius:9px; font-size:13px; opacity:0; pointer-events:none; transition:all .25s; }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  .checkicon { width:44px; height:44px; border-radius:50%; background:#EDE6D8; display:flex; align-items:center; justify-content:center; margin-bottom:16px; }
+  @media (max-width: 720px) {
+    .card { flex-direction:column; }
+    .photo { width:100%; height:110px; flex-direction:row; align-items:center; }
+    .panel { padding:32px 24px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="photo">
+    <span class="logo">revvi</span>
+    <span class="photo-caption">Flow Studio Prague</span>
+  </div>
+
+  <div class="panel active" id="step1">
+    <div class="crumbs">
+      <span class="current">Choose class</span><span class="sep">›</span>
+      <span class="todo">Choose a time</span><span class="sep">›</span>
+      <span class="todo">Confirm</span>
+    </div>
+    <div class="badge"><span class="badge-dot"></span>STEP 1 OF 3</div>
+    <h1>Choose your class</h1>
+    <p class="eyebrow">FLOW STUDIO PRAGUE · VINOHRADY · <a onclick="changeLocation()">CHANGE LOCATION</a></p>
+
+    <div class="classrow" onclick="selectClass('Vinyasa flow','Next: Tue 25, 9:00')">
+      <div style="display:flex;align-items:center;gap:14px;">
+        <div class="swatch"></div>
+        <div><p class="classname">Vinyasa flow</p><p class="classmeta">Petra · 60 min · Next: Tue 25, 9:00</p></div>
+      </div>
+      <button class="selectbtn" type="button">Select</button>
+    </div>
+    <div class="classrow" onclick="selectClass('Beginner yoga','Next: Tue 25, 10:30')">
+      <div style="display:flex;align-items:center;gap:14px;">
+        <div class="swatch"></div>
+        <div><p class="classname">Beginner yoga</p><p class="classmeta">Petra · 45 min · Next: Tue 25, 10:30</p></div>
+      </div>
+      <button class="selectbtn" type="button">Select</button>
+    </div>
+    <div class="classrow" onclick="selectClass('Mat pilates','Waitlist only')">
+      <div style="display:flex;align-items:center;gap:14px;">
+        <div class="swatch"></div>
+        <div><p class="classname">Mat pilates</p><p class="classmeta">Jana · 45 min · Waitlist only</p></div>
+      </div>
+      <button class="selectbtn" type="button">Select</button>
+    </div>
+    <div class="classrow" onclick="selectClass('Power yoga','Next: Tue 25, 17:30')">
+      <div style="display:flex;align-items:center;gap:14px;">
+        <div class="swatch"></div>
+        <div><p class="classname">Power yoga</p><p class="classmeta">Tomáš · 60 min · Next: Tue 25, 17:30</p></div>
+      </div>
+      <button class="selectbtn" type="button">Select</button>
+    </div>
+    <div class="classrow" onclick="selectClass('Reformer pilates','Next: Tue 25, 18:45')">
+      <div style="display:flex;align-items:center;gap:14px;">
+        <div class="swatch"></div>
+        <div><p class="classname">Reformer pilates</p><p class="classmeta">Jana · 60 min · Next: Tue 25, 18:45</p></div>
+      </div>
+      <button class="selectbtn" type="button">Select</button>
+    </div>
+  </div>
+
+  <div class="panel" id="step2">
+    <div class="crumbs">
+      <span class="done" onclick="goTo(1)">Choose class</span><span class="sep">›</span>
+      <span class="current">Choose a time</span><span class="sep">›</span>
+      <span class="todo">Confirm</span>
+    </div>
+    <div class="badge"><span class="badge-dot"></span>STEP 2 OF 3</div>
+    <h1>Pick a time that works</h1>
+    <p class="sub" id="step2-sub" style="margin-bottom:22px;">Vinyasa flow · Flow Studio Prague, Vinohrady</p>
+
+    <div class="row-gap" id="days">
+      <button class="daybtn active" onclick="pickDay(this,'Tue 25 Aug')" type="button">Tue 25</button>
+      <button class="daybtn" onclick="pickDay(this,'Wed 26 Aug')" type="button">Wed 26</button>
+      <button class="daybtn" onclick="pickDay(this,'Thu 27 Aug')" type="button">Thu 27</button>
+      <button class="daybtn" onclick="toggleCalendar()" type="button" aria-label="Open calendar" style="padding:10px 12px;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#353A57" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      </button>
+    </div>
+    <div id="calendar-panel" style="display:none;border:1px solid #E4DCC8;border-radius:12px;padding:16px;margin:-10px 0 22px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <button type="button" onclick="shiftMonth(-1)" style="background:none;border:none;cursor:pointer;color:#353A57;font-size:16px;padding:0 8px;">‹</button>
+        <span id="cal-month-label" style="font-size:13px;font-weight:500;color:#353A57;"></span>
+        <button type="button" onclick="shiftMonth(1)" style="background:none;border:none;cursor:pointer;color:#353A57;font-size:16px;padding:0 8px;">›</button>
+      </div>
+      <div id="cal-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center;font-size:12px;"></div>
+    </div>
+    <div class="timegrid" id="times">
+      <button class="timebtn active" onclick="pickTime(this,'9:00')" type="button">9:00</button>
+      <button class="timebtn" onclick="pickTime(this,'11:00')" type="button">11:00</button>
+      <button class="timebtn" onclick="pickTime(this,'13:30')" type="button">13:30</button>
+      <button class="timebtn" onclick="pickTime(this,'15:00')" type="button">15:00</button>
+      <button class="timebtn" onclick="pickTime(this,'17:30')" type="button">17:30</button>
+    </div>
+    <button class="cta" onclick="goToConfirm()" type="button">Continue</button>
+    <p style="font-size:12px;color:#8C8574;margin-top:10px;">Payment is made directly at the studio.</p>
+  </div>
+
+  <div class="panel" id="step3">
+    <div id="review-state" style="display:flex;flex-direction:column;flex:1;">
+      <div class="crumbs">
+        <span class="done" onclick="goTo(1)">Choose class</span><span class="sep">›</span>
+        <span class="done" onclick="goTo(2)">Choose a time</span><span class="sep">›</span>
+        <span class="current">Confirm</span>
+      </div>
+      <div class="badge"><span class="badge-dot"></span>STEP 3 OF 3</div>
+      <h1>Review and reserve</h1>
+      <p class="sub" id="step3-sub1">Vinyasa flow · Tue 25 Aug · 9:00</p>
+      <p class="sub" style="margin-bottom:20px;">Flow Studio Prague · Vinohrady</p>
+      <div class="notebox">Free cancellation up to 12 hours before class. Payment is made directly at the studio.</div>
+      <button class="cta" onclick="reserveSpot()" type="button">Reserve my spot</button>
+    </div>
+    <div id="confirmed-state" style="display:none;flex-direction:column;flex:1;">
+      <div class="checkicon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#353A57" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
+      <h1>You're booked</h1>
+      <p class="sub" id="confirmed-sub">Vinyasa flow · Tue 25 Aug · 9:00</p>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+var state = { className: 'Vinyasa flow', when: 'Next: Tue 25, 9:00', day: 'Tue 25 Aug', time: '9:00' };
+var calDate = new Date(2026, 7, 1);
+var selectedCalDate = new Date(2026, 7, 25);
+
+function goTo(step) {
+  document.querySelectorAll('.panel').forEach(function (p) { p.classList.remove('active'); });
+  document.getElementById('step' + step).classList.add('active');
+  document.getElementById('review-state').style.display = 'flex';
+  document.getElementById('confirmed-state').style.display = 'none';
+}
+
+function selectClass(name, when) {
+  state.className = name;
+  state.when = when;
+  document.getElementById('step2-sub').textContent = name + ' · Flow Studio Prague, Vinohrady';
+  goTo(2);
+}
+
+function pickDay(btn, day) {
+  document.querySelectorAll('#days .daybtn').forEach(function (b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  state.day = day;
+}
+function pickTime(btn, time) {
+  document.querySelectorAll('#times .timebtn').forEach(function (b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  state.time = time;
+}
+
+function goToConfirm() {
+  var summary = state.className + ' · ' + state.day + ' · ' + state.time;
+  document.getElementById('step3-sub1').textContent = summary;
+  goTo(3);
+}
+
+function reserveSpot() {
+  document.getElementById('review-state').style.display = 'none';
+  document.getElementById('confirmed-state').style.display = 'flex';
+  document.getElementById('confirmed-sub').textContent = state.className + ' · ' + state.day + ' · ' + state.time;
+}
+
+function toggleCalendar() {
+  var p = document.getElementById('calendar-panel');
+  var willShow = p.style.display === 'none';
+  p.style.display = willShow ? 'block' : 'none';
+  if (willShow) renderCalendar();
+}
+
+function shiftMonth(delta) {
+  calDate.setMonth(calDate.getMonth() + delta);
+  renderCalendar();
+}
+
+function renderCalendar() {
+  var monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  document.getElementById('cal-month-label').textContent = monthNames[calDate.getMonth()] + ' ' + calDate.getFullYear();
+  var grid = document.getElementById('cal-grid');
+  grid.innerHTML = '';
+  ['M','T','W','T','F','S','S'].forEach(function (d) {
+    var el = document.createElement('div');
+    el.textContent = d;
+    el.style.color = '#8C8574';
+    el.style.fontWeight = '500';
+    grid.appendChild(el);
+  });
+  var firstOfMonth = new Date(calDate.getFullYear(), calDate.getMonth(), 1);
+  var startOffset = (firstOfMonth.getDay() + 6) % 7;
+  var daysInMonth = new Date(calDate.getFullYear(), calDate.getMonth() + 1, 0).getDate();
+  for (var i = 0; i < startOffset; i++) { grid.appendChild(document.createElement('div')); }
+  for (var day = 1; day <= daysInMonth; day++) {
+    var cellDate = new Date(calDate.getFullYear(), calDate.getMonth(), day);
+    var cell = document.createElement('div');
+    cell.textContent = day;
+    cell.style.padding = '6px 0';
+    cell.style.borderRadius = '8px';
+    cell.style.cursor = 'pointer';
+    var isSelected = cellDate.toDateString() === selectedCalDate.toDateString();
+    if (isSelected) {
+      cell.style.background = '#353A57';
+      cell.style.color = '#F6F1E8';
+    } else {
+      cell.style.color = '#353A57';
+      cell.onmouseenter = function () { this.style.background = '#EDE6D8'; };
+      cell.onmouseleave = function () { this.style.background = 'transparent'; };
+    }
+    cell.onclick = (function (d) { return function () { pickCalendarDate(d); }; })(cellDate);
+    grid.appendChild(cell);
+  }
+}
+
+function pickCalendarDate(d) {
+  selectedCalDate = d;
+  var dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var label = dayNames[d.getDay()] + ' ' + d.getDate() + ' ' + monthNames[d.getMonth()];
+  document.querySelectorAll('#days .daybtn').forEach(function (b) { b.classList.remove('active'); });
+  state.day = label;
+  document.getElementById('calendar-panel').style.display = 'none';
+  showToast('Selected ' + label + '. Times shown are illustrative.');
+}
+
+function changeLocation() { showToast('This would return to the partner directory to change studio or location.'); }
+
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2600);
+}
+</script>
+</body>
+</html>

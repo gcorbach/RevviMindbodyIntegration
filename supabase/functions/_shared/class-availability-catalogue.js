@@ -15,6 +15,43 @@ function notFound(message) {
   return new ClassAvailabilityCatalogueError("OFFER_AVAILABILITY_NOT_FOUND", message, 404);
 }
 
+function classFamilies(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((row) => row?.family_id).map((row) => ({
+    id: row.family_id,
+    slug: row.family_slug,
+    displayName: row.family_name,
+    ...(row.family_description ? { description: row.family_description } : {}),
+    displayOrder: row.family_display_order ?? 0,
+    providerMappings: Array.isArray(row.provider_mappings)
+      ? row.provider_mappings.map((mapping) => ({
+        id: mapping.id,
+        providerLocationId: mapping.providerLocationId,
+        providerClassDescriptionId: mapping.providerClassDescriptionId,
+        providerProgramId: mapping.providerProgramId,
+        providerSessionTypeId: mapping.providerSessionTypeId,
+        ...(mapping.providerClassScheduleId
+          ? { providerClassScheduleId: mapping.providerClassScheduleId }
+          : {}),
+      }))
+      : [],
+  }));
+}
+
+async function activePricingOptionIds(supabase, row) {
+  if (row?.fulfilment_mode !== "purchase_pricing_option") return [];
+  const { data, error } = await supabase
+    .from("class_offer_pricing_options")
+    .select("provider_service_product_id")
+    .eq("business_id", row.business_id)
+    .eq("mapping_id", row.mapping_id)
+    .eq("status", "active");
+  if (error) throw unavailable("The approved Mindbody Product set could not be loaded.");
+  return [...new Set((Array.isArray(data) ? data : [])
+    .map((option) => String(option?.provider_service_product_id ?? "").trim())
+    .filter(Boolean))];
+}
+
 export function createClassAvailabilityCatalogue(supabase) {
   return Object.freeze({
     async resolveBusinessIdBySlug(businessSlug) {
@@ -41,6 +78,17 @@ export function createClassAvailabilityCatalogue(supabase) {
         throw notFound("This Revvi Offer has no active approved Class inventory at the selected Location.");
       }
       const row = data[0];
+      const { data: familyRows, error: familyError } = await supabase.rpc(
+        "resolve_class_availability_families",
+        {
+          candidate_business_id: row.business_id,
+          candidate_location_id: row.location_id,
+          candidate_offer_id: row.offer_id,
+        },
+      );
+      if (familyError) throw unavailable();
+      const families = classFamilies(familyRows);
+      const providerServiceProductIds = await activePricingOptionIds(supabase, row);
       return {
         business: {
           id: row.business_id,
@@ -67,6 +115,9 @@ export function createClassAvailabilityCatalogue(supabase) {
           id: row.mapping_id,
           status: "active",
           providerServiceProductId: row.provider_service_product_id,
+          ...(providerServiceProductIds.length
+            ? { providerServiceProductIds }
+            : {}),
         },
         customerProviderProfile: row.provider_client_id
           ? {
@@ -76,6 +127,7 @@ export function createClassAvailabilityCatalogue(supabase) {
           }
           : null,
         inventoryAllowlist: row.inventory_allowlist,
+        ...(families.length ? { classFamilies: families } : {}),
       };
     },
 

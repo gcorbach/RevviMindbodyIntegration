@@ -20,6 +20,7 @@ function booking(row) {
     startAt: row.start_datetime,
     locationName: row.location_name,
     providerClassId: row.provider_class_id,
+    classFamilyId: row.class_family_id,
     providerVisitId: row.provider_visit_id,
     providerRosterBookingId: row.provider_roster_booking_id,
     providerWaitlistEntryId: row.provider_waitlist_entry_id,
@@ -49,6 +50,7 @@ function quote(row) {
     offerId: row.offer_id,
     mappingId: row.mapping_id,
     mappingVersion: Number(row.mapping_version),
+    classFamilyId: row.class_family_id,
     integrationId: row.integration_id,
     locationId: row.location_id,
     customerId: row.customer_id,
@@ -74,7 +76,7 @@ function quote(row) {
 
 const BOOKING_COLUMNS = [
   "id", "status", "price_amount", "currency", "class_name", "start_datetime",
-  "location_name", "provider_class_id",
+  "location_name", "provider_class_id", "class_family_id",
   "provider_visit_id", "provider_roster_booking_id", "provider_waitlist_entry_id",
   "provider_client_service_id", "provider_service_product_id", "provider_sale_id",
   "provider_cart_id", "provider_transaction_id", "provider_payment_id",
@@ -82,7 +84,7 @@ const BOOKING_COLUMNS = [
 ].join(",");
 
 const QUOTE_COLUMNS = [
-  "id", "business_id", "offer_id", "mapping_id", "mapping_version", "integration_id",
+  "id", "business_id", "offer_id", "mapping_id", "mapping_version", "class_family_id", "integration_id",
   "location_id", "customer_id", "fulfilment_mode", "provider_class_id",
   "provider_class_schedule_id", "provider_site_id", "provider_location_id",
   "provider_client_id", "provider_client_unique_id", "provider_service_product_id",
