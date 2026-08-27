@@ -15,6 +15,8 @@ This preview lets Revvi demonstrate the existing Webflow Booking widget against 
 
 The page labels that its local identity does not prove Memberstack. The hosted Webflow staging demo must use a real Memberstack test member instead.
 
+The review step intentionally says **Reserve my spot**, not checkout or pay. Site `-99` proves only the fictitious Cash route. Production payment remains gated until an approved hosted, redirect, opaque-token, or saved-card route is known and tested without raw card data entering Revvi.
+
 ## Start the preview
 
 From the repository root, install dependencies if needed and build the committed Webflow assets:
@@ -53,6 +55,16 @@ The sandbox demo is configured to use the finite `5 Class Card` pricing option b
 Open [http://127.0.0.1:3000](http://127.0.0.1:3000) on the same computer. The server binds only to `127.0.0.1`; it is not exposed to the local network or internet.
 
 Stop it with `Ctrl+C`. The server first cleans any active demo Booking and only exits after Mindbody confirms removal. If cleanup is not confirmed, it remains running so you can retry. The ignored `webflow/.env` remains available for the next local run; remove it when this sandbox work is finished.
+
+## Automated browser E2E
+
+With the same restricted `webflow/.env`, run:
+
+```bash
+pnpm sandbox:webflow:e2e
+```
+
+This launches Chrome against the loopback server and drives only the production widget controls: select a live Class, continue, select a live time, obtain the twice-calculated quote, reserve with fictitious Cash, wait for provider evidence, and request exact cleanup from the confirmation screen. The command passes only when the UI confirms cancellation and shutdown confirms that every tracked sandbox Booking was cleaned. It clears inherited provider variables, binds only to `127.0.0.1:3000`, never prints credentials, and always attempts shutdown cleanup even when the browser journey fails.
 
 ## How to test it physically
 

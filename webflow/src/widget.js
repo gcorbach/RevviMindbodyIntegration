@@ -132,6 +132,7 @@ export function mountBookingWidget(root, dependencies = {}) {
       if (sequence !== loadSequence) return;
       occurrences = exactAvailability(data, context);
       families = Array.isArray(data?.classFamilies) ? data.classFamilies : [];
+      ui.businessName(data?.business?.name);
       selectedClassKey = null;
       selectedClassOccurrences = [];
       selectedClassName = null;
@@ -151,18 +152,19 @@ export function mountBookingWidget(root, dependencies = {}) {
     }
   }
 
-  function selectClass(classKey, classOccurrences) {
+  function selectClass(classKey, classOccurrences, priceLabel) {
     if (requestActive || !classKey || !Array.isArray(classOccurrences) || classOccurrences.length === 0) return;
     selectedClassKey = classKey;
     selectedClassOccurrences = [...classOccurrences].sort((left, right) => String(left.startAt).localeCompare(String(right.startAt)));
     selectedClassName = families.find((family) => String(family.id) === String(selectedClassOccurrences[0]?.classFamilyId))?.displayName
       ?? selectedClassOccurrences[0]?.name
       ?? "Class";
-    selectedDateKey = occurrenceDateKey(selectedClassOccurrences[0]);
+    const firstBookable = selectedClassOccurrences.find((occurrence) => ["available", "waitlist_available"].includes(occurrence.availabilityState));
+    selectedDateKey = occurrenceDateKey(firstBookable ?? selectedClassOccurrences[0]);
     selectedOccurrence = null;
     quote = null;
     ui.clearSelection();
-    ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+    ui.selectedClass(classKey, selectedClassName, priceLabel);
   }
 
   function selectDate(dateKey) {
@@ -338,6 +340,11 @@ export function mountBookingWidget(root, dependencies = {}) {
   }
 
   ui.confirmButton.addEventListener("click", submitBooking);
+  ui.classContinueButton.addEventListener("click", () => {
+    if (!requestActive && selectedClassOccurrences.length > 0) {
+      ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+    }
+  });
   ui.continueButton.addEventListener("click", continueToQuote);
   ui.demoCleanupButton.addEventListener("click", cleanupDemoBooking);
   function resetSelection() {

@@ -19,8 +19,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const WEBFLOW_EMBED = readFileSync(new URL("../webflow/embed.html", import.meta.url), "utf8");
 const WEBFLOW_SCRIPT = readFileSync(new URL("../webflow/dist/revvi-booking.js", import.meta.url));
 const WEBFLOW_STYLES = readFileSync(new URL("../webflow/dist/revvi-booking.css", import.meta.url));
+const WEBFLOW_RAIL_IMAGE = readFileSync(new URL("../webflow/dist/revvi-booking-rail.png", import.meta.url));
+const WEBFLOW_HEADING_FONT = readFileSync(new URL("../webflow/dist/CormorantGaramond-Regular.ttf", import.meta.url));
 
-export function renderSite99WebflowDemoPage({ demoBearerToken }) {
+export function renderSite99WebflowDemoPage({ demoBearerToken, automateBooking = false }) {
   if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(demoBearerToken ?? "")) {
     throw new Error("The local demo token must use a JWT-shaped value.");
   }
@@ -35,7 +37,64 @@ export function renderSite99WebflowDemoPage({ demoBearerToken }) {
     .replace("SUPABASE_FUNCTIONS_URL/booking-quote", "/booking-quote")
     .replace("SUPABASE_FUNCTIONS_URL/create-booking", "/create-booking")
     .replace("SUPABASE_FUNCTIONS_URL/complete-paid-booking", "/complete-paid-booking")
-    .replace("SUPABASE_FUNCTIONS_URL/cleanup-demo-booking", "/cleanup-demo-booking");
+    .replace("SUPABASE_FUNCTIONS_URL/cancel-booking", "/cleanup-demo-booking");
+  const browserAutomation = automateBooking ? `<script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const root = document.querySelector("[data-revvi-booking]");
+      const states = [];
+      root.setAttribute("data-live-browser-e2e", "running");
+      new MutationObserver(() => {
+        const state = root.dataset.bookingState;
+        if (state && states.at(-1) !== state) states.push(state);
+        root.dataset.liveBrowserE2eStates = states.join(",");
+      }).observe(root, { attributes: true, attributeFilter: ["data-booking-state"] });
+      const timer = setInterval(() => {
+        const state = root.dataset.bookingState;
+        if (root.dataset.demoCleanupStatus === "confirmed") {
+          root.dataset.liveBrowserE2e = "passed";
+          clearInterval(timer);
+          return;
+        }
+        if (["ineligible", "empty", "stale", "pending-reconciliation", "requires-payment-action", "error"].includes(state)) {
+          root.dataset.liveBrowserE2e = "failed-" + state;
+          clearInterval(timer);
+          return;
+        }
+        if (state === "showing-classes") {
+          const control = root.dataset.selectedClassKey
+            ? root.querySelector("[data-booking-class-continue]:not([disabled])")
+            : root.querySelector("[data-class-select]:not([disabled])");
+          control?.click();
+          return;
+        }
+        if (state === "showing-times") {
+          const calendar = root.querySelector("[data-booking-calendar-toggle]");
+          if (calendar && !root.dataset.liveBrowserE2eCalendarOpened) {
+            root.dataset.liveBrowserE2eCalendarOpened = "true";
+            calendar.click();
+          }
+          const control = root.dataset.selectedClassId
+            ? root.querySelector("[data-booking-continue]:not([disabled])")
+            : root.querySelector("[data-time-select]:not([disabled])");
+          control?.click();
+          return;
+        }
+        if (state === "confirming") {
+          root.querySelector("[data-quote-confirm]:not([disabled])")?.click();
+          return;
+        }
+        if (state === "success") {
+          root.querySelector("[data-booking-demo-cleanup]:not([hidden]):not([disabled])")?.click();
+        }
+      }, 50);
+      setTimeout(() => {
+        if (root.dataset.liveBrowserE2e === "running") {
+          root.dataset.liveBrowserE2e = "failed-timeout";
+          clearInterval(timer);
+        }
+      }, 90000);
+    }, { once: true });
+  </script>` : "";
   return `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Revvi Site -99 Booking Demo</title></head>
@@ -52,6 +111,7 @@ export function renderSite99WebflowDemoPage({ demoBearerToken }) {
     };
   </script>
   ${widget}
+  ${browserAutomation}
 </body>
 </html>`;
 }
@@ -324,8 +384,21 @@ export function createSite99WebflowDemoHandler({
       });
     }
     if (pathname === "/cleanup-demo-booking") {
-      const cleaned = await cleanupDemoBooking(body?.demoBookingId);
-      return json(cleaned.status, cleaned.payload);
+      const demoBookingId = body?.bookingId;
+      const cleaned = await cleanupDemoBooking(demoBookingId);
+      if (cleaned.status !== 200) return json(cleaned.status, cleaned.payload);
+      const restorationObserved = cleaned.payload?.data?.booking?.sandboxDemo
+        ?.entitlementRestorationObserved;
+      return json(200, {
+        ok: true,
+        data: {
+          bookingId: demoBookingId,
+          status: "cancelled",
+          passRestoration: restorationObserved === true
+            ? "restored"
+            : restorationObserved === false ? "not_restored" : "unknown",
+        },
+      });
     }
     if (pathname === "/create-booking") {
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -476,9 +549,9 @@ async function requestBody(request) {
   return Buffer.concat(chunks);
 }
 
-export function createSite99WebflowDemoServer({ handler, demoBearerToken, logger = console }) {
+export function createSite99WebflowDemoServer({ handler, demoBearerToken, logger = console, automateBooking = false }) {
   if (typeof handler !== "function") throw new Error("A demo HTTP handler is required.");
-  const page = renderSite99WebflowDemoPage({ demoBearerToken });
+  const page = renderSite99WebflowDemoPage({ demoBearerToken, automateBooking });
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1:3000");
@@ -495,6 +568,16 @@ export function createSite99WebflowDemoServer({ handler, demoBearerToken, logger
       if (request.method === "GET" && url.pathname === "/assets/revvi-booking.css") {
         response.writeHead(200, { "Content-Type": "text/css; charset=utf-8", "Cache-Control": "no-store" });
         response.end(WEBFLOW_STYLES);
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/assets/revvi-booking-rail.png") {
+        response.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
+        response.end(WEBFLOW_RAIL_IMAGE);
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/assets/CormorantGaramond-Regular.ttf") {
+        response.writeHead(200, { "Content-Type": "font/ttf", "Cache-Control": "no-store" });
+        response.end(WEBFLOW_HEADING_FONT);
         return;
       }
       const body = request.method === "POST" ? await requestBody(request) : undefined;

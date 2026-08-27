@@ -292,7 +292,8 @@ export function createSite99Runner({
   if (text(environment.MINDBODY_BASE_URL ?? API_ORIGIN) !== API_ORIGIN) {
     throw new Site99RunError("configuration", "ORIGIN_NOT_ALLOWED");
   }
-  let clientId = text(environment.MINDBODY_SANDBOX_CLIENT_ID ?? "100013562");
+  const configuredClientId = text(environment.MINDBODY_SANDBOX_CLIENT_ID ?? "100013562");
+  let clientId = configuredClientId;
   let locationId = text(environment.MINDBODY_SANDBOX_LOCATION_ID ?? "1");
   const configuredProductId = text(environment.MINDBODY_SANDBOX_PRODUCT_ID);
   const classFamilies = parseClassFamilyManifest(environment);
@@ -1127,6 +1128,7 @@ export function createSite99Runner({
         if (policy.createsSyntheticClient) {
           syntheticClient = await createSyntheticClient();
         }
+        if (policy.outcome === "probe") clientId = configuredClientId;
         const clientFixture = await discoverFixture({
           forClient: true,
           classFamilyId: fixture.classFamilyId,

@@ -274,6 +274,10 @@ var RevviBooking = (() => {
       return value;
     }
   }
+  function dateParts(value) {
+    const [year, month, day] = String(value).split("-").map(Number);
+    return Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day) ? { year, month, day } : null;
+  }
   function timeLabel(occurrence) {
     return formatDateTime(occurrence.startAt, occurrence.timezone, { dateStyle: void 0, timeStyle: "short" });
   }
@@ -325,10 +329,20 @@ var RevviBooking = (() => {
     const selection = element(root, "[data-booking-selection]");
     const stepPanels = [...root.querySelectorAll("[data-booking-step-panel]")];
     const stepLinks = [...root.querySelectorAll("[data-booking-step-link]")];
+    const classContinueButton = element(root, "[data-booking-class-continue]");
     const continueButton = element(root, "[data-booking-continue]");
-    setText(root, "[data-booking-location-copy]", root.dataset.locationName);
+    const calendar = element(root, "[data-booking-calendar]");
+    const calendarGrid = element(root, "[data-booking-calendar-grid]");
+    const calendarMonthLabel = element(root, "[data-booking-calendar-month]");
+    const calendarPrevious = element(root, "[data-booking-calendar-previous]");
+    const calendarNext = element(root, "[data-booking-calendar-next]");
+    let calendarMonth = null;
+    let calendarDates = [];
+    let calendarSelectedDate = null;
+    let calendarSelectDate = null;
     setText(root, "[data-booking-location]", root.dataset.locationName);
-    setText(root, "[data-booking-offer]", root.dataset.offerName);
+    setText(root, "[data-booking-business]", root.dataset.offerName);
+    setText(root, "[data-booking-business-copy]", root.dataset.offerName);
     function setStep(step) {
       const current = String(step);
       root.dataset.bookingStep = current;
@@ -373,28 +387,124 @@ var RevviBooking = (() => {
         const duration = classDuration(classOccurrences);
         const next = `Next: ${formatDateTime(first.startAt, first.timezone)}`;
         setText(fragment, "[data-class-meta]", `${instructor}${duration ? ` \xB7 ${duration} min` : ""} \xB7 ${next}`);
+        const prices = [...new Map(classOccurrences.filter((occurrence) => Number.isFinite(occurrence?.provisionalPrice?.amount) && typeof occurrence?.provisionalPrice?.currency === "string").map((occurrence) => {
+          const label = formatMoney(occurrence.provisionalPrice.amount, occurrence.provisionalPrice.currency);
+          return [label, label];
+        })).values()];
+        const priceLabel = prices.length === 1 ? prices[0] : prices.length > 1 ? `From ${prices[0]}` : "Price at review";
+        setText(fragment, "[data-class-price]", priceLabel);
         button.disabled = !bookable;
-        button.textContent = presentation.some(({ label }) => label === "Waitlist available") && !presentation.some(({ label }) => label === "Available") ? "View waitlist" : "Select";
-        if (bookable) button.addEventListener("click", () => onSelect(key, classOccurrences));
+        button.setAttribute("aria-pressed", "false");
+        if (bookable) button.addEventListener("click", () => onSelect(key, classOccurrences, priceLabel));
         views.occurrences.append(fragment);
       }
+      classContinueButton.disabled = true;
+      setText(root, "[data-booking-class-hint]", "Select a class to continue");
+      delete root.dataset.selectedClassKey;
       show("showing-classes", "occurrences");
     }
+    function selectClassChoice(classKey2, className, priceLabel) {
+      root.dataset.selectedClassKey = classKey2;
+      for (const choice of root.querySelectorAll("[data-booking-class-choice]")) {
+        const selected = choice.dataset.classKey === classKey2;
+        choice.classList.toggle("active", selected);
+        choice.setAttribute("aria-pressed", String(selected));
+        const tag = choice.querySelector("[data-class-selected]");
+        if (tag) tag.hidden = !selected;
+      }
+      classContinueButton.disabled = false;
+      setText(root, "[data-booking-class-hint]", `${className}${priceLabel ? ` \xB7 ${priceLabel}` : ""}`);
+    }
+    function renderCalendar() {
+      if (!calendarMonth || calendarDates.length === 0) return;
+      const available = new Set(calendarDates);
+      const [year, month] = calendarMonth.split("-").map(Number);
+      const first = new Date(Date.UTC(year, month - 1, 1));
+      const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+      const mondayOffset = (first.getUTCDay() + 6) % 7;
+      calendarMonthLabel.textContent = new Intl.DateTimeFormat(void 0, {
+        month: "long",
+        year: "numeric",
+        timeZone: "UTC"
+      }).format(first);
+      calendarGrid.replaceChildren();
+      for (const label of ["M", "T", "W", "T", "F", "S", "S"]) {
+        const heading = document.createElement("span");
+        heading.className = "revvi-booking-calendar-weekday";
+        heading.textContent = label;
+        calendarGrid.append(heading);
+      }
+      for (let index = 0; index < mondayOffset; index += 1) {
+        const blank = document.createElement("span");
+        blank.className = "revvi-booking-calendar-blank";
+        calendarGrid.append(blank);
+      }
+      for (let day = 1; day <= lastDay; day += 1) {
+        const value = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.dataset.bookingCalendarDate = value;
+        button.textContent = String(day);
+        button.disabled = !available.has(value);
+        button.classList.toggle("active", value === calendarSelectedDate);
+        if (!button.disabled) button.addEventListener("click", () => calendarSelectDate?.(value));
+        calendarGrid.append(button);
+      }
+      const monthKeys = calendarDates.map((date) => date.slice(0, 7));
+      calendarPrevious.disabled = calendarMonth <= monthKeys[0];
+      calendarNext.disabled = calendarMonth >= monthKeys.at(-1);
+    }
+    function shiftCalendarMonth(offset) {
+      const [year, month] = calendarMonth.split("-").map(Number);
+      const shifted = new Date(Date.UTC(year, month - 1 + offset, 1));
+      calendarMonth = `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
+      renderCalendar();
+    }
+    calendarPrevious.addEventListener("click", () => shiftCalendarMonth(-1));
+    calendarNext.addEventListener("click", () => shiftCalendarMonth(1));
     function renderTimes(occurrences, selectedDate, onSelectDate, onSelectTime, selectedOccurrence = null, className = null) {
-      const dates = [...new Set(occurrences.map((occurrence) => dateKey(occurrence.startAt, occurrence.timezone)).filter(Boolean))].sort();
+      const dates = [...new Set(occurrences.filter((occurrence) => availabilityPresentation(occurrence).bookable).map((occurrence) => dateKey(occurrence.startAt, occurrence.timezone)).filter(Boolean))].sort();
       const activeDate = dates.includes(selectedDate) ? selectedDate : dates[0];
       const timezone = occurrences[0]?.timezone;
       const dateOptions = element(root, "[data-booking-date-options]");
       dateOptions.replaceChildren();
-      for (const date of dates) {
+      for (const date of dates.slice(0, 3)) {
         const button = document.createElement("button");
+        const parts = dateParts(date);
+        const dateValue = parts ? new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 12)) : null;
+        const weekday = document.createElement("span");
+        const day = document.createElement("span");
         button.type = "button";
         button.className = "revvi-booking-day-button";
         button.dataset.bookingDateOption = date;
-        button.textContent = dateLabel(date, timezone);
+        button.setAttribute("aria-label", dateLabel(date, timezone));
+        weekday.textContent = dateValue ? new Intl.DateTimeFormat(void 0, { weekday: "short", timeZone: "UTC" }).format(dateValue) : date;
+        day.textContent = parts ? String(parts.day) : date;
+        button.append(weekday, day);
         button.classList.toggle("active", date === activeDate);
         button.addEventListener("click", () => onSelectDate(date));
         dateOptions.append(button);
+      }
+      calendar.hidden = true;
+      if (dates.length > 3) {
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.dataset.bookingCalendarToggle = "";
+        toggle.className = "revvi-booking-calendar-toggle";
+        toggle.setAttribute("aria-label", "Show more available dates");
+        toggle.setAttribute("aria-expanded", "false");
+        toggle.textContent = "\u25A6";
+        toggle.addEventListener("click", () => {
+          calendar.hidden = !calendar.hidden;
+          toggle.classList.toggle("active", !calendar.hidden);
+          toggle.setAttribute("aria-expanded", String(!calendar.hidden));
+        });
+        dateOptions.append(toggle);
+        calendarDates = dates;
+        calendarSelectedDate = activeDate;
+        calendarSelectDate = onSelectDate;
+        calendarMonth = activeDate.slice(0, 7);
+        renderCalendar();
       }
       const timeOptions = element(root, "[data-booking-time-options]");
       timeOptions.replaceChildren();
@@ -410,7 +520,12 @@ var RevviBooking = (() => {
         if (presentation.bookable) button.addEventListener("click", () => onSelectTime(occurrence));
         timeOptions.append(fragment);
       }
-      setText(root, "[data-booking-time-context]", `${className ?? occurrences[0]?.name ?? "Class"} \xB7 ${root.dataset.locationName}`);
+      const activeOccurrences = occurrences.filter((candidate) => dateKey(candidate.startAt, candidate.timezone) === activeDate);
+      const openCount = activeOccurrences.filter((occurrence) => availabilityPresentation(occurrence).bookable).length;
+      setText(root, "[data-booking-times-count]", `${openCount} of ${activeOccurrences.length} open`);
+      const duration = classDuration(occurrences);
+      const instructor = occurrences[0]?.staffName ?? "Instructor to be confirmed";
+      setText(root, "[data-booking-time-context]", `${className ?? occurrences[0]?.name ?? "Class"} \xB7 ${instructor}${duration ? ` \xB7 ${duration} min` : ""}`);
       show("showing-times", "times");
       return activeDate;
     }
@@ -424,6 +539,12 @@ var RevviBooking = (() => {
         show("loading-availability", "loading");
       },
       classChoices: renderClassChoices,
+      businessName(name) {
+        const label = typeof name === "string" && name.trim() ? name.trim() : root.dataset.offerName;
+        setText(root, "[data-booking-business]", label);
+        setText(root, "[data-booking-business-copy]", label);
+      },
+      selectedClass: selectClassChoice,
       times: renderTimes,
       enableContinue(enabled) {
         continueButton.disabled = !enabled;
@@ -443,6 +564,7 @@ var RevviBooking = (() => {
         selection.textContent = `${occurrence.name} \u2014 ${formatDateTime(occurrence.startAt, occurrence.timezone)}`;
         selection.hidden = false;
         continueButton.disabled = false;
+        setText(root, "[data-booking-time-hint]", `${dateLabel(dateKey(occurrence.startAt, occurrence.timezone), occurrence.timezone)} \xB7 ${timeLabel(occurrence)}`);
         for (const button of root.querySelectorAll("[data-time-select]")) {
           button.classList.toggle("active", button.dataset.classId === String(occurrence.classId));
         }
@@ -451,12 +573,15 @@ var RevviBooking = (() => {
         selection.textContent = "";
         selection.hidden = true;
         continueButton.disabled = true;
+        setText(root, "[data-booking-time-hint]", "Pick a time to continue");
       },
       quote(quote) {
         setText(root, "[data-quote-class]", quote.occurrence?.name);
         setText(root, "[data-quote-time]", formatDateTime(quote.occurrence?.startAt, quote.occurrence?.timezone));
         setText(root, "[data-quote-location]", quote.occurrence?.locationName ?? root.dataset.locationName);
-        setText(root, "[data-booking-review-price]", formatMoney(quote.price?.grandTotal, quote.price?.currency));
+        const priceLabel = formatMoney(quote.price?.grandTotal, quote.price?.currency);
+        setText(root, "[data-booking-review-price]", priceLabel);
+        element(root, "[data-quote-confirm]").textContent = Number(quote.price?.grandTotal) > 0 ? `Reserve my spot \xB7 ${priceLabel}` : "Reserve my spot";
         setText(root, "[data-quote-expiry]", quote.expiresAt ? `Quote expires ${formatDateTime(quote.expiresAt, quote.occurrence?.timezone)}` : "");
         setText(root, "[data-quote-policy]", quote.cancellationPolicy?.displayText ?? "Cancellation terms will be confirmed by the Business.");
         show("confirming", "quote");
@@ -526,6 +651,7 @@ var RevviBooking = (() => {
         show("error", "error");
       },
       confirmButton: element(root, "[data-quote-confirm]"),
+      classContinueButton,
       backButton: element(root, "[data-quote-back]"),
       backToClassesButton: element(root, "[data-booking-back-to-classes]"),
       refreshButton: element(root, "[data-booking-refresh]"),
@@ -646,6 +772,7 @@ var RevviBooking = (() => {
         if (sequence !== loadSequence) return;
         occurrences = exactAvailability(data, context);
         families = Array.isArray(data?.classFamilies) ? data.classFamilies : [];
+        ui.businessName(data?.business?.name);
         selectedClassKey = null;
         selectedClassOccurrences = [];
         selectedClassName = null;
@@ -664,16 +791,17 @@ var RevviBooking = (() => {
         }
       }
     }
-    function selectClass(classKey2, classOccurrences) {
+    function selectClass(classKey2, classOccurrences, priceLabel) {
       if (requestActive || !classKey2 || !Array.isArray(classOccurrences) || classOccurrences.length === 0) return;
       selectedClassKey = classKey2;
       selectedClassOccurrences = [...classOccurrences].sort((left, right) => String(left.startAt).localeCompare(String(right.startAt)));
       selectedClassName = families.find((family) => String(family.id) === String(selectedClassOccurrences[0]?.classFamilyId))?.displayName ?? selectedClassOccurrences[0]?.name ?? "Class";
-      selectedDateKey = occurrenceDateKey(selectedClassOccurrences[0]);
+      const firstBookable = selectedClassOccurrences.find((occurrence) => ["available", "waitlist_available"].includes(occurrence.availabilityState));
+      selectedDateKey = occurrenceDateKey(firstBookable ?? selectedClassOccurrences[0]);
       selectedOccurrence = null;
       quote = null;
       ui.clearSelection();
-      ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+      ui.selectedClass(classKey2, selectedClassName, priceLabel);
     }
     function selectDate(dateKey2) {
       if (requestActive || !selectedClassKey) return;
@@ -836,6 +964,11 @@ var RevviBooking = (() => {
       return true;
     }
     ui.confirmButton.addEventListener("click", submitBooking);
+    ui.classContinueButton.addEventListener("click", () => {
+      if (!requestActive && selectedClassOccurrences.length > 0) {
+        ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+      }
+    });
     ui.continueButton.addEventListener("click", continueToQuote);
     ui.demoCleanupButton.addEventListener("click", cleanupDemoBooking);
     function resetSelection() {

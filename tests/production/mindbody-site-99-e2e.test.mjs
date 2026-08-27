@@ -297,6 +297,7 @@ function sandboxProvider({
     }
     if (path === "class/classes") {
       const readsByClassId = url.searchParams.has("ClassIds") || url.searchParams.has("request.classIds");
+      const requestedClientId = url.searchParams.get("request.clientId");
       const hasDateWindow = url.searchParams.has("request.startDateTime")
         && url.searchParams.has("request.endDateTime");
       if (classIdReadsRequireDateWindow && readsByClassId && !hasDateWindow) {
@@ -309,7 +310,7 @@ function sandboxProvider({
             StartDateTime: "2026-08-18T10:00:00",
             IsCanceled: false,
             IsAvailable: true,
-            IsEnrolled: visitActive,
+            IsEnrolled: visitActive && requestedClientId === clientId,
             ClassScheduleId: 2152,
             Location: { Id: 1, Name: "Clubville" },
             Staff: { Id: 9, Name: "Sandbox Staff" },
@@ -723,6 +724,23 @@ test("inspection cleanup removes the exact pending Visit and proves the result",
     .filter((request) => request.url.pathname.endsWith("removeclientfromclass"))
     .map((request) => request.body);
   assert.deepEqual(cancellationBodies.map((body) => body.Test), [true, false]);
+});
+
+test("probe refresh stays public while an inspection Booking is active", async () => {
+  const provider = sandboxProvider({ delayedVisitReads: 6 });
+  const site99 = runner(provider, {
+    environment: { ...environment, MINDBODY_SANDBOX_WRITE_CONFIRM: "BOOK_AND_CANCEL_SITE_-99" },
+    pollOptions: { attempts: 3, intervalMs: 0 },
+  });
+  const active = await site99.run("book-for-inspection");
+
+  const refreshed = await site99.run("probe");
+  const cleaned = await site99.run("cleanup-inspection");
+
+  assert.equal(active.booking.inspectionStatus, "active");
+  assert.deepEqual(refreshed.fixtures.map((fixture) => fixture.classId), ["19364"]);
+  assert.equal(cleaned.booking.cancellationConfirmed, true);
+  assert.equal(provider.state().visitActive, false);
 });
 
 test("ambiguous inspection cancellation is reconciled through reads without replaying the write", async () => {

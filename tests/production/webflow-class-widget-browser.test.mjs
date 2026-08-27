@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -83,6 +84,58 @@ function availabilityBody() {
           availabilityState: "unknown",
           availabilityReasons: ["provider_availability_unknown"],
         },
+        {
+          sessionId: "504",
+          classId: "504",
+          name: "Yoga Flow",
+          staffName: "Amina",
+          startAt: "2026-08-15T08:00:00.000Z",
+          endAt: "2026-08-15T09:00:00.000Z",
+          timezone: "Africa/Johannesburg",
+          estimatedAvailableSlots: 2,
+          availabilityState: "available",
+          availabilityReasons: [],
+          provisionalPrice: { amount: 32, currency: "ZAR", serviceProductId: "revvi-yoga" },
+        },
+        {
+          sessionId: "505",
+          classId: "505",
+          name: "Yoga Flow",
+          staffName: "Amina",
+          startAt: "2026-08-16T08:00:00.000Z",
+          endAt: "2026-08-16T09:00:00.000Z",
+          timezone: "Africa/Johannesburg",
+          estimatedAvailableSlots: 4,
+          availabilityState: "available",
+          availabilityReasons: [],
+          provisionalPrice: { amount: 32, currency: "ZAR", serviceProductId: "revvi-yoga" },
+        },
+        {
+          sessionId: "506",
+          classId: "506",
+          name: "Yoga Flow",
+          staffName: "Amina",
+          startAt: "2026-08-17T08:00:00.000Z",
+          endAt: "2026-08-17T09:00:00.000Z",
+          timezone: "Africa/Johannesburg",
+          estimatedAvailableSlots: 3,
+          availabilityState: "available",
+          availabilityReasons: [],
+          provisionalPrice: { amount: 32, currency: "ZAR", serviceProductId: "revvi-yoga" },
+        },
+        {
+          sessionId: "507",
+          classId: "507",
+          name: "Yoga Flow",
+          staffName: "Amina",
+          startAt: "2026-08-18T08:00:00.000Z",
+          endAt: "2026-08-18T09:00:00.000Z",
+          timezone: "Africa/Johannesburg",
+          estimatedAvailableSlots: 1,
+          availabilityState: "available",
+          availabilityReasons: [],
+          provisionalPrice: { amount: 32, currency: "ZAR", serviceProductId: "revvi-yoga" },
+        },
       ],
     },
     requestId: "request-a",
@@ -90,7 +143,8 @@ function availabilityBody() {
 }
 
 function page({
-  loggedOut = false, automateBooking = false, automateDemoCleanup = false, scenario = "available",
+  loggedOut = false, automateBooking = false, automateDemoCleanup = false,
+  inspectDesignerJourney = false, scenario = "available",
 } = {}) {
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/revvi-booking.css"></head><body>
     ${widgetMarkup(scenario)}
@@ -121,12 +175,43 @@ function page({
             confirm.click();
             return;
           }
-          const chooseClass = root.querySelector("[data-class-select]:not([disabled])");
+          const chooseClass = !root.dataset.selectedClassKey
+            && root.querySelector("[data-class-select]:not([disabled])");
           if (chooseClass && !chooseClass.closest("[hidden]")) { chooseClass.click(); return; }
-          const chooseTime = root.querySelector("[data-time-select]:not([disabled])");
+          const classContinue = root.querySelector("[data-booking-class-continue]:not([disabled])");
+          if (classContinue && !classContinue.closest("[hidden]")) { classContinue.click(); return; }
+          const chooseTime = !root.dataset.selectedClassId
+            && root.querySelector("[data-time-select]:not([disabled])");
           if (chooseTime && !chooseTime.closest("[hidden]")) { chooseTime.click(); return; }
           const continueButton = root.querySelector("[data-booking-continue]:not([disabled])");
           if (continueButton && !continueButton.closest("[hidden]")) { continueButton.click(); return; }
+        }, 20);` : ""}
+      ${inspectDesignerJourney ? `
+        const designerInspection = setInterval(() => {
+          if (root.dataset.bookingState !== "showing-classes") return;
+          clearInterval(designerInspection);
+          root.querySelector("[data-class-select]:not([disabled])")?.click();
+          setTimeout(() => {
+            root.dataset.stateAfterClassSelect = root.dataset.bookingState;
+            const classContinue = root.querySelector("[data-booking-class-continue]");
+            root.dataset.classContinueAvailable = String(Boolean(classContinue && !classContinue.disabled));
+            classContinue?.click();
+            setTimeout(() => {
+              root.dataset.quickDateCount = String(root.querySelectorAll("[data-booking-date-option]").length);
+              const calendarToggle = root.querySelector("[data-booking-calendar-toggle]");
+              root.dataset.calendarAvailable = String(Boolean(calendarToggle && !calendarToggle.hidden));
+              calendarToggle?.click();
+              root.dataset.calendarOpen = String(Boolean(root.querySelector("[data-booking-calendar]:not([hidden])")));
+              const cardStyle = getComputedStyle(root);
+              const rail = root.querySelector("[data-booking-brand-panel]");
+              const heading = root.querySelector('[data-booking-step-panel="2"] h1');
+              root.dataset.designerCardWidth = String(Math.round(root.getBoundingClientRect().width));
+              root.dataset.designerCardHeight = String(Math.round(root.getBoundingClientRect().height));
+              root.dataset.designerRailWidth = String(Math.round(rail.getBoundingClientRect().width));
+              root.dataset.designerRadius = cardStyle.borderRadius;
+              root.dataset.designerHeadingFont = getComputedStyle(heading).fontFamily;
+            }, 80);
+          }, 80);
         }, 20);` : ""}
       setTimeout(() => {
         root.dataset.viewportWidth = String(window.innerWidth);
@@ -138,8 +223,51 @@ function page({
   </body></html>`;
 }
 
+test("the designer journey selects a Class in place and puts later available dates in a calendar", { skip: !chromePath }, async () => {
+  const widget = readFileSync(new URL("../../webflow/dist/revvi-booking.js", import.meta.url), "utf8");
+  const stylesheet = readFileSync(new URL("../../webflow/dist/revvi-booking.css", import.meta.url), "utf8");
+  const server = createServer((request, response) => {
+    if (request.url === "/revvi-booking.js") {
+      response.writeHead(200, { "content-type": "text/javascript" }); response.end(widget); return;
+    }
+    if (request.url === "/revvi-booking.css") {
+      response.writeHead(200, { "content-type": "text/css" }); response.end(stylesheet); return;
+    }
+    if (request.url?.startsWith("/functions/v1/offer-class-availability")) {
+      response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(availabilityBody())); return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(page({ inspectDesignerJourney: true }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const result = await launchChrome(`http://127.0.0.1:${server.address().port}/designer-journey`, "1440,900");
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /data-state-after-class-select="showing-classes"/);
+    assert.match(result.stdout, /data-class-continue-available="true"/);
+    assert.match(result.stdout, /data-quick-date-count="3"/);
+    assert.match(result.stdout, /data-calendar-available="true"/);
+    assert.match(result.stdout, /data-calendar-open="true"/);
+    assert.match(result.stdout, /data-designer-card-width="960"/);
+    assert.match(result.stdout, /data-designer-card-height="620"/);
+    assert.match(result.stdout, /data-designer-rail-width="312"/);
+    assert.match(result.stdout, /data-designer-radius="24px"/);
+    assert.match(result.stdout, /data-designer-heading-font="[^\"]*Cormorant Garamond/);
+    assert.match(result.stdout, /Revvi partner/);
+    assert.match(result.stdout, /Change studio/);
+  } finally {
+    server.closeAllConnections(); server.close();
+  }
+});
+
 async function launchChrome(url, size = "390,844") {
-  const profile = mkdtempSync(join(tmpdir(), "revvi-class-widget-"));
+  const windowsChromeFromWsl = process.platform !== "win32" && chromePath?.toLowerCase().endsWith(".exe");
+  const profile = windowsChromeFromWsl
+    ? mkdtempSync("/mnt/c/Windows/Temp/revvi-class-widget-")
+    : mkdtempSync(join(tmpdir(), "revvi-class-widget-"));
+  const chromeProfile = windowsChromeFromWsl
+    ? execFileSync("wslpath", ["-w", profile], { encoding: "utf8" }).trim()
+    : profile;
   try {
     return await new Promise((resolve) => {
       const child = spawn(chromePath, [
@@ -150,8 +278,8 @@ async function launchChrome(url, size = "390,844") {
         "--no-default-browser-check",
         `--window-size=${size}`,
         "--dump-dom",
-        "--virtual-time-budget=1200",
-        `--user-data-dir=${profile}`,
+        "--virtual-time-budget=4000",
+        `--user-data-dir=${chromeProfile}`,
         url,
       ], { windowsHide: true });
       let stdout = "";

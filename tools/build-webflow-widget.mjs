@@ -18,4 +18,12 @@ await Promise.all([
     new URL("../webflow/src/revvi-booking.css", import.meta.url),
     new URL("../webflow/dist/revvi-booking.css", import.meta.url),
   ),
+  cp(
+    new URL("../webflow/assets/revvi-booking-rail.png", import.meta.url),
+    new URL("../webflow/dist/revvi-booking-rail.png", import.meta.url),
+  ),
+  cp(
+    new URL("../webflow/assets/CormorantGaramond-Regular.ttf", import.meta.url),
+    new URL("../webflow/dist/CormorantGaramond-Regular.ttf", import.meta.url),
+  ),
 ]);

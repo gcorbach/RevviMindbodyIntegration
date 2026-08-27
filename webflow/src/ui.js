@@ -70,6 +70,13 @@ function dateLabel(value, timezone) {
   }
 }
 
+function dateParts(value) {
+  const [year, month, day] = String(value).split("-").map(Number);
+  return Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day)
+    ? { year, month, day }
+    : null;
+}
+
 function timeLabel(occurrence) {
   return formatDateTime(occurrence.startAt, occurrence.timezone, { dateStyle: undefined, timeStyle: "short" });
 }
@@ -132,11 +139,21 @@ export function createBookingWidgetUi(root) {
   const selection = element(root, "[data-booking-selection]");
   const stepPanels = [...root.querySelectorAll("[data-booking-step-panel]")];
   const stepLinks = [...root.querySelectorAll("[data-booking-step-link]")];
+  const classContinueButton = element(root, "[data-booking-class-continue]");
   const continueButton = element(root, "[data-booking-continue]");
+  const calendar = element(root, "[data-booking-calendar]");
+  const calendarGrid = element(root, "[data-booking-calendar-grid]");
+  const calendarMonthLabel = element(root, "[data-booking-calendar-month]");
+  const calendarPrevious = element(root, "[data-booking-calendar-previous]");
+  const calendarNext = element(root, "[data-booking-calendar-next]");
+  let calendarMonth = null;
+  let calendarDates = [];
+  let calendarSelectedDate = null;
+  let calendarSelectDate = null;
 
-  setText(root, "[data-booking-location-copy]", root.dataset.locationName);
   setText(root, "[data-booking-location]", root.dataset.locationName);
-  setText(root, "[data-booking-offer]", root.dataset.offerName);
+  setText(root, "[data-booking-business]", root.dataset.offerName);
+  setText(root, "[data-booking-business-copy]", root.dataset.offerName);
 
   function setStep(step) {
     const current = String(step);
@@ -182,33 +199,135 @@ export function createBookingWidgetUi(root) {
       const duration = classDuration(classOccurrences);
       const next = `Next: ${formatDateTime(first.startAt, first.timezone)}`;
       setText(fragment, "[data-class-meta]", `${instructor}${duration ? ` · ${duration} min` : ""} · ${next}`);
+      const prices = [...new Map(classOccurrences
+        .filter((occurrence) => Number.isFinite(occurrence?.provisionalPrice?.amount)
+          && typeof occurrence?.provisionalPrice?.currency === "string")
+        .map((occurrence) => {
+          const label = formatMoney(occurrence.provisionalPrice.amount, occurrence.provisionalPrice.currency);
+          return [label, label];
+        })).values()];
+      const priceLabel = prices.length === 1 ? prices[0] : prices.length > 1 ? `From ${prices[0]}` : "Price at review";
+      setText(fragment, "[data-class-price]", priceLabel);
       button.disabled = !bookable;
-      button.textContent = presentation.some(({ label }) => label === "Waitlist available") && !presentation.some(({ label }) => label === "Available")
-        ? "View waitlist"
-        : "Select";
-      if (bookable) button.addEventListener("click", () => onSelect(key, classOccurrences));
+      button.setAttribute("aria-pressed", "false");
+      if (bookable) button.addEventListener("click", () => onSelect(key, classOccurrences, priceLabel));
       views.occurrences.append(fragment);
     }
+    classContinueButton.disabled = true;
+    setText(root, "[data-booking-class-hint]", "Select a class to continue");
+    delete root.dataset.selectedClassKey;
     show("showing-classes", "occurrences");
   }
 
+  function selectClassChoice(classKey, className, priceLabel) {
+    root.dataset.selectedClassKey = classKey;
+    for (const choice of root.querySelectorAll("[data-booking-class-choice]")) {
+      const selected = choice.dataset.classKey === classKey;
+      choice.classList.toggle("active", selected);
+      choice.setAttribute("aria-pressed", String(selected));
+      const tag = choice.querySelector("[data-class-selected]");
+      if (tag) tag.hidden = !selected;
+    }
+    classContinueButton.disabled = false;
+    setText(root, "[data-booking-class-hint]", `${className}${priceLabel ? ` · ${priceLabel}` : ""}`);
+  }
+
+  function renderCalendar() {
+    if (!calendarMonth || calendarDates.length === 0) return;
+    const available = new Set(calendarDates);
+    const [year, month] = calendarMonth.split("-").map(Number);
+    const first = new Date(Date.UTC(year, month - 1, 1));
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const mondayOffset = (first.getUTCDay() + 6) % 7;
+    calendarMonthLabel.textContent = new Intl.DateTimeFormat(undefined, {
+      month: "long", year: "numeric", timeZone: "UTC",
+    }).format(first);
+    calendarGrid.replaceChildren();
+    for (const label of ["M", "T", "W", "T", "F", "S", "S"]) {
+      const heading = document.createElement("span");
+      heading.className = "revvi-booking-calendar-weekday";
+      heading.textContent = label;
+      calendarGrid.append(heading);
+    }
+    for (let index = 0; index < mondayOffset; index += 1) {
+      const blank = document.createElement("span");
+      blank.className = "revvi-booking-calendar-blank";
+      calendarGrid.append(blank);
+    }
+    for (let day = 1; day <= lastDay; day += 1) {
+      const value = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.bookingCalendarDate = value;
+      button.textContent = String(day);
+      button.disabled = !available.has(value);
+      button.classList.toggle("active", value === calendarSelectedDate);
+      if (!button.disabled) button.addEventListener("click", () => calendarSelectDate?.(value));
+      calendarGrid.append(button);
+    }
+    const monthKeys = calendarDates.map((date) => date.slice(0, 7));
+    calendarPrevious.disabled = calendarMonth <= monthKeys[0];
+    calendarNext.disabled = calendarMonth >= monthKeys.at(-1);
+  }
+
+  function shiftCalendarMonth(offset) {
+    const [year, month] = calendarMonth.split("-").map(Number);
+    const shifted = new Date(Date.UTC(year, month - 1 + offset, 1));
+    calendarMonth = `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
+    renderCalendar();
+  }
+
+  calendarPrevious.addEventListener("click", () => shiftCalendarMonth(-1));
+  calendarNext.addEventListener("click", () => shiftCalendarMonth(1));
+
   function renderTimes(occurrences, selectedDate, onSelectDate, onSelectTime, selectedOccurrence = null, className = null) {
     const dates = [...new Set(occurrences
+      .filter((occurrence) => availabilityPresentation(occurrence).bookable)
       .map((occurrence) => dateKey(occurrence.startAt, occurrence.timezone))
       .filter(Boolean))].sort();
     const activeDate = dates.includes(selectedDate) ? selectedDate : dates[0];
     const timezone = occurrences[0]?.timezone;
     const dateOptions = element(root, "[data-booking-date-options]");
     dateOptions.replaceChildren();
-    for (const date of dates) {
+    for (const date of dates.slice(0, 3)) {
       const button = document.createElement("button");
+      const parts = dateParts(date);
+      const dateValue = parts ? new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 12)) : null;
+      const weekday = document.createElement("span");
+      const day = document.createElement("span");
       button.type = "button";
       button.className = "revvi-booking-day-button";
       button.dataset.bookingDateOption = date;
-      button.textContent = dateLabel(date, timezone);
+      button.setAttribute("aria-label", dateLabel(date, timezone));
+      weekday.textContent = dateValue
+        ? new Intl.DateTimeFormat(undefined, { weekday: "short", timeZone: "UTC" }).format(dateValue)
+        : date;
+      day.textContent = parts ? String(parts.day) : date;
+      button.append(weekday, day);
       button.classList.toggle("active", date === activeDate);
       button.addEventListener("click", () => onSelectDate(date));
       dateOptions.append(button);
+    }
+    calendar.hidden = true;
+    if (dates.length > 3) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.dataset.bookingCalendarToggle = "";
+      toggle.className = "revvi-booking-calendar-toggle";
+      toggle.setAttribute("aria-label", "Show more available dates");
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.textContent = "▦";
+      toggle.addEventListener("click", () => {
+        calendar.hidden = !calendar.hidden;
+        toggle.classList.toggle("active", !calendar.hidden);
+        toggle.setAttribute("aria-expanded", String(!calendar.hidden));
+      });
+      dateOptions.append(toggle);
+      calendarDates = dates;
+      calendarSelectedDate = activeDate;
+      calendarSelectDate = onSelectDate;
+      calendarMonth = activeDate.slice(0, 7);
+      renderCalendar();
     }
     const timeOptions = element(root, "[data-booking-time-options]");
     timeOptions.replaceChildren();
@@ -224,7 +343,12 @@ export function createBookingWidgetUi(root) {
       if (presentation.bookable) button.addEventListener("click", () => onSelectTime(occurrence));
       timeOptions.append(fragment);
     }
-    setText(root, "[data-booking-time-context]", `${className ?? occurrences[0]?.name ?? "Class"} · ${root.dataset.locationName}`);
+    const activeOccurrences = occurrences.filter((candidate) => dateKey(candidate.startAt, candidate.timezone) === activeDate);
+    const openCount = activeOccurrences.filter((occurrence) => availabilityPresentation(occurrence).bookable).length;
+    setText(root, "[data-booking-times-count]", `${openCount} of ${activeOccurrences.length} open`);
+    const duration = classDuration(occurrences);
+    const instructor = occurrences[0]?.staffName ?? "Instructor to be confirmed";
+    setText(root, "[data-booking-time-context]", `${className ?? occurrences[0]?.name ?? "Class"} · ${instructor}${duration ? ` · ${duration} min` : ""}`);
     show("showing-times", "times");
     return activeDate;
   }
@@ -239,6 +363,12 @@ export function createBookingWidgetUi(root) {
       show("loading-availability", "loading");
     },
     classChoices: renderClassChoices,
+    businessName(name) {
+      const label = typeof name === "string" && name.trim() ? name.trim() : root.dataset.offerName;
+      setText(root, "[data-booking-business]", label);
+      setText(root, "[data-booking-business-copy]", label);
+    },
+    selectedClass: selectClassChoice,
     times: renderTimes,
     enableContinue(enabled) {
       continueButton.disabled = !enabled;
@@ -256,6 +386,7 @@ export function createBookingWidgetUi(root) {
       selection.textContent = `${occurrence.name} — ${formatDateTime(occurrence.startAt, occurrence.timezone)}`;
       selection.hidden = false;
       continueButton.disabled = false;
+      setText(root, "[data-booking-time-hint]", `${dateLabel(dateKey(occurrence.startAt, occurrence.timezone), occurrence.timezone)} · ${timeLabel(occurrence)}`);
       for (const button of root.querySelectorAll("[data-time-select]")) {
         button.classList.toggle("active", button.dataset.classId === String(occurrence.classId));
       }
@@ -264,12 +395,17 @@ export function createBookingWidgetUi(root) {
       selection.textContent = "";
       selection.hidden = true;
       continueButton.disabled = true;
+      setText(root, "[data-booking-time-hint]", "Pick a time to continue");
     },
     quote(quote) {
       setText(root, "[data-quote-class]", quote.occurrence?.name);
       setText(root, "[data-quote-time]", formatDateTime(quote.occurrence?.startAt, quote.occurrence?.timezone));
       setText(root, "[data-quote-location]", quote.occurrence?.locationName ?? root.dataset.locationName);
-      setText(root, "[data-booking-review-price]", formatMoney(quote.price?.grandTotal, quote.price?.currency));
+      const priceLabel = formatMoney(quote.price?.grandTotal, quote.price?.currency);
+      setText(root, "[data-booking-review-price]", priceLabel);
+      element(root, "[data-quote-confirm]").textContent = Number(quote.price?.grandTotal) > 0
+        ? `Reserve my spot · ${priceLabel}`
+        : "Reserve my spot";
       setText(root, "[data-quote-expiry]", quote.expiresAt ? `Quote expires ${formatDateTime(quote.expiresAt, quote.occurrence?.timezone)}` : "");
       setText(root, "[data-quote-policy]", quote.cancellationPolicy?.displayText ?? "Cancellation terms will be confirmed by the Business.");
       show("confirming", "quote");
@@ -337,6 +473,7 @@ export function createBookingWidgetUi(root) {
       show("error", "error");
     },
     confirmButton: element(root, "[data-quote-confirm]"),
+    classContinueButton,
     backButton: element(root, "[data-quote-back]"),
     backToClassesButton: element(root, "[data-booking-back-to-classes]"),
     refreshButton: element(root, "[data-booking-refresh]"),

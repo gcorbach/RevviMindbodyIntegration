@@ -607,26 +607,16 @@ test("the local Webflow demo cleans up the exact inspected Booking on request", 
   }))).json();
 
   const response = await handler(request("/cleanup-demo-booking", {
-    demoBookingId: created.data.booking.sandboxDemo.demoBookingId,
+    bookingId: created.data.booking.sandboxDemo.demoBookingId,
+    reason: "Revvi hosted sandbox demonstration cleanup",
   }));
 
   assert.equal(response.status, 200);
   assert.deepEqual(modes, ["quote", "book-for-inspection", "cleanup-inspection"]);
-  assert.deepEqual((await response.json()).data.booking.sandboxDemo, {
-    paymentType: "Fictitious Cash",
-    providerEvidenceConfirmed: true,
-    demoBookingId: "00000000-0000-4000-8000-000000000060",
-    cleanupStatus: "confirmed",
-    autoCleanupAt: "2026-08-17T12:10:00.000Z",
-    entitlementRestorationObserved: null,
-    references: {
-      clientId: "100200001",
-      clientName: "Revvi Sandbox A1B2C3D4",
-      clientEmail: "revvi-sandbox-a1b2c3d4@example.test",
-      saleId: "100170591",
-      paymentId: "168233",
-      visitId: "100343812",
-    },
+  assert.deepEqual((await response.json()).data, {
+    bookingId: "00000000-0000-4000-8000-000000000060",
+    status: "cancelled",
+    passRestoration: "unknown",
   });
 });
 
@@ -734,11 +724,16 @@ test("the local Webflow demo automatically cleans an inspected Booking after ten
   await concurrentProbe;
   await scheduledCleanups[1].callback();
   const inspected = await handler(request("/cleanup-demo-booking", {
-    demoBookingId: created.data.booking.sandboxDemo.demoBookingId,
+    bookingId: created.data.booking.sandboxDemo.demoBookingId,
+    reason: "Revvi hosted sandbox demonstration cleanup",
   }));
 
   assert.deepEqual(modes, ["quote", "book-for-inspection", "probe", "cleanup-inspection"]);
-  assert.equal((await inspected.json()).data.booking.sandboxDemo.cleanupStatus, "confirmed");
+  assert.deepEqual((await inspected.json()).data, {
+    bookingId: "00000000-0000-4000-8000-000000000060",
+    status: "cancelled",
+    passRestoration: "not_restored",
+  });
 });
 
 test("the local Webflow demo cleans every pending Booking before shutdown", async () => {
@@ -923,8 +918,26 @@ test("the physical preview is the Webflow widget and labels its sandbox and auth
   assert.match(page, /fictitious sandbox Cash/);
   assert.match(page, /stays active for inspection for up to ten minutes/);
   assert.match(page, /data-booking-demo-cleanup/);
+  assert.match(page, /data-demo-cleanup-endpoint="\/cleanup-demo-booking"/);
+  assert.match(page, /\/assets\/revvi-booking-rail\.png/);
   assert.match(page, /\/assets\/revvi-booking\.js/);
+  assert.doesNotMatch(page, /SUPABASE_FUNCTIONS_URL/);
   assert.doesNotMatch(page, /MINDBODY_API_KEY|MINDBODY_SANDBOX_PASSWORD/);
+});
+
+test("live browser automation is explicit and drives only the production widget controls", () => {
+  const ordinaryPage = renderSite99WebflowDemoPage({ demoBearerToken: DEMO_TOKEN });
+  const automatedPage = renderSite99WebflowDemoPage({ demoBearerToken: DEMO_TOKEN, automateBooking: true });
+
+  assert.doesNotMatch(ordinaryPage, /data-live-browser-e2e/);
+  assert.match(automatedPage, /data-live-browser-e2e/);
+  assert.match(automatedPage, /data-class-select/);
+  assert.match(automatedPage, /data-booking-class-continue/);
+  assert.match(automatedPage, /data-time-select/);
+  assert.match(automatedPage, /data-booking-continue/);
+  assert.match(automatedPage, /data-quote-confirm/);
+  assert.match(automatedPage, /data-booking-demo-cleanup/);
+  assert.doesNotMatch(automatedPage, /MINDBODY_API_KEY|MINDBODY_SANDBOX_PASSWORD/);
 });
 
 test("the demo confirmation explains how to inspect the active Mindbody Booking", () => {
