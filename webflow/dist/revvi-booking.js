@@ -380,30 +380,48 @@ var RevviBooking = (() => {
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(occurrence);
       }
+      const choices = families.map((family) => ({
+        key: `family:${family.id}`,
+        family,
+        classOccurrences: groups.get(`family:${family.id}`) ?? []
+      }));
+      const configuredKeys = new Set(choices.map(({ key }) => key));
       for (const [key, classOccurrences] of groups) {
+        if (!configuredKeys.has(key)) choices.push({ key, family: null, classOccurrences });
+      }
+      for (const { key, family, classOccurrences } of choices) {
         classOccurrences.sort((left, right) => String(left.startAt).localeCompare(String(right.startAt)));
         const first = classOccurrences[0];
+        const preview = first ?? family?.nextOccurrence ?? null;
         const fragment = classTemplate.content.cloneNode(true);
         const card = fragment.querySelector("[data-booking-class-choice]");
         const button = element(fragment, "[data-class-select]");
         const presentation = classOccurrences.map(availabilityPresentation);
         const bookable = presentation.some(({ bookable: canBook }) => canBook);
+        const familyPreview = classOccurrences.length === 0 && family?.availabilityState === "available" && preview !== null;
+        const selectable = bookable || familyPreview;
         card.dataset.classKey = key;
-        card.dataset.classId = String(first.classId);
-        setText(fragment, "[data-class-name]", familyNames.get(String(first.classFamilyId)) ?? first.name ?? "Class");
-        const instructor = first.staffName ?? "Instructor to be confirmed";
-        const duration = classDuration(classOccurrences);
-        const next = `Next: ${formatDateTime(first.startAt, first.timezone)}`;
-        setText(fragment, "[data-class-meta]", `${instructor}${duration ? ` \xB7 ${duration} min` : ""} \xB7 ${next}`);
-        const prices = [...new Map(classOccurrences.filter((occurrence) => Number.isFinite(occurrence?.provisionalPrice?.amount) && typeof occurrence?.provisionalPrice?.currency === "string").map((occurrence) => {
-          const label = formatMoney(occurrence.provisionalPrice.amount, occurrence.provisionalPrice.currency);
+        card.dataset.classAvailabilityState = family?.availabilityState ?? (bookable ? "available" : "unavailable");
+        if (preview) card.dataset.classId = String(preview.classId);
+        setText(fragment, "[data-class-name]", familyNames.get(String(family?.id ?? first?.classFamilyId)) ?? first?.name ?? "Class");
+        if (preview) {
+          const instructor = preview.staffName ?? "Instructor to be confirmed";
+          const duration = classDuration(first ? classOccurrences : [preview]);
+          const next = `Next: ${formatDateTime(preview.startAt, preview.timezone)}`;
+          setText(fragment, "[data-class-meta]", `${instructor}${duration ? ` \xB7 ${duration} min` : ""} \xB7 ${next}`);
+        } else {
+          setText(fragment, "[data-class-meta]", family?.availabilityState === "cancelled" ? "Cancelled" : "Currently unavailable");
+        }
+        const previewPrices = familyPreview ? [family?.provisionalPrice] : [];
+        const prices = [...new Map([...classOccurrences.map((occurrence) => occurrence?.provisionalPrice), ...previewPrices].filter((price) => Number.isFinite(price?.amount) && typeof price?.currency === "string").map((price) => {
+          const label = formatMoney(price.amount, price.currency);
           return [label, label];
         })).values()];
-        const priceLabel = prices.length === 1 ? prices[0] : prices.length > 1 ? `From ${prices[0]}` : "Price at review";
+        const priceLabel = prices.length === 1 ? prices[0] : prices.length > 1 ? `From ${prices[0]}` : preview ? "Price at review" : "No bookable times";
         setText(fragment, "[data-class-price]", priceLabel);
-        button.disabled = !bookable;
+        button.disabled = !selectable;
         button.setAttribute("aria-pressed", "false");
-        if (bookable) button.addEventListener("click", () => onSelect(key, classOccurrences, priceLabel));
+        if (selectable) button.addEventListener("click", () => onSelect(key, classOccurrences, priceLabel, family));
         views.occurrences.append(fragment);
       }
       classContinueButton.disabled = true;
@@ -516,19 +534,25 @@ var RevviBooking = (() => {
       }
       const timeOptions = element(root, "[data-booking-time-options]");
       timeOptions.replaceChildren();
-      for (const occurrence of occurrences.filter((candidate) => dateKey(candidate.startAt, candidate.timezone) === activeDate)) {
+      const activeOccurrences = occurrences.filter((candidate) => dateKey(candidate.startAt, candidate.timezone) === activeDate);
+      const timeCounts = /* @__PURE__ */ new Map();
+      for (const occurrence of activeOccurrences) {
+        const label = timeLabel(occurrence);
+        timeCounts.set(label, (timeCounts.get(label) ?? 0) + 1);
+      }
+      for (const occurrence of activeOccurrences) {
         const fragment = timeTemplate.content.cloneNode(true);
         const button = element(fragment, "[data-time-select]");
         const presentation = availabilityPresentation(occurrence);
+        const label = timeLabel(occurrence);
         button.dataset.classId = String(occurrence.classId);
         button.dataset.bookingOccurrence = "true";
-        button.textContent = timeLabel(occurrence);
+        button.textContent = timeCounts.get(label) > 1 ? `${label} \xB7 ${occurrence.staffName ?? "Instructor to be confirmed"}` : label;
         button.classList.toggle("active", occurrence.classId === selectedOccurrence?.classId);
         button.disabled = !presentation.bookable;
         if (presentation.bookable) button.addEventListener("click", () => onSelectTime(occurrence));
         timeOptions.append(fragment);
       }
-      const activeOccurrences = occurrences.filter((candidate) => dateKey(candidate.startAt, candidate.timezone) === activeDate);
       const openCount = activeOccurrences.filter((occurrence) => availabilityPresentation(occurrence).bookable).length;
       setText(root, "[data-booking-times-count]", `${openCount} of ${activeOccurrences.length} open`);
       const duration = classDuration(occurrences);
@@ -751,6 +775,7 @@ var RevviBooking = (() => {
     let occurrences = [];
     let families = [];
     let selectedClassKey = null;
+    let selectedClassFamilyId = null;
     let selectedClassOccurrences = [];
     let selectedClassName = null;
     let selectedDateKey = null;
@@ -802,15 +827,17 @@ var RevviBooking = (() => {
         announce("revvi:availability-loaded", {
           business: data.business,
           offer: data.offer,
+          classFamilies: families,
           occurrences
         });
         ui.businessName(data?.business?.name);
         selectedClassKey = null;
+        selectedClassFamilyId = null;
         selectedClassOccurrences = [];
         selectedClassName = null;
         selectedDateKey = null;
         selectedOccurrence = null;
-        if (occurrences.length === 0) ui.empty();
+        if (occurrences.length === 0 && families.length === 0) ui.empty();
         else ui.classChoices(occurrences, selectClass, families);
       } catch (error) {
         if (sequence !== loadSequence) return;
@@ -823,17 +850,74 @@ var RevviBooking = (() => {
         }
       }
     }
-    function selectClass(classKey2, classOccurrences, priceLabel) {
-      if (requestActive || !classKey2 || !Array.isArray(classOccurrences) || classOccurrences.length === 0) return;
+    function applyClassSelection(classKey2, classOccurrences, priceLabel, family = null) {
       selectedClassKey = classKey2;
       selectedClassOccurrences = [...classOccurrences].sort((left, right) => String(left.startAt).localeCompare(String(right.startAt)));
-      selectedClassName = families.find((family) => String(family.id) === String(selectedClassOccurrences[0]?.classFamilyId))?.displayName ?? selectedClassOccurrences[0]?.name ?? "Class";
+      selectedClassFamilyId = family?.id ?? selectedClassOccurrences[0]?.classFamilyId ?? null;
+      selectedClassName = family?.displayName ?? family?.name ?? families.find((candidate) => String(candidate.id) === String(selectedClassOccurrences[0]?.classFamilyId))?.displayName ?? selectedClassOccurrences[0]?.name ?? "Class";
       const firstBookable = selectedClassOccurrences.find((occurrence) => ["available", "waitlist_available"].includes(occurrence.availabilityState));
       selectedDateKey = occurrenceDateKey(firstBookable ?? selectedClassOccurrences[0]);
       selectedOccurrence = null;
       quote = null;
       ui.clearSelection();
       ui.selectedClass(classKey2, selectedClassName, priceLabel);
+    }
+    function selectClass(classKey2, classOccurrences, priceLabel, family = null) {
+      if (requestActive || !classKey2 || !Array.isArray(classOccurrences)) return;
+      if (classOccurrences.length === 0 && (!family?.id || family.availabilityState !== "available" || !family.nextOccurrence)) return;
+      applyClassSelection(classKey2, classOccurrences, priceLabel, family);
+    }
+    async function continueToTimes() {
+      if (requestActive || !selectedClassKey) return;
+      if (selectedClassOccurrences.length > 0) {
+        ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+        return;
+      }
+      if (!selectedClassFamilyId) return;
+      requestActive = true;
+      dateInput.disabled = true;
+      ui.loadingAvailability();
+      try {
+        const data = await api.availability(authorization, {
+          ...availabilityContext(),
+          classFamilyId: selectedClassFamilyId
+        });
+        const familyOccurrences = exactAvailability(data, context).filter((occurrence) => String(occurrence.classFamilyId) === String(selectedClassFamilyId));
+        occurrences = [
+          ...occurrences.filter((occurrence) => String(occurrence.classFamilyId) !== String(selectedClassFamilyId)),
+          ...familyOccurrences
+        ];
+        const selectedFamilyUpdate = Array.isArray(data?.classFamilies) ? data.classFamilies.find((candidate) => String(candidate.id) === String(selectedClassFamilyId)) : null;
+        if (selectedFamilyUpdate) {
+          families = families.map((candidate) => String(candidate.id) === String(selectedClassFamilyId) ? { ...candidate, ...selectedFamilyUpdate } : candidate);
+        }
+        announce("revvi:availability-loaded", {
+          business: data.business,
+          offer: data.offer,
+          classFamilies: families,
+          occurrences: familyOccurrences
+        });
+        if (familyOccurrences.length === 0) {
+          ui.error("No current times for this Class could be validated safely.", true);
+          return;
+        }
+        selectedClassOccurrences = familyOccurrences;
+        const firstBookable = selectedClassOccurrences.find((occurrence) => ["available", "waitlist_available"].includes(occurrence.availabilityState));
+        selectedDateKey = occurrenceDateKey(firstBookable ?? selectedClassOccurrences[0]);
+        selectedOccurrence = null;
+        quote = null;
+        ui.clearSelection();
+        ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+      } catch (error) {
+        if (error instanceof BookingWidgetRequestError && [401, 403].includes(error.status)) {
+          ui.ineligible(error.message);
+        } else {
+          ui.error("Live Class times could not be loaded safely.", error?.retryable === true);
+        }
+      } finally {
+        requestActive = false;
+        dateInput.disabled = false;
+      }
     }
     function selectDate(dateKey2) {
       if (requestActive || !selectedClassKey) return;
@@ -890,6 +974,7 @@ var RevviBooking = (() => {
         announce("revvi:availability-loaded", {
           business: data.business,
           offer: data.offer,
+          classFamilies: Array.isArray(data?.classFamilies) ? data.classFamilies : [],
           occurrences
         });
         root.dataset.availabilityStale = "false";
@@ -1007,15 +1092,12 @@ var RevviBooking = (() => {
       return true;
     }
     ui.confirmButton.addEventListener("click", submitBooking);
-    ui.classContinueButton.addEventListener("click", () => {
-      if (!requestActive && selectedClassOccurrences.length > 0) {
-        ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
-      }
-    });
+    ui.classContinueButton.addEventListener("click", continueToTimes);
     ui.continueButton.addEventListener("click", continueToQuote);
     ui.demoCleanupButton.addEventListener("click", cleanupDemoBooking);
     function resetSelection() {
       selectedClassKey = null;
+      selectedClassFamilyId = null;
       selectedClassOccurrences = [];
       selectedClassName = null;
       selectedDateKey = null;

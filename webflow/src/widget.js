@@ -87,6 +87,7 @@ export function mountBookingWidget(root, dependencies = {}) {
   let occurrences = [];
   let families = [];
   let selectedClassKey = null;
+  let selectedClassFamilyId = null;
   let selectedClassOccurrences = [];
   let selectedClassName = null;
   let selectedDateKey = null;
@@ -142,15 +143,17 @@ export function mountBookingWidget(root, dependencies = {}) {
       announce("revvi:availability-loaded", {
         business: data.business,
         offer: data.offer,
+        classFamilies: families,
         occurrences,
       });
       ui.businessName(data?.business?.name);
       selectedClassKey = null;
+      selectedClassFamilyId = null;
       selectedClassOccurrences = [];
       selectedClassName = null;
       selectedDateKey = null;
       selectedOccurrence = null;
-      if (occurrences.length === 0) ui.empty();
+      if (occurrences.length === 0 && families.length === 0) ui.empty();
       else ui.classChoices(occurrences, selectClass, families);
     } catch (error) {
       if (sequence !== loadSequence) return;
@@ -164,11 +167,12 @@ export function mountBookingWidget(root, dependencies = {}) {
     }
   }
 
-  function selectClass(classKey, classOccurrences, priceLabel) {
-    if (requestActive || !classKey || !Array.isArray(classOccurrences) || classOccurrences.length === 0) return;
+  function applyClassSelection(classKey, classOccurrences, priceLabel, family = null) {
     selectedClassKey = classKey;
     selectedClassOccurrences = [...classOccurrences].sort((left, right) => String(left.startAt).localeCompare(String(right.startAt)));
-    selectedClassName = families.find((family) => String(family.id) === String(selectedClassOccurrences[0]?.classFamilyId))?.displayName
+    selectedClassFamilyId = family?.id ?? selectedClassOccurrences[0]?.classFamilyId ?? null;
+    selectedClassName = family?.displayName ?? family?.name
+      ?? families.find((candidate) => String(candidate.id) === String(selectedClassOccurrences[0]?.classFamilyId))?.displayName
       ?? selectedClassOccurrences[0]?.name
       ?? "Class";
     const firstBookable = selectedClassOccurrences.find((occurrence) => ["available", "waitlist_available"].includes(occurrence.availabilityState));
@@ -177,6 +181,71 @@ export function mountBookingWidget(root, dependencies = {}) {
     quote = null;
     ui.clearSelection();
     ui.selectedClass(classKey, selectedClassName, priceLabel);
+  }
+
+  function selectClass(classKey, classOccurrences, priceLabel, family = null) {
+    if (requestActive || !classKey || !Array.isArray(classOccurrences)) return;
+    if (classOccurrences.length === 0
+      && (!family?.id || family.availabilityState !== "available" || !family.nextOccurrence)) return;
+    applyClassSelection(classKey, classOccurrences, priceLabel, family);
+  }
+
+  async function continueToTimes() {
+    if (requestActive || !selectedClassKey) return;
+    if (selectedClassOccurrences.length > 0) {
+      ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+      return;
+    }
+    if (!selectedClassFamilyId) return;
+    requestActive = true;
+    dateInput.disabled = true;
+    ui.loadingAvailability();
+    try {
+      const data = await api.availability(authorization, {
+        ...availabilityContext(),
+        classFamilyId: selectedClassFamilyId,
+      });
+      const familyOccurrences = exactAvailability(data, context)
+        .filter((occurrence) => String(occurrence.classFamilyId) === String(selectedClassFamilyId));
+      occurrences = [
+        ...occurrences.filter((occurrence) => String(occurrence.classFamilyId) !== String(selectedClassFamilyId)),
+        ...familyOccurrences,
+      ];
+      const selectedFamilyUpdate = Array.isArray(data?.classFamilies)
+        ? data.classFamilies.find((candidate) => String(candidate.id) === String(selectedClassFamilyId))
+        : null;
+      if (selectedFamilyUpdate) {
+        families = families.map((candidate) => String(candidate.id) === String(selectedClassFamilyId)
+          ? { ...candidate, ...selectedFamilyUpdate }
+          : candidate);
+      }
+      announce("revvi:availability-loaded", {
+        business: data.business,
+        offer: data.offer,
+        classFamilies: families,
+        occurrences: familyOccurrences,
+      });
+      if (familyOccurrences.length === 0) {
+        ui.error("No current times for this Class could be validated safely.", true);
+        return;
+      }
+      selectedClassOccurrences = familyOccurrences;
+      const firstBookable = selectedClassOccurrences.find((occurrence) => ["available", "waitlist_available"].includes(occurrence.availabilityState));
+      selectedDateKey = occurrenceDateKey(firstBookable ?? selectedClassOccurrences[0]);
+      selectedOccurrence = null;
+      quote = null;
+      ui.clearSelection();
+      ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+    } catch (error) {
+      if (error instanceof BookingWidgetRequestError && [401, 403].includes(error.status)) {
+        ui.ineligible(error.message);
+      } else {
+        ui.error("Live Class times could not be loaded safely.", error?.retryable === true);
+      }
+    } finally {
+      requestActive = false;
+      dateInput.disabled = false;
+    }
   }
 
   function selectDate(dateKey) {
@@ -237,6 +306,7 @@ export function mountBookingWidget(root, dependencies = {}) {
       announce("revvi:availability-loaded", {
         business: data.business,
         offer: data.offer,
+        classFamilies: Array.isArray(data?.classFamilies) ? data.classFamilies : [],
         occurrences,
       });
       root.dataset.availabilityStale = "false";
@@ -363,15 +433,12 @@ export function mountBookingWidget(root, dependencies = {}) {
   }
 
   ui.confirmButton.addEventListener("click", submitBooking);
-  ui.classContinueButton.addEventListener("click", () => {
-    if (!requestActive && selectedClassOccurrences.length > 0) {
-      ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
-    }
-  });
+  ui.classContinueButton.addEventListener("click", continueToTimes);
   ui.continueButton.addEventListener("click", continueToQuote);
   ui.demoCleanupButton.addEventListener("click", cleanupDemoBooking);
   function resetSelection() {
     selectedClassKey = null;
+    selectedClassFamilyId = null;
     selectedClassOccurrences = [];
     selectedClassName = null;
     selectedDateKey = null;

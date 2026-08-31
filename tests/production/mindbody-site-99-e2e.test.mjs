@@ -221,8 +221,8 @@ test("selector-based families keep multiple live taxonomy tuples and one shared 
   const result = await runner(provider, { environment: selectorEnvironment }).run("probe");
 
   assert.deepEqual(result.families, [
-    { id: "00000000-0000-4000-8000-000000000101", name: "Yoga", available: true },
-    { id: "00000000-0000-4000-8000-000000000102", name: "Strength Yoga", available: true },
+    { id: "00000000-0000-4000-8000-000000000101", name: "Yoga", available: true, availabilityState: "available" },
+    { id: "00000000-0000-4000-8000-000000000102", name: "Strength Yoga", available: true, availabilityState: "available" },
   ]);
   assert.deepEqual(result.fixtures.map((fixture) => [
     fixture.classFamilyId,
@@ -233,6 +233,178 @@ test("selector-based families keep multiple live taxonomy tuples and one shared 
     ["00000000-0000-4000-8000-000000000101", "223", "250", "1424"],
     ["00000000-0000-4000-8000-000000000102", "224", "251", "1424"],
   ]);
+});
+
+test("probe mode reports the live availability state of every configured Class family", async () => {
+  const provider = sandboxProvider({ mixedFamilyStates: true });
+  const selectorEnvironment = {
+    ...environment,
+    MINDBODY_SANDBOX_PRODUCT_ID: undefined,
+    MINDBODY_SANDBOX_CLASS_FAMILIES_JSON: JSON.stringify([
+      {
+        id: "00000000-0000-4000-8000-000000000101",
+        name: "Yoga",
+        pricingOptionName: "5 Class Card",
+        selectors: [{
+          locationName: "Clubville", programName: "Yoga",
+          classDescriptionName: "Yoga", sessionTypeName: "Hatha Yoga",
+        }],
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000102",
+        name: "Sweat",
+        pricingOptionName: "5 Class Card",
+        selectors: [{
+          locationName: "Clubville", programName: "Yoga",
+          classDescriptionName: "Sweat", sessionTypeName: "Work out of the day",
+        }],
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000103",
+        name: "RPM Spinning",
+        pricingOptionName: "5 Class Card",
+        selectors: [{
+          locationName: "Clubville", programName: "Yoga",
+          classDescriptionName: "RPM Spinning", sessionTypeName: "Spinning",
+        }],
+      },
+    ]),
+  };
+
+  const result = await runner(provider, { environment: selectorEnvironment }).run("probe");
+
+  assert.deepEqual(result.families, [
+    { id: "00000000-0000-4000-8000-000000000101", name: "Yoga", available: true, availabilityState: "available" },
+    { id: "00000000-0000-4000-8000-000000000102", name: "Sweat", available: false, availabilityState: "unavailable" },
+    { id: "00000000-0000-4000-8000-000000000103", name: "RPM Spinning", available: false, availabilityState: "cancelled" },
+  ]);
+  assert.deepEqual(result.fixtures.map((fixture) => fixture.classId), ["19364"]);
+});
+
+test("catalogue mode reports one priced next occurrence per available family without staff reads", async () => {
+  const provider = sandboxProvider({ mixedFamilyStates: true });
+  const selectorEnvironment = {
+    ...environment,
+    MINDBODY_SANDBOX_PRODUCT_ID: undefined,
+    MINDBODY_SANDBOX_CLASS_FAMILIES_JSON: JSON.stringify([
+      {
+        id: "00000000-0000-4000-8000-000000000101",
+        name: "Yoga",
+        pricingOptionName: "5 Class Card",
+        selectors: [{
+          locationName: "Clubville", programName: "Yoga",
+          classDescriptionName: "Yoga", sessionTypeName: "Hatha Yoga",
+        }],
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000102",
+        name: "Sweat",
+        pricingOptionName: "5 Class Card",
+        selectors: [{
+          locationName: "Clubville", programName: "Yoga",
+          classDescriptionName: "Sweat", sessionTypeName: "Work out of the day",
+        }],
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000103",
+        name: "RPM Spinning",
+        pricingOptionName: "5 Class Card",
+        selectors: [{
+          locationName: "Clubville", programName: "Yoga",
+          classDescriptionName: "RPM Spinning", sessionTypeName: "Spinning",
+        }],
+      },
+    ]),
+  };
+
+  const result = await runner(provider, { environment: selectorEnvironment }).run("catalogue");
+
+  assert.deepEqual(result.families, [
+    {
+      id: "00000000-0000-4000-8000-000000000101",
+      name: "Yoga",
+      available: true,
+      availabilityState: "available",
+      nextOccurrence: {
+        classId: "19364",
+        classStart: "2026-08-18T10:00:00",
+        classEnd: "2026-08-18T11:00:00",
+        className: "Yoga",
+        staffName: "Sandbox Staff",
+      },
+      provisionalPrice: { amount: 55, currency: "USD" },
+    },
+    { id: "00000000-0000-4000-8000-000000000102", name: "Sweat", available: false, availabilityState: "unavailable" },
+    { id: "00000000-0000-4000-8000-000000000103", name: "RPM Spinning", available: false, availabilityState: "cancelled" },
+  ]);
+  assert.deepEqual(result.fixtures, []);
+  assert.equal(provider.requests.filter((request) => request.url.pathname.endsWith("sale/services")).length, 1);
+  assert.equal(provider.requests.filter((request) => request.url.pathname.endsWith("usertoken/issue")).length, 0);
+  assert.equal(provider.requests.filter((request) => request.url.pathname.endsWith("client/clients")).length, 0);
+});
+
+test("a selected Class family validates pricing with bounded parallel API-key-only reads", async () => {
+  const provider = sandboxProvider({ occurrenceCount: 8, serviceDelayMs: 10 });
+
+  const result = await runner(provider).run("availability", {
+    classFamilyId: "00000000-0000-4000-8000-000000000101",
+  });
+
+  assert.equal(result.fixtures.length, 8);
+  assert.ok(provider.maxConcurrentServiceReads() > 1);
+  assert.ok(provider.maxConcurrentServiceReads() <= 6);
+  assert.equal(provider.requests.filter((request) => request.url.pathname.endsWith("usertoken/issue")).length, 0);
+  assert.equal(provider.requests.filter((request) => request.url.pathname.endsWith("client/clients")).length, 0);
+});
+
+test("selector discovery reads every description page and admits an inactive description with a live Class", async () => {
+  const provider = sandboxProvider({ pagedInactiveDescription: true });
+  const selectorEnvironment = {
+    ...environment,
+    MINDBODY_SANDBOX_PRODUCT_ID: undefined,
+    MINDBODY_SANDBOX_CLASS_FAMILIES_JSON: JSON.stringify([{
+      id: "00000000-0000-4000-8000-000000000102",
+      name: "Daily Work Out",
+      pricingOptionName: "5 Class Card",
+      selectors: [{
+        locationName: "Clubville", programName: "Classes",
+        classDescriptionName: "Daily Work Out", sessionTypeName: "Work out of the day",
+      }],
+    }]),
+  };
+
+  const result = await runner(provider, { environment: selectorEnvironment }).run("probe");
+
+  assert.equal(result.fixture.classId, "21978");
+  assert.equal(result.fixture.classDescriptionId, "301");
+  const descriptionReads = provider.requests
+    .filter((request) => request.url.pathname.endsWith("class/classdescriptions"));
+  assert.deepEqual(descriptionReads.map((request) => [
+    request.url.searchParams.get("IncludeInactive"),
+    request.url.searchParams.get("Offset"),
+  ]), [["true", "0"], ["true", "100"]]);
+});
+
+test("selector discovery prefers the one active description when stable taxonomy names are duplicated", async () => {
+  const provider = sandboxProvider({ activeDuplicateDescription: true });
+  const selectorEnvironment = {
+    ...environment,
+    MINDBODY_SANDBOX_PRODUCT_ID: undefined,
+    MINDBODY_SANDBOX_CLASS_FAMILIES_JSON: JSON.stringify([{
+      id: "00000000-0000-4000-8000-000000000106",
+      name: "Body Pump",
+      pricingOptionName: "5 Class Card",
+      selectors: [{
+        locationName: "Clubville", programName: "Classes",
+        classDescriptionName: "Body Pump", sessionTypeName: "Les Mills",
+      }],
+    }]),
+  };
+
+  const result = await runner(provider, { environment: selectorEnvironment }).run("probe");
+
+  assert.equal(result.fixture.classId, "24061");
+  assert.equal(result.fixture.classDescriptionId, "170");
 });
 
 function json(body, status = 200) {
@@ -255,6 +427,12 @@ function sandboxProvider({
   productChangesBetweenRuns = false,
   liveAmbiguousProducts = false,
   classIdReadsRequireDateWindow = false,
+  mixedFamilyStates = false,
+  pagedInactiveDescription = false,
+  activeDuplicateDescription = false,
+  occurrenceCount = 1,
+  serviceDelayMs = 0,
+  providerPaymentType = "Cash",
 } = {}) {
   const requests = [];
   let clientId = "client-shared";
@@ -263,6 +441,8 @@ function sandboxProvider({
   let hiddenVisitReads = 0;
   let remainingCancellationLagReads = 0;
   let serviceReads = 0;
+  let activeServiceReads = 0;
+  let maxConcurrentServiceReads = 0;
   const fetchImpl = async (urlValue, init) => {
     const url = new URL(urlValue);
     const body = init.body ? JSON.parse(init.body) : null;
@@ -270,14 +450,50 @@ function sandboxProvider({
     const path = url.pathname.replace("/public/v6/", "");
     if (path === "site/sites") return json({ Sites: [{ Id: -99, Name: "LastSpot", CurrencyCode: "USD" }] });
     if (path === "site/locations") return json({ Locations: [{ Id: 1, Name: "Clubville" }] });
-    if (path === "site/programs") return json({ Programs: [{ Id: 27, Name: "Yoga", ScheduleType: "Class" }] });
+    if (path === "site/programs") return json({ Programs: pagedInactiveDescription || activeDuplicateDescription
+      ? [{ Id: 26, Name: "Classes", ScheduleType: "Class" }]
+      : [{ Id: 27, Name: "Yoga", ScheduleType: "Class" }] });
     if (path === "class/classdescriptions") {
-      return json({ ClassDescriptions: multiFamily
+      if (pagedInactiveDescription) {
+        const offset = Number(url.searchParams.get("Offset") ?? 0);
+        return offset === 0
+          ? json({
+            ClassDescriptions: Array.from({ length: 100 }, (_, index) => ({
+              Id: 1000 + index, Name: `Filler ${index}`, Program: { Id: 26 }, Active: false,
+            })),
+            PaginationResponse: { RequestedLimit: 100, RequestedOffset: 0, PageSize: 100, TotalResults: 101 },
+          })
+          : json({
+            ClassDescriptions: [{ Id: 301, Name: "Daily Work Out", Program: { Id: 26 }, Active: false }],
+            PaginationResponse: { RequestedLimit: 100, RequestedOffset: 100, PageSize: 1, TotalResults: 101 },
+          });
+      }
+      if (activeDuplicateDescription) return json({ ClassDescriptions: [
+        { Id: 170, Name: "Body Pump", Program: { Id: 26 }, SessionType: { Id: 206 }, Active: true },
+        { Id: 198, Name: "Body Pump", Program: { Id: 26 }, SessionType: { Id: 206 }, Active: false },
+      ] });
+      return json({ ClassDescriptions: mixedFamilyStates
+        ? [
+          { Id: 223, Name: "Yoga", Program: { Id: 27 }, Active: true },
+          { Id: 224, Name: "Sweat", Program: { Id: 27 }, Active: true },
+          { Id: 225, Name: "RPM Spinning", Program: { Id: 27 }, Active: true },
+        ]
+        : multiFamily
         ? [{ Id: 223, Name: "Yoga", Active: true }, { Id: 224, Name: "Strength Yoga", Active: true }]
         : [{ Id: 223, Name: "Yoga", Active: true }] });
     }
     if (path === "site/sessiontypes") return json({ SessionTypes: [
-      { Id: 250, Name: "Hatha Yoga", Program: { Id: 27 }, Active: true },
+      ...(pagedInactiveDescription || activeDuplicateDescription
+        ? [{
+          Id: activeDuplicateDescription ? 206 : 251,
+          Name: activeDuplicateDescription ? "Les Mills" : "Work out of the day",
+          Program: { Id: 26 }, Active: true,
+        }]
+        : [{ Id: 250, Name: "Hatha Yoga", Program: { Id: 27 }, Active: true }]),
+      ...(mixedFamilyStates ? [
+        { Id: 251, Name: "Work out of the day", Program: { Id: 27 }, Active: true },
+        { Id: 252, Name: "Spinning", Program: { Id: 27 }, Active: true },
+      ] : []),
       ...(multiFamily ? [{ Id: 251, Name: "Strength Yoga", Program: { Id: 27 }, Active: true }] : []),
     ] });
     if (path === "usertoken/issue") {
@@ -306,21 +522,37 @@ function sandboxProvider({
         return json({ Classes: [] });
       }
       return json({
-        Classes: [
-          {
-            Id: 19364,
-            StartDateTime: "2026-08-18T10:00:00",
-            EndDateTime: "2026-08-18T11:00:00",
+        Classes: pagedInactiveDescription || activeDuplicateDescription ? [{
+          Id: activeDuplicateDescription ? 24061 : 21978,
+          StartDateTime: activeDuplicateDescription ? "2026-08-18T14:00:00" : "2026-08-18T06:30:00",
+          EndDateTime: activeDuplicateDescription ? "2026-08-18T15:00:00" : "2026-08-18T07:30:00",
+          IsCanceled: false,
+          IsAvailable: true,
+          IsEnrolled: false,
+          ClassScheduleId: activeDuplicateDescription ? 2406 : 2197,
+          Location: { Id: 1, Name: "Clubville" },
+          Staff: { Id: 10, Name: "Jake Hay" },
+          ClassDescription: {
+            Id: activeDuplicateDescription ? 170 : 301,
+            Name: activeDuplicateDescription ? "Body Pump" : "Daily Work Out",
+            Program: { Id: 26 },
+            SessionType: { Id: activeDuplicateDescription ? 206 : 251 },
+          },
+        }] : [
+          ...Array.from({ length: occurrenceCount }, (_, index) => ({
+            Id: 19364 + index,
+            StartDateTime: `2026-08-${String(18 + index).padStart(2, "0")}T10:00:00`,
+            EndDateTime: `2026-08-${String(18 + index).padStart(2, "0")}T11:00:00`,
             IsCanceled: false,
             IsAvailable: true,
             IsEnrolled: visitActive && requestedClientId === clientId,
-            ClassScheduleId: 2152,
+            ClassScheduleId: 2152 + index,
             Location: { Id: 1, Name: "Clubville" },
             Staff: { Id: 9, Name: "Sandbox Staff" },
             ClassDescription: {
               Id: 223, Name: "Yoga", Program: { Id: 27 }, SessionType: { Id: 250 },
             },
-          },
+          })),
           ...(multiFamily ? [{
             Id: 19365,
             StartDateTime: "2026-08-18T11:00:00",
@@ -335,11 +567,40 @@ function sandboxProvider({
               Id: 224, Name: "Strength Yoga", Program: { Id: 27 }, SessionType: { Id: 251 },
             },
           }] : []),
+          ...(mixedFamilyStates ? [{
+            Id: 19365,
+            StartDateTime: "2026-08-18T16:00:00",
+            EndDateTime: "2026-08-18T17:00:00",
+            IsCanceled: false,
+            IsAvailable: false,
+            ClassScheduleId: 2153,
+            Location: { Id: 1, Name: "Clubville" },
+            Staff: { Id: 10, Name: "Unavailable Staff" },
+            ClassDescription: {
+              Id: 224, Name: "Sweat", Program: { Id: 27 }, SessionType: { Id: 251 },
+            },
+          }, {
+            Id: 19366,
+            StartDateTime: "2026-08-18T15:00:00",
+            EndDateTime: "2026-08-18T16:00:00",
+            IsCanceled: true,
+            IsAvailable: false,
+            ClassScheduleId: 2154,
+            Location: { Id: 1, Name: "Clubville" },
+            Staff: { Id: 11, Name: "Cancelled Staff" },
+            ClassDescription: {
+              Id: 225, Name: "RPM Spinning", Program: { Id: 27 }, SessionType: { Id: 252 },
+            },
+          }] : []),
         ],
       });
     }
     if (path === "sale/services") {
       serviceReads += 1;
+      activeServiceReads += 1;
+      maxConcurrentServiceReads = Math.max(maxConcurrentServiceReads, activeServiceReads);
+      if (serviceDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, serviceDelayMs));
+      activeServiceReads -= 1;
       const resetProductId = productChangesBetweenRuns && serviceReads > 2 ? 1419 : 1424;
       const currentService = {
         ProductId: multipleProducts ? 1419 : resetProductId,
@@ -394,7 +655,8 @@ function sandboxProvider({
         SellAtLocationIds: [1],
         UseAtLocationIds: [1],
       }] : [];
-      const liveServices = liveAmbiguousProducts ? [{
+      const liveServices = liveAmbiguousProducts || mixedFamilyStates
+        || pagedInactiveDescription || activeDuplicateDescription ? [{
         ProductId: 1357,
         Name: "1 Month Unlimited",
         SellOnline: true,
@@ -472,7 +734,7 @@ function sandboxProvider({
             ClientId: clientId,
             ShoppingCartId: "cart-1",
             PurchasedItems: [{ Id: 1424, SaleDetailId: 188790, Returned: false }],
-            Payments: [{ Id: 168194, Type: "Cash", Amount: 13, TransactionId: null }],
+            Payments: [{ Id: 168194, Type: providerPaymentType, Amount: 13, TransactionId: null }],
           }]
           : [],
       });
@@ -509,7 +771,12 @@ function sandboxProvider({
     }
     return json({ Error: { Code: "UnexpectedEndpoint" } }, 404);
   };
-  return { fetchImpl, requests, state: () => ({ clientId, visitActive, saleCreated }) };
+  return {
+    fetchImpl,
+    requests,
+    state: () => ({ clientId, visitActive, saleCreated }),
+    maxConcurrentServiceReads: () => maxConcurrentServiceReads,
+  };
 }
 
 function runner(provider, overrides = {}) {
@@ -611,8 +878,8 @@ test("probe mode exposes live occurrences grouped by configured Class family", a
   const result = await runner(provider, { environment: environmentWithFamilies }).run("probe");
 
   assert.deepEqual(result.families, [
-    { id: "00000000-0000-4000-8000-000000000101", name: "Yoga", available: true },
-    { id: "00000000-0000-4000-8000-000000000102", name: "Strength Yoga", available: true },
+    { id: "00000000-0000-4000-8000-000000000101", name: "Yoga", available: true, availabilityState: "available" },
+    { id: "00000000-0000-4000-8000-000000000102", name: "Strength Yoga", available: true, availabilityState: "available" },
   ]);
   assert.deepEqual(result.fixtures.map((fixture) => [fixture.classFamilyId, fixture.classId]), [
     ["00000000-0000-4000-8000-000000000101", "19364"],
@@ -628,7 +895,7 @@ test("probe mode exposes live occurrences grouped by configured Class family", a
 });
 
 test("committed mode waits for every evidence surface, proves exact facts, and always removes the Visit", async () => {
-  const provider = sandboxProvider({ delayedVisitReads: 6 });
+  const provider = sandboxProvider({ delayedVisitReads: 6, providerPaymentType: "Sandbox configured label" });
   const result = await runner(provider, {
     environment: { ...environment, MINDBODY_SANDBOX_WRITE_CONFIRM: "BOOK_AND_CANCEL_SITE_-99" },
     pollOptions: { attempts: 3, intervalMs: 0 },
@@ -652,6 +919,7 @@ test("committed mode waits for every evidence surface, proves exact facts, and a
     saleId: "100170553",
     paymentId: "168194",
     paymentType: "Cash",
+    providerPaymentType: "Sandbox configured label",
     paymentAmount: 13,
     transactionId: null,
     transactionEvidence: "not-returned-for-cash",
@@ -777,7 +1045,11 @@ test("a missing post-checkout Sale is unknown but still triggers targeted cleanu
     () => runner(provider, {
       environment: { ...environment, MINDBODY_SANDBOX_WRITE_CONFIRM: "BOOK_AND_CANCEL_SITE_-99" },
     }).run("book-and-cancel"),
-    (error) => error instanceof Site99RunError && error.code === "EVIDENCE_NOT_CONVERGED",
+    (error) => error instanceof Site99RunError
+      && error.code === "EVIDENCE_NOT_CONVERGED"
+      && error.detail?.activeVisit === true
+      && error.detail?.newSale === false
+      && error.detail?.clientService === true,
   );
   assert.equal(provider.state().visitActive, false);
   const cancellationBodies = provider.requests

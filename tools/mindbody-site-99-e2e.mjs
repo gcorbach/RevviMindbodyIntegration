@@ -7,8 +7,11 @@ const API_BASE = `${API_ORIGIN}/public/v6`;
 const SITE_ID = "-99";
 const WRITE_CONFIRMATION = "BOOK_AND_CANCEL_SITE_-99";
 const PROVIDER_REQUEST_ID = Symbol("providerRequestId");
+const DEFAULT_EVIDENCE_POLL_OPTIONS = Object.freeze({ attempts: 15, intervalMs: 1_000 });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RUN_MODE_POLICIES = Object.freeze({
+  catalogue: Object.freeze({ outcome: "catalogue" }),
+  availability: Object.freeze({ outcome: "availability" }),
   probe: Object.freeze({ outcome: "probe" }),
   quote: Object.freeze({ outcome: "quote", quotes: true }),
   "book-and-cancel": Object.freeze({
@@ -30,6 +33,20 @@ function normalizedName(value) {
 
 function array(value) {
   return Array.isArray(value) ? value : [];
+}
+
+async function mapWithConcurrency(values, limit, task) {
+  const results = new Array(values.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await task(values[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, () => worker()));
+  return results;
 }
 
 function id(value) {
@@ -196,10 +213,12 @@ function saleFact(value) {
     returned: purchasedItems.some((item) => item.Returned === true),
     payments: array(value.Payments).map((payment) => ({
       paymentId: id(payment),
-      type: text(payment.Type ?? payment.Method),
-      amount: Number.isFinite(Number(payment.Amount)) ? money(payment.Amount) : null,
+      type: text(payment.Type ?? payment.PaymentType ?? payment.Method),
+      amount: Number.isFinite(Number(payment.Amount ?? payment.MetaData?.Amount))
+        ? money(payment.Amount ?? payment.MetaData?.Amount)
+        : null,
       transactionId: text(payment.TransactionId),
-    })).filter((payment) => payment.paymentId),
+    })),
   };
 }
 
@@ -303,8 +322,10 @@ export function createSite99Runner({
   }
   let productId = selectorMode ? null : configuredProductId;
   let activeClassFamilies = classFamilies;
+  let latestFamilyAvailability = new Map();
   let authorization = null;
   let pendingInspection = null;
+  const evidencePollOptions = pollOptions ?? DEFAULT_EVIDENCE_POLL_OPTIONS;
 
   const headers = (body = false) => ({
     Accept: "application/json",
@@ -355,6 +376,25 @@ export function createSite99Runner({
       if (requestId) Object.defineProperty(envelope, PROVIDER_REQUEST_ID, { value: requestId });
     }
     return envelope;
+  }
+
+  async function requestAll(stage, path, collection, searchParams, limit = 100) {
+    const values = [];
+    let offset = 0;
+    while (true) {
+      const pageParams = new URLSearchParams(searchParams);
+      pageParams.set("Limit", String(limit));
+      pageParams.set("Offset", String(offset));
+      const envelope = await request(stage, path, { searchParams: pageParams });
+      const page = array(envelope?.[collection]);
+      values.push(...page);
+      const total = Number(envelope?.PaginationResponse?.TotalResults);
+      if (page.length === 0
+        || (Number.isFinite(total) && values.length >= total)
+        || (!Number.isFinite(total) && page.length < limit)) break;
+      offset += page.length;
+    }
+    return { [collection]: values };
   }
 
   function requireWriteConfirmation() {
@@ -424,12 +464,16 @@ export function createSite99Runner({
       request("public_program_discovery", "site/programs", {
         searchParams: query({ ScheduleType: "Class", Limit: 100 }),
       }),
-      request("public_class_description_discovery", "class/classdescriptions", {
-        searchParams: query({
-          ...(selectorMode ? { IncludeInactive: false } : { ProgramIds: programIds, LocationIds: [locationId] }),
-          Limit: 100,
+      selectorMode
+        ? requestAll(
+          "public_class_description_discovery",
+          "class/classdescriptions",
+          "ClassDescriptions",
+          query({ IncludeInactive: true }),
+        )
+        : request("public_class_description_discovery", "class/classdescriptions", {
+          searchParams: query({ ProgramIds: programIds, LocationIds: [locationId], Limit: 100 }),
         }),
-      }),
       ...(selectorMode ? [request("public_session_type_discovery", "site/sessiontypes", {
         searchParams: query({ IncludeInactive: false, Limit: 100 }),
       })] : [Promise.resolve(null)]),
@@ -449,14 +493,17 @@ export function createSite99Runner({
         .filter((location) => location.Active !== false && location.IsActive !== false);
       const programsByName = array(programs?.Programs)
         .filter((program) => program.Active !== false && program.IsActive !== false);
-      const descriptionsByName = array(descriptions?.ClassDescriptions)
-        .filter((description) => description.Active !== false && description.IsActive !== false);
+      const descriptionsByName = array(descriptions?.ClassDescriptions);
       const sessionTypesByName = array(sessionTypes?.SessionTypes ?? sessionTypes?.Sessiontypes)
         .filter((sessionType) => sessionType.Active !== false && sessionType.IsActive !== false);
       const findUnique = (values, name, stage, family, selector, relation = null) => {
-        const matches = values.filter((value) => normalizedName(value.Name) === normalizedName(name)
+        let matches = values.filter((value) => normalizedName(value.Name) === normalizedName(name)
           && (!relation || !id(value.Program ?? value.ProgramId)
             || id(value.Program ?? value.ProgramId) === relation));
+        if (matches.length > 1) {
+          const activeMatches = matches.filter((value) => value.Active !== false && value.IsActive !== false);
+          if (activeMatches.length === 1) matches = activeMatches;
+        }
         if (matches.length !== 1) {
           const candidates = matches.length > 0
             ? matches.map((value) => `${id(value)}:${text(value.Name)}`).join(", ")
@@ -533,7 +580,13 @@ export function createSite99Runner({
     };
   }
 
-  async function discoverFixtures({ forClient = false, classFamilyId = null, classId = null } = {}) {
+  async function discoverFixtures({
+    forClient = false,
+    classFamilyId = null,
+    classId = null,
+    onePerFamily = false,
+    allowEmpty = false,
+  } = {}) {
     const requestedFamily = familyById(classFamilyId);
     const targetFamilies = requestedFamily ? [requestedFamily] : activeClassFamilies;
     const classDescriptionIds = [...new Set(targetFamilies.flatMap((family) => family.mappings
@@ -551,14 +604,33 @@ export function createSite99Runner({
         "request.limit": 100,
       }),
     });
-    const candidates = array(classes?.Classes)
+    const providerOccurrences = array(classes?.Classes)
+      .filter((candidate) => id(candidate.Location) === locationId);
+    const familyFacts = new Map(targetFamilies.map((family) => [family.id, {
+      occurrenceObserved: false,
+      activeObserved: false,
+      availableObserved: false,
+    }]));
+    for (const occurrence of providerOccurrences) {
+      for (const { family } of mappingsForCandidate(occurrence)) {
+        if (!familyFacts.has(family.id)) continue;
+        const facts = familyFacts.get(family.id);
+        facts.occurrenceObserved = true;
+        if (occurrence.IsCanceled !== true) facts.activeObserved = true;
+        if (occurrence.IsCanceled !== true && occurrence.IsAvailable === true) facts.availableObserved = true;
+      }
+    }
+    latestFamilyAvailability = new Map([...familyFacts].map(([familyId, facts]) => [familyId,
+      facts.availableObserved ? "available"
+        : facts.activeObserved ? "unavailable"
+          : facts.occurrenceObserved ? "cancelled" : "unavailable",
+    ]));
+    const candidates = providerOccurrences
       .filter((candidate) => candidate.IsCanceled !== true
         && candidate.IsAvailable === true
-        && (!forClient || candidate.IsEnrolled !== true)
-        && id(candidate.Location) === locationId)
+        && (!forClient || candidate.IsEnrolled !== true))
       .sort((left, right) => String(left.StartDateTime).localeCompare(String(right.StartDateTime)));
-    const candidatesWithServices = [];
-    let hadMatchingOccurrence = false;
+    const matchingCandidates = [];
     for (const occurrence of candidates) {
       const matches = mappingsForCandidate(occurrence);
       const selectedMatches = requestedFamily
@@ -573,82 +645,92 @@ export function createSite99Runner({
           id(occurrence),
         );
       }
-      hadMatchingOccurrence = true;
       const { family, mapping } = selectedMatches[0];
-      const services = await request(
-        forClient ? "client_service_discovery" : "public_service_discovery",
-        "sale/services",
-        { searchParams: query({
-          "request.classId": id(occurrence),
-          "request.locationId": locationId,
-          "request.sellOnline": true,
-          "request.limit": 100,
-        }) },
-      );
-      const applicableServices = array(services?.Services)
-        .filter((candidate) => candidate.SellOnline === true
-          && candidate.Discontinued !== true
-          && array(candidate.SellAtLocationIds).map(String).includes(locationId)
-          && array(candidate.UseAtLocationIds).map(String).includes(locationId)
-          && id(candidate.ProductId));
-      const allServicesByProduct = new Map(applicableServices.map((service) => [id(service.ProductId), service]));
-      const namedServices = family.pricingOptionName
-        ? applicableServices.filter((candidate) => normalizedName(candidate.Name) === normalizedName(family.pricingOptionName))
-        : applicableServices;
-      const servicesByProduct = new Map(namedServices.map((service) => [id(service.ProductId), service]));
-      const serviceCandidates = [...allServicesByProduct.values()]
-        .map((candidate) => `${id(candidate.ProductId)}:${text(candidate.Name) ?? "unnamed"}`)
-        .join(",");
-      if (family.pricingOptionName && servicesByProduct.size !== 1) {
-        throw new Site99RunError(
-          forClient ? "client_service_discovery" : "public_service_discovery",
-          servicesByProduct.size === 0 ? "PRODUCT_SELECTOR_NO_MATCH" : "PRODUCT_SELECTOR_AMBIGUOUS",
-          null,
-          `${id(occurrence)} pricingOptionName=${family.pricingOptionName}; candidates=${serviceCandidates || "none"}`,
-        );
-      }
-      const service = productId ? servicesByProduct.get(productId) : null;
-      if (productId && !service) {
-        if (selectorMode || (classId && id(occurrence) === String(classId))) {
-          throw new Site99RunError(
-            forClient ? "client_service_discovery" : "public_service_discovery",
-            "PRODUCT_NOT_APPLICABLE",
-            null,
-            `${id(occurrence)} product=${productId}; candidates=${serviceCandidates || "none"}`,
-          );
-        }
-        continue;
-      }
-      if (!productId && servicesByProduct.size === 0) {
-        if (selectorMode || (classId && id(occurrence) === String(classId))) {
-          throw new Site99RunError(
-            forClient ? "client_service_discovery" : "public_service_discovery",
-            "PRODUCT_NOT_APPLICABLE",
-            null,
-            `${id(occurrence)} candidates=none`,
-          );
-        }
-        continue;
-      }
-      if (!productId && servicesByProduct.size > 1) {
-        throw new Site99RunError(
-          forClient ? "client_service_discovery" : "public_service_discovery",
-          "AMBIGUOUS_PRODUCT",
-          null,
-          `${id(occurrence)} candidates=${serviceCandidates}`,
-        );
-      }
-      candidatesWithServices.push({
-        occurrence,
-        family,
-        mapping,
-        service: service ?? [...servicesByProduct.values()][0],
-      });
+      matchingCandidates.push({ occurrence, family, mapping });
     }
+    const candidatesForPricing = onePerFamily
+      ? [...new Map(matchingCandidates.map((candidate) => [candidate.family.id, candidate])).values()]
+      : matchingCandidates;
+    const candidatesWithServices = (await mapWithConcurrency(
+      candidatesForPricing,
+      6,
+      async ({ occurrence, family, mapping }) => {
+        const services = await request(
+          forClient ? "client_service_discovery" : "public_service_discovery",
+          "sale/services",
+          { searchParams: query({
+            "request.classId": id(occurrence),
+            "request.locationId": locationId,
+            "request.sellOnline": true,
+            "request.limit": 100,
+          }) },
+        );
+        const applicableServices = array(services?.Services)
+          .filter((candidate) => candidate.SellOnline === true
+            && candidate.Discontinued !== true
+            && array(candidate.SellAtLocationIds).map(String).includes(locationId)
+            && array(candidate.UseAtLocationIds).map(String).includes(locationId)
+            && id(candidate.ProductId));
+        const allServicesByProduct = new Map(applicableServices.map((service) => [id(service.ProductId), service]));
+        const namedServices = family.pricingOptionName
+          ? applicableServices.filter((candidate) => normalizedName(candidate.Name) === normalizedName(family.pricingOptionName))
+          : applicableServices;
+        const servicesByProduct = new Map(namedServices.map((service) => [id(service.ProductId), service]));
+        const serviceCandidates = [...allServicesByProduct.values()]
+          .map((candidate) => `${id(candidate.ProductId)}:${text(candidate.Name) ?? "unnamed"}`)
+          .join(",");
+        if (family.pricingOptionName && servicesByProduct.size !== 1) {
+          throw new Site99RunError(
+            forClient ? "client_service_discovery" : "public_service_discovery",
+            servicesByProduct.size === 0 ? "PRODUCT_SELECTOR_NO_MATCH" : "PRODUCT_SELECTOR_AMBIGUOUS",
+            null,
+            `${id(occurrence)} pricingOptionName=${family.pricingOptionName}; candidates=${serviceCandidates || "none"}`,
+          );
+        }
+        const service = productId ? servicesByProduct.get(productId) : null;
+        if (productId && !service) {
+          if (selectorMode || (classId && id(occurrence) === String(classId))) {
+            throw new Site99RunError(
+              forClient ? "client_service_discovery" : "public_service_discovery",
+              "PRODUCT_NOT_APPLICABLE",
+              null,
+              `${id(occurrence)} product=${productId}; candidates=${serviceCandidates || "none"}`,
+            );
+          }
+          return null;
+        }
+        if (!productId && servicesByProduct.size === 0) {
+          if (selectorMode || (classId && id(occurrence) === String(classId))) {
+            throw new Site99RunError(
+              forClient ? "client_service_discovery" : "public_service_discovery",
+              "PRODUCT_NOT_APPLICABLE",
+              null,
+              `${id(occurrence)} candidates=none`,
+            );
+          }
+          return null;
+        }
+        if (!productId && servicesByProduct.size > 1) {
+          throw new Site99RunError(
+            forClient ? "client_service_discovery" : "public_service_discovery",
+            "AMBIGUOUS_PRODUCT",
+            null,
+            `${id(occurrence)} candidates=${serviceCandidates}`,
+          );
+        }
+        return {
+          occurrence,
+          family,
+          mapping,
+          service: service ?? [...servicesByProduct.values()][0],
+        };
+      },
+    )).filter(Boolean);
     if (candidatesWithServices.length === 0) {
+      if (allowEmpty) return [];
       throw new Site99RunError(
         forClient ? "client_class_discovery" : "public_class_discovery",
-        hadMatchingOccurrence ? "PRODUCT_NOT_APPLICABLE" : "NO_ELIGIBLE_CLASS",
+        matchingCandidates.length > 0 ? "PRODUCT_NOT_APPLICABLE" : "NO_ELIGIBLE_CLASS",
         null,
         requestedFamily?.id ?? null,
       );
@@ -686,6 +768,30 @@ export function createSite99Runner({
         productId,
         paymentSeed: paymentSeed(service),
       }));
+  }
+
+  function familyAvailability(previewFixtures = [], currency = null) {
+    const previewByFamily = new Map(previewFixtures.map((fixture) => [fixture.classFamilyId, fixture]));
+    return activeClassFamilies.map((family) => {
+      const preview = previewByFamily.get(family.id);
+      return {
+        ...(preview ? {
+          nextOccurrence: {
+            classId: preview.classId,
+            classStart: preview.classStart,
+            ...(preview.classEnd ? { classEnd: preview.classEnd } : {}),
+            className: preview.className,
+            staffName: preview.staffName,
+          },
+          provisionalPrice: { amount: preview.paymentSeed, currency: currency ?? "USD" },
+        } : {}),
+        id: family.id,
+        name: family.name,
+        ...(family.description ? { description: family.description } : {}),
+        available: latestFamilyAvailability.get(family.id) === "available",
+        availabilityState: latestFamilyAvailability.get(family.id) ?? "unavailable",
+      };
+    });
   }
 
   async function discoverFixture(options = {}) {
@@ -890,7 +996,7 @@ export function createSite99Runner({
       () => readEvidence(fixture),
       (evidence) => ([evidence.clientVisits, evidence.rosterVisits, evidence.scheduleVisits]
         .every((visits) => !surfaceHasVisit(visits, fixture, visitId)) ? evidence : null),
-      pollOptions,
+      evidencePollOptions,
     );
     if (!cancelled) throw new Site99RunError("cancellation_reconciliation", "VISIT_STILL_ACTIVE");
     return cancelled;
@@ -980,31 +1086,66 @@ export function createSite99Runner({
       if (!committedCartId) throw new Site99RunError("committed_checkout", "CART_ID_MISSING");
       const expectedSaleId = checkoutSaleId(checkout);
       const beforeSaleIds = new Set(before.sales.map((sale) => sale.saleId));
+      let lastConvergence = null;
       const reconciled = await poll(
         () => readEvidence(fixture),
         (evidence) => {
           const visit = exactActiveVisit(evidence, fixture, before);
           if (visit) newVisit = visit;
-          if (!visit) return null;
           const sale = evidence.sales.find((candidate) => candidate.clientId === clientId
             && candidate.productIds.includes(productId)
             && !candidate.returned
             && !beforeSaleIds.has(candidate.saleId)
             && (!expectedSaleId || candidate.saleId === expectedSaleId));
-          const payment = sale?.payments.find((candidate) => candidate.type?.toLowerCase() === "cash"
+          const payment = sale?.payments.find((candidate) => candidate.paymentId
             && candidate.amount === quoteResult.grandTotal);
           const service = evidence.clientServices.find((candidate) => candidate.productId === productId
             && candidate.returned === false);
-          const allVisitSurfaces = surfaceHasVisit(evidence.clientVisits, fixture, visit.visitId)
-            && surfaceHasVisit(evidence.rosterVisits, fixture, visit.visitId)
-            && surfaceHasVisit(evidence.scheduleVisits, fixture, visit.visitId);
+          const clientVisit = visit
+            ? surfaceHasVisit(evidence.clientVisits, fixture, visit.visitId)
+            : false;
+          const rosterVisit = visit
+            ? surfaceHasVisit(evidence.rosterVisits, fixture, visit.visitId)
+            : false;
+          const scheduleVisit = visit
+            ? surfaceHasVisit(evidence.scheduleVisits, fixture, visit.visitId)
+            : false;
+          const allVisitSurfaces = clientVisit && rosterVisit && scheduleVisit;
+          lastConvergence = {
+            activeVisit: Boolean(visit),
+            clientVisit,
+            rosterVisit,
+            scheduleVisit,
+            newSale: Boolean(sale),
+            exactPayment: Boolean(payment?.paymentId),
+            clientService: Boolean(service),
+            paymentCount: array(sale?.payments).length,
+            paymentHasId: array(sale?.payments).map((candidate) => Boolean(candidate.paymentId)),
+            paymentTypes: array(sale?.payments).map((candidate) => candidate.type),
+            paymentAmounts: array(sale?.payments).map((candidate) => candidate.amount),
+            expectedPaymentAmount: quoteResult.grandTotal,
+            observations: {
+              clientVisits: evidence.clientVisits.length,
+              rosterVisits: evidence.rosterVisits.length,
+              scheduleVisits: evidence.scheduleVisits.length,
+              sales: evidence.sales.length,
+              clientServices: evidence.clientServices.length,
+            },
+          };
           return sale && payment?.paymentId && service && allVisitSurfaces
             ? { evidence, visit, sale, payment, service }
             : null;
         },
-        pollOptions,
+        evidencePollOptions,
       );
-      if (!reconciled) throw new Site99RunError("booking_reconciliation", "EVIDENCE_NOT_CONVERGED");
+      if (!reconciled) {
+        throw new Site99RunError(
+          "booking_reconciliation",
+          "EVIDENCE_NOT_CONVERGED",
+          null,
+          lastConvergence,
+        );
+      }
       newVisit = reconciled.visit;
       const evidence = reconciled.evidence;
       const newSale = reconciled.sale;
@@ -1028,7 +1169,8 @@ export function createSite99Runner({
         checkoutProviderRequestId: providerRequestId(checkout),
         saleId: newSale.saleId,
         paymentId: cashPayment.paymentId,
-        paymentType: cashPayment.type,
+        paymentType: "Cash",
+        providerPaymentType: cashPayment.type,
         paymentAmount: cashPayment.amount,
         transactionId: exactTransaction?.transactionId ?? cashPayment.transactionId,
         transactionEvidence: exactTransaction ? "returned" : "not-returned-for-cash",
@@ -1050,7 +1192,7 @@ export function createSite99Runner({
           newVisit = await poll(
             () => readEvidence(fixture),
             (evidence) => exactActiveVisit(evidence, fixture, before),
-            pollOptions,
+            evidencePollOptions,
           );
         } catch {
           // The original reconciliation error remains the truthful outcome.
@@ -1117,14 +1259,37 @@ export function createSite99Runner({
         }
         const site = await connectSite();
         const apiKeyOnly = await readPublicCatalogue();
+        if (policy.outcome === "catalogue") {
+          const previewFixtures = await discoverFixtures({ onePerFamily: true, allowEmpty: true });
+          return {
+            result: "passed",
+            mode,
+            auth: {
+              ...site,
+              endpointAuthMatrix: { apiKeyOnly },
+              staffTokenRevoked: false,
+            },
+            fixtures: [],
+            families: familyAvailability(previewFixtures, site.currency),
+          };
+        }
         const publicFixtures = await discoverFixtures({ classFamilyId, classId });
         const fixture = publicFixtures[0];
-        const familyAvailability = activeClassFamilies.map((family) => ({
-          id: family.id,
-          name: family.name,
-          ...(family.description ? { description: family.description } : {}),
-          available: publicFixtures.some((candidate) => candidate.classFamilyId === family.id),
-        }));
+        const families = familyAvailability();
+        if (policy.outcome === "availability") {
+          return {
+            result: "passed",
+            mode,
+            auth: {
+              ...site,
+              endpointAuthMatrix: { apiKeyOnly },
+              staffTokenRevoked: false,
+            },
+            fixture,
+            fixtures: publicFixtures,
+            families,
+          };
+        }
         const staff = await issueStaffToken();
         let syntheticClient = { syntheticClientCreated: false };
         if (policy.createsSyntheticClient) {
@@ -1152,7 +1317,7 @@ export function createSite99Runner({
             auth,
             fixture: clientFixture,
             fixtures: publicFixtures,
-            families: familyAvailability,
+            families,
           };
         }
         const initialQuote = await quote(clientFixture);
@@ -1180,7 +1345,7 @@ export function createSite99Runner({
             auth,
             fixture: clientFixture,
             fixtures: publicFixtures,
-            families: familyAvailability,
+            families,
             quote: quoteResult,
           };
         }
@@ -1196,7 +1361,7 @@ export function createSite99Runner({
           auth,
           fixture: clientFixture,
           fixtures: publicFixtures,
-          families: familyAvailability,
+          families,
           syntheticClient,
           quote: quoteResult,
           booking,
