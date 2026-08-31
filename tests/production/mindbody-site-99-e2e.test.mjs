@@ -343,6 +343,20 @@ test("catalogue mode reports one priced next occurrence per available family wit
   assert.equal(provider.requests.filter((request) => request.url.pathname.endsWith("client/clients")).length, 0);
 });
 
+test("catalogue mode follows every Class page before choosing the chronological next occurrence", async () => {
+  const provider = sandboxProvider({ reversePagedClasses: true });
+
+  const result = await runner(provider).run("catalogue");
+
+  assert.equal(result.families[0].nextOccurrence.classId, "19364");
+  assert.equal(result.families[0].nextOccurrence.classStart, "2026-08-18T10:00:00");
+  const classReads = provider.requests.filter((request) => request.url.pathname.endsWith("class/classes"));
+  assert.deepEqual(classReads.map((request) => [
+    request.url.searchParams.get("request.limit"),
+    request.url.searchParams.get("request.offset"),
+  ]), [["100", "0"], ["100", "1"]]);
+});
+
 test("a selected Class family validates pricing with bounded parallel API-key-only reads", async () => {
   const provider = sandboxProvider({ occurrenceCount: 8, serviceDelayMs: 10 });
 
@@ -433,6 +447,7 @@ function sandboxProvider({
   occurrenceCount = 1,
   serviceDelayMs = 0,
   providerPaymentType = "Cash",
+  reversePagedClasses = false,
 } = {}) {
   const requests = [];
   let clientId = "client-shared";
@@ -514,6 +529,35 @@ function sandboxProvider({
       return json({ GenderOptions: [{ Id: 1, Name: "None", IsActive: true, IsDefault: true }] });
     }
     if (path === "class/classes") {
+      if (reversePagedClasses) {
+        const offset = Number(url.searchParams.get("request.offset") ?? 0);
+        const occurrence = offset === 0
+          ? {
+            Id: 20386,
+            StartDateTime: "2026-08-30T10:00:00",
+            EndDateTime: "2026-08-30T11:00:00",
+          }
+          : {
+            Id: 19364,
+            StartDateTime: "2026-08-18T10:00:00",
+            EndDateTime: "2026-08-18T11:00:00",
+          };
+        return json({
+          Classes: [{
+            ...occurrence,
+            IsCanceled: false,
+            IsAvailable: true,
+            IsEnrolled: false,
+            ClassScheduleId: 2152,
+            Location: { Id: 1, Name: "Clubville" },
+            Staff: { Id: 9, Name: "Sandbox Staff" },
+            ClassDescription: {
+              Id: 223, Name: "Yoga", Program: { Id: 27 }, SessionType: { Id: 250 },
+            },
+          }],
+          PaginationResponse: { RequestedLimit: 100, RequestedOffset: offset, PageSize: 1, TotalResults: 2 },
+        });
+      }
       const readsByClassId = url.searchParams.has("ClassIds") || url.searchParams.has("request.classIds");
       const requestedClientId = url.searchParams.get("request.clientId");
       const hasDateWindow = url.searchParams.has("request.startDateTime")

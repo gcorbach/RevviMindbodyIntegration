@@ -378,13 +378,16 @@ export function createSite99Runner({
     return envelope;
   }
 
-  async function requestAll(stage, path, collection, searchParams, limit = 100) {
+  async function requestAll(stage, path, collection, searchParams, limit = 100, {
+    limitName = "Limit",
+    offsetName = "Offset",
+  } = {}) {
     const values = [];
     let offset = 0;
     while (true) {
       const pageParams = new URLSearchParams(searchParams);
-      pageParams.set("Limit", String(limit));
-      pageParams.set("Offset", String(offset));
+      pageParams.set(limitName, String(limit));
+      pageParams.set(offsetName, String(offset));
       const envelope = await request(stage, path, { searchParams: pageParams });
       const page = array(envelope?.[collection]);
       values.push(...page);
@@ -593,17 +596,21 @@ export function createSite99Runner({
       .map((mapping) => mapping.providerClassDescriptionId)))];
     const start = new Date(clock().getTime() + 24 * 60 * 60 * 1000);
     const end = new Date(clock().getTime() + 14 * 24 * 60 * 60 * 1000);
-    const classes = await request(forClient ? "client_class_discovery" : "public_class_discovery", "class/classes", {
-      searchParams: query({
+    const classes = await requestAll(
+      forClient ? "client_class_discovery" : "public_class_discovery",
+      "class/classes",
+      "Classes",
+      query({
         "request.startDateTime": start.toISOString(),
         "request.endDateTime": end.toISOString(),
         "request.classIds": classId ? [classId] : undefined,
         "request.locationIds": classId ? undefined : [locationId],
         "request.classDescriptionIds": classId ? undefined : classDescriptionIds,
         "request.clientId": forClient ? clientId : undefined,
-        "request.limit": 100,
       }),
-    });
+      100,
+      { limitName: "request.limit", offsetName: "request.offset" },
+    );
     const providerOccurrences = array(classes?.Classes)
       .filter((candidate) => id(candidate.Location) === locationId);
     const familyFacts = new Map(targetFamilies.map((family) => [family.id, {
@@ -648,8 +655,16 @@ export function createSite99Runner({
       const { family, mapping } = selectedMatches[0];
       matchingCandidates.push({ occurrence, family, mapping });
     }
+    const firstCandidateByFamily = new Map();
+    if (onePerFamily) {
+      for (const candidate of matchingCandidates) {
+        if (!firstCandidateByFamily.has(candidate.family.id)) {
+          firstCandidateByFamily.set(candidate.family.id, candidate);
+        }
+      }
+    }
     const candidatesForPricing = onePerFamily
-      ? [...new Map(matchingCandidates.map((candidate) => [candidate.family.id, candidate])).values()]
+      ? [...firstCandidateByFamily.values()]
       : matchingCandidates;
     const candidatesWithServices = (await mapWithConcurrency(
       candidatesForPricing,
