@@ -24,23 +24,20 @@ function request(path, body, token = DEMO_TOKEN) {
   });
 }
 
-test("the local Webflow demo shows a live Site -99 Class through the widget contract", async () => {
+test("the local Webflow demo shows the live Site -99 catalogue through the widget contract", async () => {
   const runner = {
     async run(mode) {
-      assert.equal(mode, "probe");
+      assert.equal(mode, "catalogue");
       return {
         result: "passed",
         auth: { siteName: "LastSpot" },
-        fixture: {
-          classId: "19364",
-          classStart: "2026-08-18T10:00:00",
-          classEnd: "2026-08-18T11:00:00",
-          className: "Yoga",
-          staffId: "100000285",
-          staffName: "Site -99 Teacher",
-          locationId: "1",
-          paymentSeed: 13,
-        },
+        fixtures: [],
+        families: [{
+          id: "00000000-0000-4000-8000-000000000101",
+          name: "Yoga",
+          available: true,
+          availabilityState: "available",
+        }],
       };
     },
   };
@@ -58,18 +55,14 @@ test("the local Webflow demo shows a live Site -99 Class through the widget cont
     ok: true,
     data: {
       business: { slug: "mindbody-sandbox", name: "LastSpot" },
-      offer: { id: SITE_99_DEMO_CONTEXT.offerId, name: "Revvi Sandbox Yoga" },
-      sessions: [{
-        classId: "19364",
+      offer: { id: SITE_99_DEMO_CONTEXT.offerId, name: "Revvi Sandbox Class Access" },
+      classFamilies: [{
+        id: "00000000-0000-4000-8000-000000000101",
         name: "Yoga",
-        startAt: "2026-08-18T10:00:00+02:00",
-        endAt: "2026-08-18T11:00:00+02:00",
-        timezone: "Africa/Johannesburg",
-        staffName: "Site -99 Teacher",
+        available: true,
         availabilityState: "available",
-        estimatedAvailableSlots: null,
-        provisionalPrice: { amount: 13, currency: "USD" },
       }],
+      sessions: [],
     },
   });
 });
@@ -118,9 +111,10 @@ test("the local Webflow demo exposes and filters live Class families", async () 
   const calls = [];
   const runner = {
     async run(mode, options = {}) {
-      assert.equal(mode, "probe");
-      calls.push(options);
-      const fixtures = options.classFamilyId === familyStrength
+      calls.push({ mode, options });
+      const fixtures = mode === "catalogue"
+        ? []
+        : options.classFamilyId === familyStrength
         ? [{ classId: "19365", classFamilyId: familyStrength, classFamilyName: "Strength Yoga", classStart: "2026-08-18T11:00:00", className: "Strength Yoga", paymentSeed: 13 }]
         : [
           { classId: "19364", classFamilyId: familyYoga, classFamilyName: "Yoga", classStart: "2026-08-18T10:00:00", className: "Yoga", paymentSeed: 13 },
@@ -130,8 +124,23 @@ test("the local Webflow demo exposes and filters live Class families", async () 
         result: "passed",
         fixtures,
         families: [
-          { id: familyYoga, name: "Yoga", available: true },
-          { id: familyStrength, name: "Strength Yoga", available: true },
+          {
+            id: familyYoga,
+            name: "Yoga",
+            available: true,
+            availabilityState: "available",
+            ...(mode === "catalogue" ? {
+              nextOccurrence: {
+                classId: "19364",
+                classStart: "2026-08-18T10:00:00",
+                classEnd: "2026-08-18T11:00:00",
+                className: "Yoga",
+                staffName: "Site -99 Teacher",
+              },
+              provisionalPrice: { amount: 13, currency: "USD" },
+            } : {}),
+          },
+          { id: familyStrength, name: "Strength Yoga", available: true, availabilityState: "available" },
         ],
       };
     },
@@ -146,14 +155,26 @@ test("the local Webflow demo exposes and filters live Class families", async () 
   const allResponse = await handler(request("/offer-class-availability", body));
   const all = await allResponse.json();
   assert.equal(allResponse.status, 200);
-  assert.deepEqual(all.data.families, [
-    { id: familyYoga, name: "Yoga", available: true },
-    { id: familyStrength, name: "Strength Yoga", available: true },
+  assert.deepEqual(all.data.classFamilies, [
+    {
+      id: familyYoga,
+      name: "Yoga",
+      available: true,
+      availabilityState: "available",
+      nextOccurrence: {
+        classId: "19364",
+        name: "Yoga",
+        startAt: "2026-08-18T10:00:00+02:00",
+        endAt: "2026-08-18T11:00:00+02:00",
+        timezone: "Africa/Johannesburg",
+        staffName: "Site -99 Teacher",
+      },
+      provisionalPrice: { amount: 13, currency: "USD" },
+    },
+    { id: familyStrength, name: "Strength Yoga", available: true, availabilityState: "available" },
   ]);
-  assert.deepEqual(all.data.sessions.map((session) => [session.classFamilyId, session.classId]), [
-    [familyYoga, "19364"],
-    [familyStrength, "19365"],
-  ]);
+  assert.equal(all.data.families, undefined);
+  assert.deepEqual(all.data.sessions, []);
 
   const selectedResponse = await handler(request("/offer-class-availability", {
     ...body,
@@ -162,7 +183,10 @@ test("the local Webflow demo exposes and filters live Class families", async () 
   const selected = await selectedResponse.json();
   assert.equal(selectedResponse.status, 200);
   assert.deepEqual(selected.data.sessions.map((session) => session.classId), ["19365"]);
-  assert.deepEqual(calls, [{}, { classFamilyId: familyStrength }]);
+  assert.deepEqual(calls, [
+    { mode: "catalogue", options: {} },
+    { mode: "availability", options: { classFamilyId: familyStrength } },
+  ]);
 });
 
 test("the local Webflow demo carries the selected family through quote and Booking", async () => {
@@ -346,6 +370,7 @@ test("the local Webflow demo leaves a fully evidenced Booking active for Busines
           saleId: "100170591",
           paymentId: "168233",
           paymentType: "Cash",
+          providerPaymentType: "Sandbox configured label",
           paymentAmount: 13,
           clientServiceId: "100257607",
           visitId: "100343812",
@@ -393,6 +418,7 @@ test("the local Webflow demo leaves a fully evidenced Booking active for Busines
         locationName: "Mindbody public sandbox",
         sandboxDemo: {
           paymentType: "Fictitious Cash",
+          providerPaymentType: "Sandbox configured label",
           providerEvidenceConfirmed: true,
           demoBookingId: "00000000-0000-4000-8000-000000000060",
           cleanupStatus: "pending",
@@ -635,9 +661,9 @@ test("the local Webflow demo automatically cleans an inspected Booking after ten
   const runner = {
     async run(mode) {
       modes.push(mode);
-      if (mode === "probe") {
+      if (mode === "catalogue") {
         if (holdProbe) await blockedProbe;
-        return { result: "passed", fixture: { ...fixture, paymentSeed: 13 } };
+        return { result: "passed", fixtures: [], families: [] };
       }
       if (mode === "quote") {
         return {
@@ -733,7 +759,7 @@ test("the local Webflow demo automatically cleans an inspected Booking after ten
     reason: "Revvi hosted sandbox demonstration cleanup",
   }));
 
-  assert.deepEqual(modes, ["quote", "book-for-inspection", "probe", "cleanup-inspection"]);
+  assert.deepEqual(modes, ["quote", "book-for-inspection", "catalogue", "cleanup-inspection"]);
   assert.deepEqual((await inspected.json()).data, {
     bookingId: "00000000-0000-4000-8000-000000000060",
     status: "cancelled",
@@ -940,6 +966,7 @@ test("live browser automation is explicit and drives only the production widget 
 
   assert.doesNotMatch(ordinaryPage, /data-live-browser-e2e/);
   assert.match(automatedPage, /data-live-browser-e2e/);
+  assert.match(automatedPage, /family:00000000-0000-4000-8000-000000000102/);
   assert.match(automatedPage, /data-class-select/);
   assert.match(automatedPage, /data-booking-class-continue/);
   assert.match(automatedPage, /data-time-select/);

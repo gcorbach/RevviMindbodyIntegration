@@ -419,6 +419,223 @@ test("the Webflow widget shows approved Class times responsively and suppresses 
   }
 });
 
+test("step one shows every approved live, unavailable, and cancelled Class option", { skip: !chromePath }, async () => {
+  const widget = readFileSync(new URL("../../webflow/dist/revvi-booking.js", import.meta.url), "utf8");
+  const stylesheet = readFileSync(new URL("../../webflow/dist/revvi-booking.css", import.meta.url), "utf8");
+  const familyYoga = "00000000-0000-4000-8000-000000000101";
+  const familySweat = "00000000-0000-4000-8000-000000000102";
+  const familyRpm = "00000000-0000-4000-8000-000000000103";
+  const server = createServer((request, response) => {
+    if (request.url === "/revvi-booking.js") {
+      response.writeHead(200, { "content-type": "text/javascript" }); response.end(widget); return;
+    }
+    if (request.url === "/revvi-booking.css") {
+      response.writeHead(200, { "content-type": "text/css" }); response.end(stylesheet); return;
+    }
+    if (request.url?.startsWith("/functions/v1/offer-class-availability")) {
+      const body = availabilityBody();
+      body.data.classFamilies = [
+        { id: familyYoga, name: "Yoga", available: true, availabilityState: "available" },
+        { id: familySweat, name: "Sweat", available: false, availabilityState: "unavailable" },
+        { id: familyRpm, name: "RPM Spinning", available: false, availabilityState: "cancelled" },
+      ];
+      body.data.sessions = [{
+        ...body.data.sessions[0],
+        classFamilyId: familyYoga,
+      }];
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(page());
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const result = await launchChrome(`http://127.0.0.1:${server.address().port}/class-options`, "1440,900");
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /data-booking-state="showing-classes"/);
+    assert.equal((result.stdout.match(/data-booking-class-choice="" data-class-select="" data-class-key=/g) ?? []).length, 3);
+    assert.match(result.stdout, /data-class-name="">Yoga</);
+    assert.match(result.stdout, /data-class-name="">Sweat</);
+    assert.match(result.stdout, /data-class-name="">RPM Spinning</);
+    assert.match(result.stdout, /Currently unavailable/);
+    assert.match(result.stdout, /Cancelled/);
+    assert.match(result.stdout, /data-class-key="family:00000000-0000-4000-8000-000000000102"[^>]*disabled/);
+    assert.match(result.stdout, /data-class-key="family:00000000-0000-4000-8000-000000000103"[^>]*disabled/);
+  } finally {
+    server.closeAllConnections(); server.close();
+  }
+});
+
+test("choosing an available Class family loads only that family's priced times", { skip: !chromePath }, async () => {
+  const widget = readFileSync(new URL("../../webflow/dist/revvi-booking.js", import.meta.url), "utf8");
+  const stylesheet = readFileSync(new URL("../../webflow/dist/revvi-booking.css", import.meta.url), "utf8");
+  const familyYoga = "00000000-0000-4000-8000-000000000101";
+  const familySweat = "00000000-0000-4000-8000-000000000102";
+  const familyRpm = "00000000-0000-4000-8000-000000000103";
+  const familyDaily = "00000000-0000-4000-8000-000000000104";
+  const availabilityBodies = [];
+  const server = createServer(async (request, response) => {
+    if (request.url === "/revvi-booking.js") {
+      response.writeHead(200, { "content-type": "text/javascript" }); response.end(widget); return;
+    }
+    if (request.url === "/revvi-booking.css") {
+      response.writeHead(200, { "content-type": "text/css" }); response.end(stylesheet); return;
+    }
+    if (request.url?.startsWith("/functions/v1/offer-class-availability")) {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      availabilityBodies.push(requestBody);
+      const body = availabilityBody();
+      body.data.classFamilies = [
+        {
+          id: familyYoga,
+          name: "Yoga",
+          available: true,
+          availabilityState: "available",
+          ...(requestBody.classFamilyId ? {} : {
+            nextOccurrence: {
+              classId: "501",
+              name: "Yoga Flow",
+              staffName: "Amina",
+              startAt: "2026-08-12T16:00:00.000Z",
+              endAt: "2026-08-12T17:00:00.000Z",
+              timezone: "Africa/Johannesburg",
+            },
+            provisionalPrice: { amount: 32, currency: "ZAR" },
+          }),
+        },
+        { id: familySweat, name: "Sweat", available: false, availabilityState: "unavailable" },
+        { id: familyRpm, name: "RPM Spinning", available: false, availabilityState: "cancelled" },
+        {
+          id: familyDaily,
+          name: "Daily Work Out",
+          available: true,
+          availabilityState: "available",
+          ...(requestBody.classFamilyId ? {} : {
+            nextOccurrence: {
+              classId: "601",
+              name: "Daily Work Out",
+              staffName: "Jake Hay",
+              startAt: "2026-08-12T16:30:00.000Z",
+              endAt: "2026-08-12T17:30:00.000Z",
+              timezone: "Africa/Johannesburg",
+            },
+            provisionalPrice: { amount: 32, currency: "ZAR" },
+          }),
+        },
+      ];
+      body.data.sessions = requestBody.classFamilyId === familyYoga
+        ? [{ ...body.data.sessions[0], classFamilyId: familyYoga }]
+        : [];
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(page().replace("</body>", `<script>
+      let familySelected = false;
+      const progressiveFamilyInspection = setInterval(() => {
+        const root = document.querySelector("[data-revvi-booking]");
+        if (root.dataset.bookingState === "showing-times") {
+          clearInterval(progressiveFamilyInspection);
+          return;
+        }
+        if (familySelected || root.dataset.bookingState !== "showing-classes") return;
+        const yoga = root.querySelector('[data-class-key="family:${familyYoga}"]');
+        if (!yoga || yoga.disabled) return;
+        familySelected = true;
+        yoga.click();
+        root.dataset.stateImmediatelyAfterFamilySelect = root.dataset.bookingState;
+        root.dataset.selectedImmediately = String(root.dataset.selectedClassKey === 'family:${familyYoga}');
+        setTimeout(() => root.querySelector("[data-booking-class-continue]:not([disabled])")?.click(), 80);
+      }, 20);
+    </script></body>`));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const result = await launchChrome(`http://127.0.0.1:${server.address().port}/progressive-family`, "1440,900");
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /data-booking-state="showing-times"/);
+    assert.match(result.stdout, /data-selected-class-key="family:00000000-0000-4000-8000-000000000101"/);
+    assert.match(result.stdout, /data-state-immediately-after-family-select="showing-classes"/);
+    assert.match(result.stdout, /data-selected-immediately="true"/);
+    assert.match(result.stdout, /Amina · 60 min · Next:/);
+    assert.match(result.stdout, /ZAR(?:&nbsp;|\s)32\.00/);
+    assert.deepEqual(availabilityBodies, [
+      { businessSlug, locationId, offerId, startDate: localToday },
+      { businessSlug, locationId, offerId, startDate: localToday, classFamilyId: familyYoga },
+    ]);
+  } finally {
+    server.closeAllConnections(); server.close();
+  }
+});
+
+test("duplicate Class times are distinguished by their live Mindbody instructor", { skip: !chromePath }, async () => {
+  const widget = readFileSync(new URL("../../webflow/dist/revvi-booking.js", import.meta.url), "utf8");
+  const stylesheet = readFileSync(new URL("../../webflow/dist/revvi-booking.css", import.meta.url), "utf8");
+  const familyZumba = "00000000-0000-4000-8000-000000000104";
+  const server = createServer((request, response) => {
+    if (request.url === "/revvi-booking.js") {
+      response.writeHead(200, { "content-type": "text/javascript" }); response.end(widget); return;
+    }
+    if (request.url === "/revvi-booking.css") {
+      response.writeHead(200, { "content-type": "text/css" }); response.end(stylesheet); return;
+    }
+    if (request.url?.startsWith("/functions/v1/offer-class-availability")) {
+      const body = availabilityBody();
+      body.data.classFamilies = [
+        { id: familyZumba, name: "Zumba", available: true, availabilityState: "available" },
+      ];
+      body.data.sessions = [
+        {
+          ...body.data.sessions[0], classId: "21650", sessionId: "21650",
+          classFamilyId: familyZumba, name: "Zumba", staffName: "Jonathan Bolger",
+          startAt: "2026-08-28T06:00:00.000Z", endAt: "2026-08-28T07:00:00.000Z",
+        },
+        {
+          ...body.data.sessions[0], classId: "23036", sessionId: "23036",
+          classFamilyId: familyZumba, name: "Zumba", staffName: "David Bishop",
+          startAt: "2026-08-28T06:00:00.000Z", endAt: "2026-08-28T07:00:00.000Z",
+        },
+      ];
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(page().replace("</body>", `<script>
+      const duplicateTimeInspection = setInterval(() => {
+        const root = document.querySelector("[data-revvi-booking]");
+        if (root.dataset.bookingState === "showing-classes") {
+          root.querySelector('[data-class-key="family:${familyZumba}"]')?.click();
+          root.querySelector("[data-booking-class-continue]:not([disabled])")?.click();
+        }
+        if (root.dataset.bookingState === "showing-times") {
+          root.dataset.duplicateTimeLabels = [...root.querySelectorAll("[data-time-select]")]
+            .filter((button) => button.dataset.classId)
+            .map((button) => button.textContent.trim()).join("|");
+          clearInterval(duplicateTimeInspection);
+        }
+      }, 20);
+    </script></body>`));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const result = await launchChrome(`http://127.0.0.1:${server.address().port}/zumba-times`, "1440,900");
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /data-booking-state="showing-times"/);
+    assert.match(result.stdout, /data-duplicate-time-labels="[^"]*Jonathan Bolger[^"]*David Bishop/);
+  } finally {
+    server.closeAllConnections(); server.close();
+  }
+});
+
 test("the Site -99 demo lets the operator clean the visible sandbox Booking exactly once", { skip: !chromePath }, async () => {
   const widget = readFileSync(new URL("../../webflow/dist/revvi-booking.js", import.meta.url), "utf8");
   const stylesheet = readFileSync(new URL("../../webflow/dist/revvi-booking.css", import.meta.url), "utf8");

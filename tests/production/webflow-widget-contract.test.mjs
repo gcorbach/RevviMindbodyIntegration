@@ -46,9 +46,31 @@ test("Booking confirmation renders outside the booking widget", () => {
   assert.ok(confirmation < widgetStart || confirmation > scriptStart);
 });
 
-test("the Site -99 demo manifest names the currently observed Yoga Session Type", () => {
-  assert.match(demoDocs, /programName":"Yoga","classDescriptionName":"Yoga","sessionTypeName":"Hatha Yoga"/);
-  assert.match(demoDocs, /pricingOptionName":"5 Class Card"/);
+test("the Site -99 demo manifest defines the ten approved live Class options", () => {
+  const manifestJson = demoDocs.match(/MINDBODY_SANDBOX_CLASS_FAMILIES_JSON='([^']+)'/)?.[1];
+  assert.ok(manifestJson);
+  const manifest = JSON.parse(manifestJson);
+
+  assert.deepEqual(manifest.map((family) => family.name), [
+    "Yoga",
+    "Daily Work Out",
+    "Pilates 101",
+    "Zumba",
+    "Level 5 Bikram Yoga",
+    "Body Pump",
+    "RPM Spinning",
+    "Sweat",
+    "Power Yoga",
+    "Yoga",
+  ]);
+  assert.ok(manifest.every((family) => family.pricingOptionName === "5 Class Card"));
+  assert.ok(manifest.every((family) => family.selectors?.[0]?.locationName === "Clubville"));
+  assert.deepEqual(manifest[0].selectors[0], {
+    locationName: "Clubville",
+    programName: "Yoga",
+    classDescriptionName: "Yoga",
+    sessionTypeName: "Hatha Yoga",
+  });
   assert.match(demoDocs, /clears inherited provider variables before loading `webflow\/\.env`/);
 });
 

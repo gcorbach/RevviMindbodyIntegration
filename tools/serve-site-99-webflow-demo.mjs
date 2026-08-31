@@ -9,7 +9,7 @@ export const SITE_99_DEMO_CONTEXT = Object.freeze({
   businessSlug: "mindbody-sandbox",
   locationId: "00000000-0000-4000-8000-000000000099",
   offerId: "00000000-0000-4000-8000-000000000057",
-  offerName: "Revvi Sandbox Yoga",
+  offerName: "Revvi Sandbox Class Access",
   locationName: "Mindbody public sandbox",
   locationTimezone: "Africa/Johannesburg",
 });
@@ -63,7 +63,8 @@ export function renderSite99WebflowDemoPage({ demoBearerToken, automateBooking =
         if (state === "showing-classes") {
           const control = root.dataset.selectedClassKey
             ? root.querySelector("[data-booking-class-continue]:not([disabled])")
-            : root.querySelector("[data-class-select]:not([disabled])");
+            : root.querySelector('[data-class-key="family:00000000-0000-4000-8000-000000000102"]:not([disabled])')
+              ?? root.querySelector("[data-class-select]:not([disabled])");
           control?.click();
           return;
         }
@@ -148,6 +149,22 @@ function json(status, payload) {
 function site99DateTime(value) {
   if (typeof value !== "string" || value.length === 0) throw new Error("Site -99 returned no Class time.");
   return /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : `${value}+02:00`;
+}
+
+function site99ClassFamily(family) {
+  const { nextOccurrence, ...summary } = family;
+  if (!nextOccurrence) return summary;
+  return {
+    ...summary,
+    nextOccurrence: {
+      classId: String(nextOccurrence.classId),
+      name: nextOccurrence.className,
+      startAt: site99DateTime(nextOccurrence.classStart),
+      ...(nextOccurrence.classEnd ? { endAt: site99DateTime(nextOccurrence.classEnd) } : {}),
+      timezone: SITE_99_DEMO_CONTEXT.locationTimezone,
+      staffName: nextOccurrence.staffName ?? "Instructor to be confirmed",
+    },
+  };
 }
 
 function exactContext(body) {
@@ -328,7 +345,7 @@ export function createSite99WebflowDemoHandler({
       if (body?.classFamilyId !== undefined && !UUID.test(body.classFamilyId ?? "")) {
         return json(422, { ok: false, error: { code: "INVALID_CLASS_FAMILY" } });
       }
-      const result = await runProvider("probe", {
+      const result = await runProvider(body?.classFamilyId ? "availability" : "catalogue", {
         ...(body?.classFamilyId ? { classFamilyId: body.classFamilyId } : {}),
       });
       if (!result) return busy();
@@ -343,7 +360,9 @@ export function createSite99WebflowDemoHandler({
             name: result?.auth?.siteName ?? "Mindbody Site -99",
           },
           offer: { id: SITE_99_DEMO_CONTEXT.offerId, name: SITE_99_DEMO_CONTEXT.offerName },
-          ...(Array.isArray(result?.families) ? { families: result.families } : {}),
+          ...(Array.isArray(result?.families)
+            ? { classFamilies: result.families.map(site99ClassFamily) }
+            : {}),
           sessions: fixtures.map((fixture) => ({
             classId: String(fixture.classId),
             ...(fixture.classFamilyId ? { classFamilyId: String(fixture.classFamilyId) } : {}),
@@ -512,6 +531,9 @@ export function createSite99WebflowDemoHandler({
             locationName: SITE_99_DEMO_CONTEXT.locationName,
             sandboxDemo: {
               paymentType: "Fictitious Cash",
+              ...(typeof booking.providerPaymentType === "string"
+                ? { providerPaymentType: booking.providerPaymentType.slice(0, 120) }
+                : {}),
               providerEvidenceConfirmed: true,
               demoBookingId,
               cleanupStatus: "pending",
