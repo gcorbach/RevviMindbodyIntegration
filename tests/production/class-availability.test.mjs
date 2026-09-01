@@ -194,6 +194,47 @@ test("a paid Offer can resolve one applicable Product from its approved Product 
   assert.equal(result.sessions[0].provisionalPrice.amount, 44);
 });
 
+test("Site -99 availability resolves a reset pricing-option ID from its stable name", async () => {
+  const resetSafeContext = {
+    ...context,
+    mapping: { ...context.mapping, providerServiceProductId: "stale-product" },
+    classFamilies: [{
+      id: "family-yoga",
+      status: "active",
+      providerServiceProductName: "5 Class Card",
+      providerMappings: [{
+        providerLocationId: "7",
+        providerClassDescriptionId: "13",
+        providerProgramId: "11",
+        providerSessionTypeId: "23",
+        providerClassScheduleId: "17",
+      }],
+    }],
+  };
+  const result = await discoverOfferClassAvailability({
+    context: resetSafeContext,
+    classFamilyId: "family-yoga",
+    startAt: "2026-08-11T22:00:00.000Z",
+    endAt: "2026-08-25T21:59:59.999Z",
+  }, {
+    provider: happyProvider({
+      getServices: async () => [{
+        ProductId: "today-product",
+        Name: "  5   CLASS card ",
+        OnlinePrice: 55,
+        SellOnline: true,
+        Discontinued: false,
+        SellAtLocationIds: [7],
+        UseAtLocationIds: [7],
+      }],
+    }),
+    now: () => new Date("2026-08-10T12:00:00.000Z"),
+  });
+
+  assert.equal(result.sessions[0].provisionalPrice.serviceProductId, "today-product");
+  assert.equal(result.sessions[0].provisionalPrice.amount, 55);
+});
+
 test("a selected Class family admits only its complete provider taxonomy mappings", async () => {
   const familyContext = {
     ...context,

@@ -217,7 +217,7 @@ test("the hard-locked Site -99 Cash route confirms only from exact live purchase
         ShoppingCartId: "cart-1",
         Returned: false,
         PurchasedItems: [{ Id: 1431, Returned: false }],
-        Payments: [{ Id: 701, Type: "Cash", Amount: 13 }],
+        Payments: [{ Id: 701, Type: "Alex Bank Visa Ballet", Amount: 13 }],
       }] });
       if (path.endsWith("/sale/transactions")) return response({ Transactions: [] });
       if (path.endsWith("/client/clientservices")) {
@@ -261,6 +261,7 @@ test("the hard-locked Site -99 Cash route confirms only from exact live purchase
   assert.equal(result.status, "confirmed");
   assert.equal(result.atomicCheckoutConfirmed, true);
   assert.equal(result.paymentType, "Cash");
+  assert.equal(result.providerPaymentType, "Alex Bank Visa Ballet");
   assert.equal(result.transactionId, null);
   assert.equal(result.visitId, "901");
   assert.equal(result.clientServiceId, "611");
@@ -722,7 +723,7 @@ test("Site -99 Cash reconciliation confirms without a fabricated Transaction", a
       if (path.endsWith("/sale/sales")) return response({ Sales: [{
         Id: "sale-cash", ClientId: "rss-1", ClassIds: ["771"],
         PurchasedItems: [{ Id: "1431", Returned: false }],
-        Payments: [{ Id: "payment-cash", Amount: 13, Type: "Cash" }],
+        Payments: [{ Id: "payment-cash", Amount: 13, Type: "Alex Bank Visa Ballet" }],
       }] });
       if (path.endsWith("/sale/transactions")) return response({ Transactions: [] });
       return response({});
@@ -735,6 +736,7 @@ test("Site -99 Cash reconciliation confirms without a fabricated Transaction", a
     classId: "771",
     clientId: "rss-1",
     serviceProductId: "1431",
+    priceAmount: 13,
     saleId: "sale-cash",
     cartId: "cart-cash",
     transactionId: null,
@@ -742,6 +744,7 @@ test("Site -99 Cash reconciliation confirms without a fabricated Transaction", a
   });
   assert.equal(result.status, "confirmed");
   assert.equal(result.paymentType, "Cash");
+  assert.equal(result.providerPaymentType, "Alex Bank Visa Ballet");
   assert.equal(result.transactionId, null);
   assert.equal(result.clientServiceId, "client-service-cash");
 });

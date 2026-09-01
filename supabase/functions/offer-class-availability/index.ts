@@ -13,6 +13,7 @@ import {
   createMindbodyClassReadClient,
   instrumentClassReadProvider,
 } from "../_shared/mindbody-class-read.js";
+import { refreshSite99LiveContext } from "../_shared/mindbody-site-99-live-context.js";
 
 const requiredEnvironment = [
   "SUPABASE_URL",
@@ -90,6 +91,12 @@ Deno.serve(async (request) => {
       requestTimeoutMs: Number(Deno.env.get("MINDBODY_REQUEST_TIMEOUT_MS") ?? 10_000),
     }),
     instrumentProvider: instrumentClassReadProvider,
+    refreshContext: (context: Record<string, unknown>, operation: { provider: Record<string, unknown> }) => (
+      refreshSite99LiveContext(context, {
+        provider: operation.provider,
+        manifest: Deno.env.get("MINDBODY_SANDBOX_CLASS_FAMILIES_JSON"),
+      })
+    ),
     discoverAvailability: discoverOfferClassAvailability,
     logger: console,
   });

@@ -19,6 +19,11 @@ import {
   createMindbodyClientQuoteClient,
   instrumentClientQuoteProvider,
 } from "../_shared/mindbody-client-quote.js";
+import {
+  createMindbodyClassReadClient,
+  instrumentClassReadProvider,
+} from "../_shared/mindbody-class-read.js";
+import { refreshSite99LiveContext } from "../_shared/mindbody-site-99-live-context.js";
 import { sealPaymentActionToken } from "../_shared/payment-action-crypto.js";
 import {
   createMindbodyRuntimeProvider,
@@ -209,6 +214,28 @@ Deno.serve(async (request) => {
       input,
       { memberstack, catalogue: authorizationCatalogue, now },
     ),
+    refreshContext: (context: any, operation: { requestId: string; customerId: string }) => {
+      const provider = instrumentClassReadProvider(createMindbodyClassReadClient({
+        apiKey: Deno.env.get("MINDBODY_API_KEY")!,
+        siteId: context.integration.providerSiteId,
+        baseUrl: Deno.env.get("MINDBODY_BASE_URL") ?? "https://api.mindbodyonline.com",
+        requestTimeoutMs: Number(Deno.env.get("MINDBODY_REQUEST_TIMEOUT_MS") ?? 10_000),
+      }), {
+        context: {
+          businessId: context.business.id,
+          offerId: context.offer.id,
+          locationId: context.location.id,
+          mappingId: context.mapping.id,
+          customerId: operation.customerId,
+        },
+        requestId: operation.requestId,
+        recordDiagnostic: (facts: Record<string, unknown>) => quoteCatalogue.recordProviderDiagnostic(facts),
+      });
+      return refreshSite99LiveContext(context, {
+        provider,
+        manifest: Deno.env.get("MINDBODY_SANDBOX_CLASS_FAMILIES_JSON"),
+      });
+    },
     createQuoteProvider: (
       context: {
         business: { id: string };

@@ -105,10 +105,13 @@ Configure these secret names in Supabase without committing their values:
 - `MINDBODY_API_KEY`
 - `MINDBODY_SANDBOX_USERNAME`
 - `MINDBODY_SANDBOX_PASSWORD`
+- `MINDBODY_SANDBOX_CLASS_FAMILIES_JSON` with the same stable-name manifest used by the loopback demo
 - the existing Memberstack application, contract-evidence, and server-secret values
 - `ALLOWED_ORIGINS` containing the exact published Webflow origin
 
-The server issues a temporary Site `-99` staff token for each provider operation and revokes it in `finally`; the token is never returned to Webflow or persisted. The database gate additionally requires sandbox environment, Site `-99`, provider Location `1`, payment route `mindbody_sandbox_cash`, the explicit operator flag, and the one designated Supabase test Customer.
+Before availability, quote, and pre-write quote revalidation, the hosted functions refresh Site `-99` Location, Program, Class Description, Session Type, and pricing-option IDs from that stable-name manifest. The database remains authoritative for the approved Revvi family UUIDs, Offer, Customer, and write gates; a missing family, ambiguous name, or non-Location-1 result fails closed. This prevents the daily sandbox reset from silently leaving Supabase on yesterday's provider IDs.
+
+The server issues a temporary Site `-99` staff token for each provider write operation and revokes it in `finally`; the token is never returned to Webflow or persisted. The database gate additionally requires sandbox environment, Site `-99`, provider Location `1`, payment route `mindbody_sandbox_cash`, the explicit operator flag, and the one designated Supabase test Customer. Mindbody may return the Cash payment under a reset-generated display label; hosted reconciliation preserves that provider label but accepts it only alongside the exact Sale, Payment ID, quoted amount, Product, Class, Client, ClientService, and Visit evidence.
 
 Use the following stable context in the Webflow `/book` widget:
 

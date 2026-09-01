@@ -108,6 +108,48 @@ test("a paid quote selects the one applicable Product from an approved Product s
   assert.equal(result.price.serviceProductId, "product-strength");
 });
 
+test("a Site -99 quote replaces the stale database Product ID from the family pricing-option name", async () => {
+  const deps = dependencies();
+  const resetSafeContext = context();
+  resetSafeContext.mapping.providerServiceProductId = "yesterday-product";
+  resetSafeContext.classFamilies = [{
+    id: "family-yoga",
+    status: "active",
+    providerServiceProductName: "5 Class Card",
+    providerMappings: [{
+      providerLocationId: "7",
+      providerClassDescriptionId: "13",
+      providerProgramId: "11",
+      providerSessionTypeId: "23",
+    }],
+  }];
+  let checkoutProduct;
+  deps.provider.getServices = async () => [{
+    ProductId: "today-product",
+    Name: "5 Class Card",
+    OnlinePrice: 55,
+    SellOnline: true,
+    Discontinued: false,
+    SellAtLocationIds: [7],
+    UseAtLocationIds: [7],
+  }];
+  deps.provider.testCheckout = async (facts) => {
+    checkoutProduct = facts.productId;
+    return { subtotal: 55, discountTotal: 0, taxTotal: 0, grandTotal: 55 };
+  };
+
+  const result = await createClassBookingQuote({
+    customer: { id: "customer-a" },
+    identity,
+    classId: "771",
+    classFamilyId: "family-yoga",
+    context: resetSafeContext,
+  }, deps);
+
+  assert.equal(checkoutProduct, "today-product");
+  assert.equal(result.price.serviceProductId, "today-product");
+});
+
 test("a quote revalidates the selected Class family tuple", async () => {
   const deps = dependencies();
   const familyContext = context();

@@ -176,6 +176,13 @@ function mappedProductIds(mapping) {
   return [...new Set(configured.map((value) => String(value ?? "").trim()).filter(Boolean))];
 }
 
+function mappedProductName(context, classFamilyId) {
+  if (!Array.isArray(context?.classFamilies)) return null;
+  const family = context.classFamilies.find((candidate) => String(candidate?.id ?? "") === String(classFamilyId ?? ""));
+  const name = String(family?.providerServiceProductName ?? "").trim();
+  return name || null;
+}
+
 async function sha256(value) {
   const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -207,7 +214,8 @@ export async function createClassBookingQuote(input, dependencies) {
   let fulfilment;
   if (mode === "purchase_pricing_option") {
     const configuredProductIds = mappedProductIds(input.context.mapping);
-    if (configuredProductIds.length === 0
+    const providerServiceProductName = mappedProductName(input.context, input.classFamilyId);
+    if ((!providerServiceProductName && configuredProductIds.length === 0)
       || !Number.isSafeInteger(input.context.mapping.paidCheckoutLocationId)) {
       throw new BookingQuoteError(
         "PAID_ROUTE_NOT_CONFIGURED",
@@ -215,8 +223,8 @@ export async function createClassBookingQuote(input, dependencies) {
         503,
       );
     }
-    let providerServiceProductId = configuredProductIds[0];
-    if (configuredProductIds.length > 1) {
+    let providerServiceProductId = configuredProductIds[0] ?? null;
+    if (providerServiceProductName || configuredProductIds.length > 1) {
       if (typeof dependencies.provider.getServices !== "function") {
         throw new BookingQuoteError(
           "PRODUCT_MAPPING_AMBIGUOUS",
@@ -230,7 +238,12 @@ export async function createClassBookingQuote(input, dependencies) {
         sellOnline: true,
         includeDiscontinued: false,
       });
-      const mappedService = selectMappedService(services, configuredProductIds, input.context.location.providerLocationId);
+      const mappedService = selectMappedService(
+        services,
+        configuredProductIds,
+        input.context.location.providerLocationId,
+        providerServiceProductName,
+      );
       if (!mappedService) {
         throw new BookingQuoteError(
           "PRODUCT_NOT_APPLICABLE",
@@ -395,7 +408,9 @@ export async function revalidateClassBookingQuoteBeforeWrite(input, dependencies
   }
   if (quote.fulfilmentMode !== "purchase_pricing_option") return { changed: false, occurrence: classOccurrence };
   const configuredProductIds = mappedProductIds(context.mapping);
-  if (!configuredProductIds.includes(String(quote.providerServiceProductId ?? ""))) {
+  const providerServiceProductName = mappedProductName(context, quote.classFamilyId);
+  if (!providerServiceProductName
+    && !configuredProductIds.includes(String(quote.providerServiceProductId ?? ""))) {
     throw new BookingQuoteError(
       "QUOTE_BINDING_CHANGED",
       "The quoted Mindbody Product is no longer approved for this Offer; request a new quote.",
@@ -408,6 +423,35 @@ export async function revalidateClassBookingQuoteBeforeWrite(input, dependencies
       "The paid Mindbody checkout route is no longer configured.",
       503,
     );
+  }
+  if (providerServiceProductName) {
+    if (typeof dependencies.provider.getServices !== "function") {
+      throw new BookingQuoteError(
+        "PRODUCT_MAPPING_AMBIGUOUS",
+        "The current Site -99 pricing option cannot be rediscovered safely.",
+        503,
+      );
+    }
+    const services = await dependencies.provider.getServices({
+      classId: quote.classId,
+      locationId: context.location.providerLocationId,
+      sellOnline: true,
+      includeDiscontinued: false,
+    });
+    const mappedService = selectMappedService(
+      services,
+      configuredProductIds,
+      context.location.providerLocationId,
+      providerServiceProductName,
+    );
+    if (!mappedService
+      || String(mappedService.service.ProductId) !== String(quote.providerServiceProductId ?? "")) {
+      throw new BookingQuoteError(
+        "QUOTE_BINDING_CHANGED",
+        "The Site -99 pricing option changed after this quote; request a new quote.",
+        409,
+      );
+    }
   }
   const [totals, currency] = await Promise.all([
     dependencies.provider.testCheckout({

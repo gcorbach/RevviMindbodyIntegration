@@ -237,11 +237,20 @@ function mappedProductIds(mapping) {
   return [...new Set(configured.map(id).filter(Boolean))];
 }
 
-export function selectMappedService(services, productIds, locationId) {
+function normalizedServiceName(value) {
+  return id(value)?.normalize("NFKC").replace(/\s+/g, " ").toLowerCase() ?? null;
+}
+
+export function selectMappedService(services, productIds, locationId, productName = null) {
   const allowedProductIds = new Set((Array.isArray(productIds) ? productIds : [productIds]).map(id).filter(Boolean));
-  const matches = services.filter((service) => allowedProductIds.has(id(service?.ProductId)));
-  if (matches.length !== 1) return null;
-  const service = matches[0];
+  const candidates = services.filter((service) => productName
+    ? normalizedServiceName(service?.Name) === normalizedServiceName(productName)
+    : allowedProductIds.has(id(service?.ProductId)));
+  const namedMatches = productName
+    ? new Map(candidates.map((service) => [id(service?.ProductId), service]))
+    : null;
+  if (productName ? namedMatches.size !== 1 || namedMatches.has(null) : candidates.length !== 1) return null;
+  const service = productName ? [...namedMatches.values()][0] : candidates[0];
   if (service.SellOnline !== true || service.Discontinued === true) return null;
   if (!locationListIncludes(service.SellAtLocationIds, locationId)
     || !locationListIncludes(service.UseAtLocationIds, locationId)) return null;
@@ -276,7 +285,7 @@ export async function discoverOfferClassAvailability(input, dependencies) {
       locationId,
       startClassDateTime: startAt,
       endClassDateTime: endAt,
-      includeInactive: false,
+      includeInactive: context.allowInactiveClassDescriptions === true,
     }),
     queryAllowlist.classSchedule?.length
       ? provider.getClassSchedules({
@@ -297,7 +306,7 @@ export async function discoverOfferClassAvailability(input, dependencies) {
     .map((program) => id(program.Id))
     .filter((programId) => isAllowed(queryAllowlist.program, programId)));
   const approvedDescriptions = new Map(descriptions
-    .filter((description) => description.Active === true)
+    .filter((description) => context.allowInactiveClassDescriptions === true || description.Active === true)
     .filter((description) => isAllowed(queryAllowlist.classDescription, description.Id))
     .filter((description) => approvedProgramIds.has(id(description.Program?.Id)))
     .filter((description) => isAllowed(queryAllowlist.sessionType, description.SessionType?.Id))
@@ -373,7 +382,12 @@ export async function discoverOfferClassAvailability(input, dependencies) {
         sellOnline: true,
         includeDiscontinued: false,
       });
-      const mappedService = selectMappedService(services, mappedProductIds(context.mapping), locationId);
+      const mappedService = selectMappedService(
+        services,
+        mappedProductIds(context.mapping),
+        locationId,
+        matchedFamily?.providerServiceProductName ?? null,
+      );
       if (!mappedService) continue;
       provisionalPrice = {
         amount: mappedService.amount,

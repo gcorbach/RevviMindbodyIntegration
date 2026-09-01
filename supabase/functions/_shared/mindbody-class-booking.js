@@ -256,7 +256,8 @@ function exactSandboxCashFinancialEvidence(salesEnvelope, input) {
   const cartId = text(input.cartId);
   const paymentId = text(input.paymentId);
   const serviceProductId = text(input.serviceProductId);
-  if (!saleId || !cartId || !paymentId || !serviceProductId) return null;
+  const priceAmount = Number(input.priceAmount);
+  if (!saleId || !cartId || !paymentId || !serviceProductId || !Number.isFinite(priceAmount)) return null;
   const sale = array(salesEnvelope?.Sales).map(saleFact).filter(Boolean)
     .find((candidate) => candidate.saleId === saleId
       && candidate.clientId === String(input.clientId)
@@ -264,14 +265,14 @@ function exactSandboxCashFinancialEvidence(salesEnvelope, input) {
       && candidate.productIds.includes(serviceProductId)
       && candidate.classIds.includes(String(input.classId)));
   const payment = sale?.payments.find((candidate) => candidate.paymentId === paymentId
-    && candidate.type?.toLowerCase() === "cash"
-    && Number.isFinite(candidate.amount));
+    && candidate.amount === priceAmount);
   if (!sale || !payment) return null;
   return {
     status: "confirmed",
     certainty: "provider_confirmed",
     atomicCheckoutConfirmed: true,
     paymentType: "Cash",
+    providerPaymentType: payment.type,
     saleId,
     cartId,
     transactionId: null,
@@ -458,7 +459,6 @@ export function createMindbodyClassBookingClient(options) {
       && candidate.productIds.includes(String(input.serviceProductId))
     ));
     const payment = sale?.payments.find((candidate) => candidate.paymentId
-      && candidate.type?.toLowerCase() === "cash"
       && candidate.amount === Number(input.priceAmount));
     const service = services.map(clientServiceFact).filter(Boolean)
       .find((candidate) => candidate.clientServiceId === clientVisit.clientServiceId
@@ -475,6 +475,7 @@ export function createMindbodyClassBookingClient(options) {
       atomicCheckoutConfirmed: true,
       paymentStatus: "paid",
       paymentType: "Cash",
+      providerPaymentType: payment.type,
       visitId: clientVisit.visitId,
       rosterBookingId: clientVisit.rosterBookingId,
       clientServiceId: service.clientServiceId,
@@ -783,6 +784,7 @@ export function createMindbodyClassBookingClient(options) {
         classId,
         clientId,
         serviceProductId: input.serviceProductId,
+        priceAmount: input.priceAmount,
         saleId: input.saleId,
         cartId: input.cartId,
         transactionId: input.transactionId,

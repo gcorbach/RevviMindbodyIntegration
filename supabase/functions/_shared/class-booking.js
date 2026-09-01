@@ -310,9 +310,12 @@ export async function reconcileClassBooking(input, dependencies) {
       uniqueClientId: input.quote.providerClientUniqueId,
       clientServiceId: input.quote.providerClientServiceId,
       serviceProductId: input.quote.providerServiceProductId,
+      priceAmount: input.quote.grandTotal,
       mode: input.quote.fulfilmentMode,
       saleId: input.booking.providerSaleId,
+      cartId: input.booking.providerCartId,
       transactionId: input.booking.providerTransactionId,
+      paymentId: input.booking.providerPaymentId,
       webhookEvidence: input.webhookEvidence,
     });
   } catch {

@@ -14,6 +14,7 @@ import {
   MemberstackServiceError,
 } from "./memberstack.js";
 import { MindbodyClassReadError } from "./mindbody-class-read.js";
+import { Site99LiveContextError } from "./mindbody-site-99-live-context.js";
 
 function requestId(request) {
   const supplied = request.headers.get("x-request-id");
@@ -109,8 +110,11 @@ export async function handleOfferClassAvailability(request, dependencies) {
       requestId: id,
       recordDiagnostic: (facts) => dependencies.catalogue.recordProviderDiagnostic(facts),
     });
+    const liveConfiguration = typeof dependencies.refreshContext === "function"
+      ? await dependencies.refreshContext(configuration, { provider, requestId: id })
+      : configuration;
     const data = await dependencies.discoverAvailability({
-      context: configuration,
+      context: liveConfiguration,
       ...(input.classFamilyId ? { classFamilyId: input.classFamilyId } : {}),
       startAt: dateRange.startAt,
       endAt: dateRange.endAt,
@@ -125,6 +129,7 @@ export async function handleOfferClassAvailability(request, dependencies) {
       || error instanceof OfferAuthorizationError
       || error instanceof ClassAvailabilityCatalogueError
       || error instanceof ClassAvailabilityError
+      || error instanceof Site99LiveContextError
       || error instanceof MemberstackServiceError) {
       return json({ ok: false, code: error.code, error: error.message, requestId: id }, error.status, origin, id);
     }

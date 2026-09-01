@@ -6,6 +6,7 @@ import {
   MemberstackServiceError,
 } from "./memberstack.js";
 import { MindbodyClientQuoteError } from "./mindbody-client-quote.js";
+import { Site99LiveContextError } from "./mindbody-site-99-live-context.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -104,10 +105,16 @@ export async function handleClassBookingQuote(request, dependencies) {
     if (!authorization.customer.identity || authorization.customer.identity.emailVerified !== true) {
       throw new BookingQuoteError("CLIENT_IDENTITY_INCOMPLETE", "Your verified Revvi profile needs an email and full name before booking.", 422);
     }
-    const context = await dependencies.catalogue.resolveQuoteContext({
+    const storedContext = await dependencies.catalogue.resolveQuoteContext({
       offerId: input.offerId,
       customerId: authorization.customer.id,
     });
+    const context = typeof dependencies.refreshContext === "function"
+      ? await dependencies.refreshContext(storedContext, {
+        requestId: id,
+        customerId: authorization.customer.id,
+      })
+      : storedContext;
     const quote = await dependencies.createQuote({
       customer: authorization.customer,
       identity: authorization.customer.identity,
@@ -124,6 +131,7 @@ export async function handleClassBookingQuote(request, dependencies) {
   } catch (error) {
     if (error instanceof BookingQuoteRequestError
       || error instanceof BookingQuoteError
+      || error instanceof Site99LiveContextError
       || error instanceof OfferAuthorizationError
       || error instanceof MemberstackServiceError) {
       return failure(error.code, error.message, error.status, origin, id);

@@ -8,6 +8,7 @@ import {
   MemberstackServiceError,
 } from "./memberstack.js";
 import { MindbodyClientQuoteError } from "./mindbody-client-quote.js";
+import { Site99LiveContextError } from "./mindbody-site-99-live-context.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -93,10 +94,19 @@ export async function handleClassBooking(request, dependencies) {
       return success(existing, origin, id, dependencies.decorateBooking, { authorization, resolved });
     }
 
-    const resolved = await dependencies.catalogue.resolveBookingContext({
+    let resolved = await dependencies.catalogue.resolveBookingContext({
       quoteId: input.quoteId,
       customerId: authorization.customer.id,
     });
+    if (typeof dependencies.refreshContext === "function") {
+      resolved = {
+        ...resolved,
+        context: await dependencies.refreshContext(resolved.context, {
+          requestId: id,
+          customerId: authorization.customer.id,
+        }),
+      };
+    }
     const quoteProvider = dependencies.createQuoteProvider(resolved.context, {
       requestId: id,
       customerId: authorization.customer.id,
@@ -137,6 +147,7 @@ export async function handleClassBooking(request, dependencies) {
     if (error instanceof BookingRequestError
       || error instanceof BookingOrchestrationError
       || error instanceof BookingQuoteError
+      || error instanceof Site99LiveContextError
       || error instanceof OfferAuthorizationError
       || error instanceof MemberstackServiceError) {
       return failure(error.code, error.message, error.status, origin, id);

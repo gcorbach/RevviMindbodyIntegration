@@ -23,6 +23,7 @@ const CLIENT_QUOTE_ENDPOINTS = Object.freeze({
   getRequiredClientFields: "client/requiredclientfields",
   addClient: "client/addclient",
   getClassForClient: "class/classes",
+  getServices: "sale/services",
   getClientServices: "client/clientservices",
   testCheckout: "sale/checkoutshoppingcart",
 });
@@ -248,6 +249,17 @@ export function createMindbodyClientQuoteClient(options) {
       { ClientId: requiredMindbodyText(clientId, "clientId"), ClassId: requiredMindbodyText(classId, "classId") },
       "ClientServices",
     )).map(entitlementFact),
+    getServices: async ({ classId, locationId, sellOnline = true, includeDiscontinued = false }) => getAll(
+      "sale/services",
+      {
+        ClassId: requiredMindbodyInteger(classId, "classId"),
+        LocationId: requiredMindbodyInteger(locationId, "locationId"),
+        SellOnline: sellOnline,
+        HideRelatedPrograms: false,
+        IncludeDiscontinued: includeDiscontinued,
+      },
+      "Services",
+    ),
     testCheckout: async ({
       siteId: operationSiteId,
       classId,

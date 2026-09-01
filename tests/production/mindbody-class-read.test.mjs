@@ -20,6 +20,7 @@ test("the class read client uses every required Public API resource and paginate
     ["/public/v6/site/sites", { Sites: [{ Id: -99, Name: "Pilot", CurrencyIsoCode: "ZAR" }] }],
     ["/public/v6/site/locations", { Locations: [{ Id: 7, Name: "Rosebank", HasClasses: true }] }],
     ["/public/v6/site/programs", { Programs: [{ Id: 11, Name: "Yoga", ScheduleType: "Class" }] }],
+    ["/public/v6/site/sessiontypes", { SessionTypes: [{ Id: 23, Name: "Flow", Active: true }] }],
     ["/public/v6/class/classdescriptions", { ClassDescriptions: [{ Id: 13, Name: "Yoga Flow", Active: true }] }],
     ["/public/v6/class/classschedules", { ClassSchedules: [{ Id: 17 }] }],
     ["/public/v6/class/classes", { Classes: [{ Id: 19 }, { Id: 20 }] }],
@@ -53,6 +54,7 @@ test("the class read client uses every required Public API resource and paginate
     client.getSites({ siteIds: ["-99"] }),
     client.getLocations(),
     client.getPrograms({ scheduleType: "Class" }),
+    client.getSessionTypes({ includeInactive: false }),
     client.getClassDescriptions({ programIds: ["11"] }),
     client.getClassSchedules({ classScheduleIds: ["17"] }),
     client.getClasses({
@@ -65,8 +67,8 @@ test("the class read client uses every required Public API resource and paginate
     client.getServices({ classId: "19", locationId: "7", sellOnline: true }),
   ]);
 
-  assert.deepEqual(results.map((items) => items.length), [1, 1, 1, 1, 1, 3, 1]);
-  assert.equal(requests.length, 8);
+  assert.deepEqual(results.map((items) => items.length), [1, 1, 1, 1, 1, 1, 3, 1]);
+  assert.equal(requests.length, 9);
   for (const { requestUrl, options } of requests) {
     assert.equal(options.method, "GET");
     assert.equal(options.headers["Api-Key"], "api-secret");
