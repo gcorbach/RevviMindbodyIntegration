@@ -8,14 +8,23 @@ The `/book` route follows the approved prototype flow: choose a Class option, ch
 
 1. Add the markup from `embed.html` to the existing Offer page.
 2. Bind `data-business-slug`, `data-location-id`, and `data-offer-id` to the corresponding stable CMS fields. Bind the display names and Location timezone to their presentation fields.
-3. Include `dist/revvi-booking.css` and `dist/revvi-booking.js` after Memberstack's supported DOM package has loaded.
+3. The supplied `embed.html` already includes the hosted `revvi-booking.css` and `revvi-booking.js` URLs after Memberstack's supported DOM package has loaded. The repository's GitHub Pages workflow publishes them at:
+
+   - `https://gcorbach.github.io/RevviMindbodyIntegration/revvi-booking.css`
+   - `https://gcorbach.github.io/RevviMindbodyIntegration/revvi-booking.js`
+
+   The rail image and heading font are published alongside them; the canonical `embed.html` already points at the hosted image URL. If the repository is renamed or moved, update the hosted URLs in `embed.html` and `history.html`.
 4. Do not add a Location picker. The page has already selected the Location; the widget displays it and sends its stable UUID back to Supabase for validation.
+
+## GitHub Pages hosting
+
+After merging the feature branch, set **Settings → Pages → Build and deployment → Source** to **GitHub Actions** once. The workflow then builds and publishes `webflow/dist` whenever widget source or build inputs change on `main`; it can also be run manually from the Actions tab. The published project-site base is `https://gcorbach.github.io/RevviMindbodyIntegration/`.
 
 The production endpoint attributes may be omitted when the functions use their standard `/functions/v1/...` paths. The demo-cleanup endpoint is inert unless the controlled Site `-99` server returns typed sandbox-demo metadata. These attributes let Webflow preview and controlled test deployments point to an explicitly configured backend origin.
 
 ## Build
 
-Run `pnpm build:webflow`. The committed `dist/` files—including the stylesheet, script, rail image, and heading font—are the only browser assets Webflow needs.
+Run `pnpm build:webflow`. The committed `dist/` files—including the stylesheet, script, rail image, heading font, and Pages landing file—are the browser assets published by GitHub Actions. The workflow runs on changes to the widget and deploys `webflow/dist` to GitHub Pages after changes land on `main` (or when manually dispatched).
 
 The browser sends exactly one Memberstack bearer JWT. It never sends Memberstack plan IDs, a Mindbody credential, a price, a ProductId, or an Offer fulfilment mode. A displayed price is provisional until the client-aware quote is accepted, and the widget never collects raw card data.
 

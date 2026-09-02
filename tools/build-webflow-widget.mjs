@@ -26,4 +26,8 @@ await Promise.all([
     new URL("../webflow/assets/CormorantGaramond-Regular.ttf", import.meta.url),
     new URL("../webflow/dist/CormorantGaramond-Regular.ttf", import.meta.url),
   ),
+  cp(
+    new URL("../webflow/hosting/index.html", import.meta.url),
+    new URL("../webflow/dist/index.html", import.meta.url),
+  ),
 ]);
