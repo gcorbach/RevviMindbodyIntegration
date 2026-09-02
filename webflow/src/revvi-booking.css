@@ -30,9 +30,10 @@
   display: grid;
   grid-template-columns: 312px minmax(0, 1fr);
   height: 620px;
-  margin: 0 auto;
+  margin: 44px auto 0;
   max-width: 960px;
-  overflow: hidden;
+  overflow: visible;
+  position: relative;
   width: 100%;
 }
 
@@ -46,6 +47,7 @@
 
 [data-booking-brand-panel] {
   background: #b1c0d5;
+  border-radius: 24px 0 0 24px;
   color: var(--revvi-paper);
   min-width: 0;
   overflow: hidden;
@@ -112,6 +114,7 @@
 
 [data-booking-main] {
   background: var(--revvi-paper);
+  border-radius: 0 24px 24px 0;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -132,16 +135,24 @@
   color: var(--revvi-paper);
   display: block;
   font-size: 12px;
-  left: 0;
   max-width: 100%;
   padding: 7px 12px;
   position: absolute;
-  top: -34px;
+  white-space: nowrap;
+}
+
+[data-booking-selection] {
+  bottom: calc(100% + 16px);
+  left: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
 }
 
 [data-booking-freshness] {
   left: auto;
   right: 0;
+  top: -34px;
 }
 
 [data-booking-steps] {
@@ -429,9 +440,16 @@
 }
 
 .revvi-booking-calendar-toggle {
-  font-size: 20px;
   min-width: 48px;
   padding: 0 14px;
+}
+
+.revvi-booking-calendar-icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
 }
 
 .revvi-booking-day-button.active,
@@ -760,10 +778,12 @@
   }
 
   [data-booking-brand-panel] {
+    border-radius: 24px 24px 0 0;
     height: 240px;
   }
 
   [data-booking-main] {
+    border-radius: 0 0 24px 24px;
     min-height: 600px;
     padding: 26px 22px 30px;
   }
@@ -816,7 +836,12 @@
   }
 
   [data-booking-brand-panel] {
+    border-radius: 16px 16px 0 0;
     height: 200px;
+  }
+
+  [data-booking-main] {
+    border-radius: 0 0 16px 16px;
   }
 
   [data-booking-brand-content] {

@@ -519,7 +519,19 @@ var RevviBooking = (() => {
         toggle.className = "revvi-booking-calendar-toggle";
         toggle.setAttribute("aria-label", "Show more available dates");
         toggle.setAttribute("aria-expanded", "false");
-        toggle.textContent = "\u25A6";
+        const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        icon.setAttribute("class", "revvi-booking-calendar-icon");
+        icon.setAttribute("viewBox", "0 0 24 24");
+        icon.setAttribute("width", "20");
+        icon.setAttribute("height", "20");
+        icon.setAttribute("aria-hidden", "true");
+        icon.setAttribute("focusable", "false");
+        icon.innerHTML = `
+        <rect x="3.5" y="5.5" width="17" height="15" rx="2"></rect>
+        <path d="M7.5 3.5v4M16.5 3.5v4M3.5 10h17"></path>
+        <path d="M8 14h.01M12 14h.01M16 14h.01M8 17h.01M12 17h.01M16 17h.01"></path>
+      `;
+        toggle.append(icon);
         toggle.addEventListener("click", () => {
           calendar.hidden = !calendar.hidden;
           toggle.classList.toggle("active", !calendar.hidden);
@@ -600,6 +612,10 @@ var RevviBooking = (() => {
         for (const button of root.querySelectorAll("[data-time-select]")) {
           button.classList.toggle("active", button.dataset.classId === String(occurrence.classId));
         }
+      },
+      selectedDate(date, timezone, className = "Class") {
+        selection.textContent = `${className} \u2014 ${dateLabel(date, timezone)}`;
+        selection.hidden = false;
       },
       clearSelection() {
         selection.textContent = "";
@@ -926,6 +942,7 @@ var RevviBooking = (() => {
       quote = null;
       ui.clearSelection();
       ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+      ui.selectedDate(selectedDateKey, selectedClassOccurrences[0]?.timezone, selectedClassName);
     }
     function selectOccurrence(occurrence) {
       if (requestActive) return;

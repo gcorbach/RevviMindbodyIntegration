@@ -255,6 +255,7 @@ export function mountBookingWidget(root, dependencies = {}) {
     quote = null;
     ui.clearSelection();
     ui.times(selectedClassOccurrences, selectedDateKey, selectDate, selectOccurrence, null, selectedClassName);
+    ui.selectedDate(selectedDateKey, selectedClassOccurrences[0]?.timezone, selectedClassName);
   }
 
   function selectOccurrence(occurrence) {

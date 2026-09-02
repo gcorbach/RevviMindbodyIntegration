@@ -35,6 +35,8 @@
   data-payment-completion-endpoint="SUPABASE_FUNCTIONS_URL/complete-paid-booking"
   data-demo-cleanup-endpoint="SUPABASE_FUNCTIONS_URL/cancel-booking"
 >
+  <span data-booking-selection hidden></span>
+
   <aside data-booking-brand-panel aria-label="Selected Revvi partner">
     <img data-booking-brand-image src="/assets/revvi-booking-rail.png" alt="">
     <div data-booking-brand-shade aria-hidden="true"></div>
@@ -50,7 +52,6 @@
 
   <main data-booking-main>
     <header data-booking-context>
-      <span data-booking-selection hidden></span>
       <span data-booking-freshness hidden></span>
     </header>
 
