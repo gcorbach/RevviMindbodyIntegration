@@ -37,7 +37,7 @@ test("the Webflow booking route uses the prototype-shaped class, time, and revie
 
 test("Booking confirmation renders outside the booking widget", () => {
   const widgetStart = embed.indexOf("<div\n  data-revvi-booking");
-  const scriptStart = embed.indexOf("<script src=\"/assets/revvi-booking.js\"");
+  const scriptStart = embed.indexOf("<script src=\"https://gcorbach.github.io/RevviMindbodyIntegration/revvi-booking.js\"");
   const confirmation = embed.indexOf("data-booking-confirmation");
 
   assert.notEqual(widgetStart, -1);
@@ -94,5 +94,7 @@ test("the Webflow history component binds only Customer lifecycle endpoints and 
   assert.match(history, /data-upcoming-endpoint="SUPABASE_FUNCTIONS_URL\/upcoming-bookings"/);
   assert.match(history, /data-cancellation-endpoint="SUPABASE_FUNCTIONS_URL\/cancel-booking"/);
   assert.match(history, /data-history-cancel/);
-  assert.doesNotMatch(history, /provider[_-]|Mindbody|refund button|return sale/i);
+  const historyMarkup = history.replaceAll("https://gcorbach.github.io/RevviMindbodyIntegration/revvi-booking.css", "")
+    .replaceAll("https://gcorbach.github.io/RevviMindbodyIntegration/revvi-booking.js", "");
+  assert.doesNotMatch(historyMarkup, /provider[_-]|Mindbody|refund button|return sale/i);
 });
