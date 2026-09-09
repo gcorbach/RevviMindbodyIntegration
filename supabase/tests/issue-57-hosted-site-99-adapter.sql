@@ -1,6 +1,6 @@
 begin;
 
-select plan(17);
+select plan(28);
 
 select ok(
   'mindbody_sandbox_cash' = any(enum_range(null::public.class_paid_payment_route)::text[]),
@@ -133,6 +133,58 @@ select lives_ok(
     where id = '57000000-0000-4000-8000-000000000051'$$,
   'the exact sandbox Offer can become visible after its route is enabled'
 );
+
+
+select lives_ok($$select * from public.persist_class_customer_provider_profile(
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000011',
+ '57000000-0000-4000-8000-000000000031','-99','old-reset-client','old-reset-unique')$$,
+ 'a sandbox Customer receives an immutable provider profile');
+select throws_ok($$select public.retire_missing_site_99_client_profile(
+ (select id from public.class_customer_provider_profiles where provider_client_id='old-reset-client'),
+ 'wrong-client','old-reset-unique',repeat('d',64))$$, 'P0001',
+ 'only the exact enabled Site -99 demo profile may be retired', 'reset rejects a mismatched Client');
+select ok(not has_function_privilege('authenticated',
+ 'public.retire_missing_site_99_client_profile(uuid,text,text,text)','execute'),
+ 'browser callers cannot retire Client profiles');
+select lives_ok($$select public.retire_missing_site_99_client_profile(
+ (select id from public.class_customer_provider_profiles where provider_client_id='old-reset-client'),
+ 'old-reset-client','old-reset-unique',repeat('d',64))$$,
+ 'an operator can retire the exact missing sandbox Client');
+select is((select provider_client_id from public.class_customer_provider_profiles
+ where provider_client_id='old-reset-client' and retired_at is not null),
+ 'old-reset-client', 'the retired historical identity remains unchanged');
+select lives_ok($$select * from public.persist_class_customer_provider_profile(
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000011',
+ '57000000-0000-4000-8000-000000000031','-99','new-reset-client','new-reset-unique')$$,
+ 'the next resolution persists a fresh Client without overwriting history');
+select is((select count(*) from public.class_customer_provider_profiles
+ where customer_id='57000000-0000-4000-8000-000000000011' and retired_at is null),
+ 1::bigint, 'only one current profile exists after reset recovery');
+
+select lives_ok($$select public.register_site_99_quote_pricing_option(
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000061',
+ '57000000-0000-4000-8000-000000000011','reset-price-1300',repeat('e',64))$$,
+ 'a verified sandbox quote can register a reset Product');
+select throws_ok($$select public.register_site_99_quote_pricing_option(
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000061',
+ gen_random_uuid(),'reset-price-1300',repeat('e',64))$$,'P0001',
+ 'only the enabled Site -99 quote lane may register discovered pricing options',
+ 'a different Customer cannot register sandbox Products');
+select ok(not has_function_privilege('authenticated',
+ 'public.register_site_99_quote_pricing_option(uuid,uuid,uuid,text,text)','execute'),
+ 'browser callers cannot approve pricing options');
+select lives_ok($$insert into public.class_booking_quotes (
+ business_id,offer_id,mapping_id,mapping_version,integration_id,location_id,customer_id,
+ customer_provider_profile_id,provider_site_id,provider_location_id,provider_class_id,
+ provider_client_id,provider_client_unique_id,provider_service_product_id,fulfilment_mode,
+ subtotal,discount_total,tax_total,grand_total,currency,provider_calculation,quote_fingerprint,quoted_at,expires_at
+) select m.business_id,m.offer_id,m.id,m.mapping_version,m.integration_id,m.location_id,p.customer_id,
+ p.id,p.provider_site_id,'1','test-class',p.provider_client_id,p.provider_client_unique_id,
+ 'reset-price-1300',m.fulfilment_mode,55,0,0,55,'USD','checkout_test_cart',repeat('f',64),now(),now()+interval '5 minutes'
+ from public.class_offer_provider_mappings m join public.class_customer_provider_profiles p
+ on p.integration_id=m.integration_id and p.retired_at is null
+ where m.id='57000000-0000-4000-8000-000000000061'$$,
+ 'a quote binds an approved Product different from the legacy mapping Product');
 
 select * from finish();
 rollback;

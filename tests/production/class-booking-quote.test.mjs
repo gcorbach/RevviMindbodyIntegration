@@ -112,6 +112,7 @@ test("a Site -99 quote replaces the stale database Product ID from the family pr
   const deps = dependencies();
   const resetSafeContext = context();
   resetSafeContext.mapping.providerServiceProductId = "yesterday-product";
+  resetSafeContext.mapping.paidPaymentRoute = "mindbody_sandbox_cash";
   resetSafeContext.classFamilies = [{
     id: "family-yoga",
     status: "active",
@@ -146,6 +147,7 @@ test("a Site -99 quote replaces the stale database Product ID from the family pr
     context: resetSafeContext,
   }, deps);
 
+  assert.equal(deps.saved[0].sandboxPricingOptionDiscovered, true);
   assert.equal(checkoutProduct, "today-product");
   assert.equal(result.price.serviceProductId, "today-product");
 });
@@ -322,4 +324,19 @@ test("the pre-write seam revalidates the quote's exact entitlement", async () =>
     revalidateClassBookingQuoteBeforeWrite({ quote, context: context("existing_entitlement") }, deps),
     (error) => error.code === "ENTITLEMENT_NO_LONGER_USABLE",
   );
+});
+
+test("a missing stored Client stays blocked until an operator retires its sandbox profile", async () => {
+  const deps = dependencies();
+  const stored = context();
+  stored.integration.allowClientCreation = true;
+  stored.customerProviderProfile = { id: "old-profile", providerClientId: "missing", providerClientUniqueId: "missing" };
+  deps.provider.searchClients = async () => [];
+  deps.provider.getClientDuplicates = async () => [];
+  let creates = 0;
+  deps.provider.addClient = async () => { creates++; return { id: "fresh", uniqueId: "fresh" }; };
+  await assert.rejects(createClassBookingQuote({ customer: { id: "customer-a" }, identity, classId: "771", context: stored }, deps),
+    error => error.code === "CLIENT_PROFILE_STALE");
+  assert.equal(creates, 0);
+  assert.equal(deps.saved.length, 0);
 });

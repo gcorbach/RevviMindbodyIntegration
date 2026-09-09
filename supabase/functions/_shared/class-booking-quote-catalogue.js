@@ -171,6 +171,16 @@ export function createClassBookingQuoteCatalogue(supabase) {
     },
 
     async persistQuote(quote) {
+      if (quote.sandboxPricingOptionDiscovered === true) {
+        const { error } = await supabase.rpc("register_site_99_quote_pricing_option", {
+          candidate_business_id: quote.businessId,
+          candidate_mapping_id: quote.mappingId,
+          candidate_customer_id: quote.customerId,
+          candidate_product_id: quote.providerServiceProductId,
+          candidate_evidence_digest: quote.quoteFingerprint,
+        });
+        if (error) throw unavailable("The live sandbox pricing option could not be registered.");
+      }
       const { data, error } = await supabase.from("class_booking_quotes").insert({
         business_id: quote.businessId,
         offer_id: quote.offerId,

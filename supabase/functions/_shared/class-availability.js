@@ -336,7 +336,7 @@ export async function discoverOfferClassAvailability(input, dependencies) {
     );
   }
 
-  const candidates = classes.filter((item) => {
+  const approvedOccurrences = classes.filter((item) => {
     const descriptionId = id(item?.ClassDescription?.Id);
     const description = approvedDescriptions.get(descriptionId);
     const taxonomy = occurrenceTaxonomy(item, description);
@@ -350,7 +350,6 @@ export async function discoverOfferClassAvailability(input, dependencies) {
       && (!occurrenceEnd || occurrenceEnd > occurrenceStart)
       && id(item?.Location?.Id) === locationId
       && item?.Active === true
-      && item?.IsCanceled !== true
       && description
       && isAllowed(queryAllowlist.classDescription, taxonomy.classDescriptionId)
       && approvedProgramIds.has(taxonomy.programId)
@@ -363,8 +362,26 @@ export async function discoverOfferClassAvailability(input, dependencies) {
     );
   });
 
+  const catalogue = !family && Array.isArray(context.classFamilies) && context.classFamilies.length > 0;
+  const candidates = approvedOccurrences.filter((item) => item.IsCanceled !== true)
+    .sort((left, right) => normalizeInstant(left.StartDateTime, timezone).localeCompare(normalizeInstant(right.StartDateTime, timezone))
+      || id(left.Id).localeCompare(id(right.Id)));
+  const familyFor = (item) => family ?? matchingClassFamily(
+    context.classFamilies, locationId,
+    occurrenceTaxonomy(item, approvedDescriptions.get(id(item.ClassDescription?.Id))), item.ClassScheduleId,
+  );
+  const previews = new Map();
+  if (catalogue) {
+    for (const item of candidates) {
+      const facts = availabilityFacts(item, capacityFacts(item), now, timezone,
+        Boolean(context.customerProviderProfile?.providerClientId));
+      const familyId = id(familyFor(item)?.id);
+      if (facts.state === "available" && !previews.has(familyId)) previews.set(familyId, item);
+    }
+  }
+  const pricingCandidates = catalogue ? [...previews.values()] : candidates;
   const sessions = [];
-  for (const item of candidates) {
+  async function priceOccurrence(item) {
     const description = approvedDescriptions.get(id(item.ClassDescription?.Id));
     const taxonomy = occurrenceTaxonomy(item, description);
     const matchedFamily = family ?? matchingClassFamily(
@@ -388,13 +405,13 @@ export async function discoverOfferClassAvailability(input, dependencies) {
         locationId,
         matchedFamily?.providerServiceProductName ?? null,
       );
-      if (!mappedService) continue;
+      if (!mappedService) return;
       provisionalPrice = {
         amount: mappedService.amount,
         currency: id(site.CurrencyIsoCode),
         serviceProductId: id(mappedService.service.ProductId),
       };
-      if (!provisionalPrice.currency) continue;
+      if (!provisionalPrice.currency) return;
     }
     const capacity = capacityFacts(item);
     const availability = availabilityFacts(
@@ -434,6 +451,15 @@ export async function discoverOfferClassAvailability(input, dependencies) {
     });
   }
 
+  // Bound provider fan-out; each selected occurrence retains its own pricing check.
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: Math.min(6, pricingCandidates.length) }, async () => {
+    while (nextIndex < pricingCandidates.length) {
+      const item = pricingCandidates[nextIndex++];
+      await priceOccurrence(item);
+    }
+  }));
+
   sessions.sort((left, right) => left.startAt.localeCompare(right.startAt) || left.classId.localeCompare(right.classId));
   return {
     business: {
@@ -445,12 +471,21 @@ export async function discoverOfferClassAvailability(input, dependencies) {
     ...(Array.isArray(context.classFamilies) && !family ? {
       classFamilies: context.classFamilies
         .filter((candidate) => candidate.status !== "inactive" && candidate.status !== "disabled")
-        .map((candidate) => ({
-          id: id(candidate.id),
-          name: String(candidate.displayName ?? candidate.name ?? "Class family"),
-          ...(candidate.description ? { description: String(candidate.description) } : {}),
-          available: sessions.some((session) => session.classFamilyId === id(candidate.id)),
-        })),
+        .map((candidate) => {
+          const preview = sessions.find((session) => session.classFamilyId === id(candidate.id));
+          const observed = approvedOccurrences.filter((item) => id(familyFor(item)?.id) === id(candidate.id));
+          return {
+            id: id(candidate.id),
+            name: String(candidate.displayName ?? candidate.name ?? "Class family"),
+            ...(candidate.description ? { description: String(candidate.description) } : {}),
+            available: Boolean(preview),
+            availabilityState: preview ? "available"
+              : observed.length > 0 && observed.every((item) => item.IsCanceled === true) ? "cancelled" : "unavailable",
+            ...(preview ? { nextOccurrence: preview,
+              ...(preview.provisionalPrice ? { provisionalPrice: preview.provisionalPrice } : {}),
+            } : {}),
+          };
+        }),
     } : {}),
     ...(family ? {
       classFamily: {
@@ -458,6 +493,6 @@ export async function discoverOfferClassAvailability(input, dependencies) {
         name: String(family.displayName ?? family.name ?? "Class family"),
       },
     } : {}),
-    sessions,
+    sessions: catalogue ? [] : sessions,
   };
 }
