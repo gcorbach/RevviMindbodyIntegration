@@ -1,3 +1,4 @@
+import { BookingContextError } from "./booking-context.js";
 import { mountBookingWidget } from "./widget.js";
 import { mountBookingHistoryWidgets } from "./history.js";
 
@@ -11,12 +12,13 @@ export function mountBookingWidgets(documentRoot = document) {
       root.dataset.bookingMounted = "true";
       try {
         return mountBookingWidget(root);
-      } catch {
+      } catch (cause) {
         root.dataset.bookingState = "error";
         const error = root.querySelector("[data-booking-error]");
         if (error) {
           error.hidden = false;
-          error.textContent = "This Revvi Booking widget is not configured correctly.";
+          error.textContent = cause instanceof BookingContextError ? cause.message
+            : "This Revvi Booking widget is not configured correctly.";
         }
         return null;
       }

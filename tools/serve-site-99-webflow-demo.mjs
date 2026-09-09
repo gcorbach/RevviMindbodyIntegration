@@ -362,6 +362,8 @@ export function createSite99WebflowDemoHandler({
             slug: SITE_99_DEMO_CONTEXT.businessSlug,
             name: result?.auth?.siteName ?? "Mindbody Site -99",
           },
+          location: { id: SITE_99_DEMO_CONTEXT.locationId,
+            name: SITE_99_DEMO_CONTEXT.locationName, timezone: SITE_99_DEMO_CONTEXT.locationTimezone },
           offer: { id: SITE_99_DEMO_CONTEXT.offerId, name: SITE_99_DEMO_CONTEXT.offerName },
           ...(Array.isArray(result?.families)
             ? { classFamilies: result.families.map(site99ClassFamily) }

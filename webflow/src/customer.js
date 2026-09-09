@@ -69,3 +69,14 @@ export async function createMemberstackAuthorizationHeader(browser = window) {
   }
   return { Authorization: `Bearer ${token}` };
 }
+
+export async function signInForBooking(browser = window) {
+  const dom = await currentMemberstackDom(browser);
+  if (typeof dom.openModal !== "function") {
+    throw new MemberstackBrowserAuthenticationError("Memberstack sign in is unavailable.");
+  }
+  // The DOM modal resolves on login. Resume here using the existing complete URL;
+  // do not follow the account's generic post-login destination.
+  await dom.openModal("LOGIN");
+  dom.hideModal?.();
+}

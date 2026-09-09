@@ -41,10 +41,10 @@ City grouping now detaches items before removing CMS wrappers, retaining item st
 
 `?debug=true&tier=member-complete` etc. still preview visual states, but disable booking destinations. Debug URLs never grant membership. A Memberstack error shows the error element; inactive/cancelled plans don't unlock the CTA. This browser UI is not authorization for affiliate offers or Supabase bookings. Anything confidential needs actual access controls outside this script.
 
-## Still outstanding on /book
+## The /book destination
 
-This script only sends the visitor to the configured link. `/book` still needs to read the three parameters before widget initialization and obtain the matching location display/timezone information. Its existing hardcoded sandbox embed does not switch context based on these URLs. It must also preserve that context if login redirects occur. That separate implementation has NOT been included here.
+The updated hosted widget reads the complete booking link before initialization, gets Location display/timezone information from authenticated availability, and preserves the selected context through sign in. See [publishing and login instructions](../docs/operations/webflow-booking-links.md). Publish the partner bindings only after the updated widget assets and availability function have been deployed.
 
 ## Checks
 
-`node --check .tmp/partner-page.js` checks syntax. `check-partner-page.mjs` runs isolated browser fixtures for both flows, location selection, bad/missing links, active/inactive membership, Test Plan mismatch, debug behavior, and lookup failure. It uses this workstation's existing Playwright/Chromium installation and `/tmp/revvi-partner-jquery.js`; it is a disposable local harness, not a portable repo test command.
+`node --check .tmp/partner-page.js` checks syntax. `check-partner-page.mjs` runs isolated browser fixtures for both flows, location selection, bad/missing links, active/inactive membership, Test Plan mismatch, debug behavior, and lookup failure. Set `PLAYWRIGHT_MODULE_PATH` to an installed Playwright module, `JQUERY_PATH` to a local jQuery browser bundle, and optionally `CHROME_PATH` to an installed Chromium executable. These dependencies are not downloaded by the harness.

@@ -9,6 +9,7 @@ const context = Object.freeze({
   business: { id: "business-a", slug: "pilot-yoga", displayName: "Pilot Yoga" },
   location: {
     id: "location-a",
+    displayName: "Rosebank",
     providerLocationId: "7",
     timezone: "Africa/Johannesburg",
   },
@@ -113,6 +114,7 @@ test("an approved Offer discovers future client-aware Class occurrences and its 
 
   assert.deepEqual(result, {
     business: { id: "business-a", name: "Pilot Yoga", slug: "pilot-yoga" },
+    location: { id: "location-a", name: "Rosebank", timezone: "Africa/Johannesburg" },
     offer: { id: "offer-a", title: "Revvi Yoga Offer" },
     sessions: [{
       sessionId: "19",

@@ -467,6 +467,8 @@ export async function discoverOfferClassAvailability(input, dependencies) {
       name: context.business.displayName,
       slug: context.business.slug,
     },
+    location: { id: context.location.id, name: context.location.displayName,
+      timezone: context.location.timezone },
     offer: { id: context.offer.id, title: context.offer.displayName },
     ...(Array.isArray(context.classFamilies) && !family ? {
       classFamilies: context.classFamilies

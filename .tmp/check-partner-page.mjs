@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { chromium } from '/tmp/cs-youtube-investigation/node_modules/playwright/index.mjs';
+const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH || 'playwright');
 const script = readFileSync(new URL('./partner-page.js', import.meta.url), 'utf8');
-const jquery = readFileSync('/tmp/revvi-partner-jquery.js','utf8');
-const browser = await chromium.launch({executablePath:'/home/crooner/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome'});
+const jquery = readFileSync(process.env.JQUERY_PATH || '/tmp/revvi-partner-jquery.js','utf8');
+const browser = await chromium.launch({...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {})});
 const origin='https://thes-fantabulous-site-e67dcc.webflow.io';
 const booking='/book?businessSlug=lastspot-sandbox&locationId=df893f87-6ca7-4417-88e9-25067b42ee37&offerId=0b3e181e-a718-4098-aa58-9275763f4419';
 let passed=0;
