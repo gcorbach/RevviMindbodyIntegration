@@ -12,6 +12,12 @@ For the one explicitly enabled sandbox demo Customer:
 
 Historical bookings continue to reference the original profile. Unknown outcomes remain unknown and retain their reconciliation/support work. Retirement is not cancellation, a refund, or a provider-write retry. Do not retire a live Client merely to get around an identity conflict.
 
+## Verified sandbox Client ID reuse
+
+A sandbox reset can also leave the old numeric Client ID assigned to a different test identity. An ID-only lookup is therefore insufficient evidence that the original Client survived. For this case, an operator must confirm the Customer's unchanged original email and full name, verify that the exact stored Client/Unique ID now has different identity fields, and obtain complete successful email-search and duplicate-check responses showing no Client matching the original identity. Any remaining ambiguity, incomplete response, or changed Customer identity blocks this procedure.
+
+Once those facts are verified under the shared staff-operation lease, the same retirement RPC may retire the **obsolete Revvi profile binding** with the combined evidence digest. Its sandbox, designated-Customer, exact-ID, and history-preservation guards still apply. It does not modify, delete, or claim the current provider Client occupying that ID. Normal authenticated quote processing must resolve/create a fresh Client; browser requests never perform automatic retirement. This extends the original-Client absence evidence above to a verified reused ID, not to ordinary production identity conflicts.
+
 The local demo creates a fresh synthetic Client per committed run and does not persist a Customer-to-Client mapping, so it has no corresponding retirement operation. Its provider lookup, booking, and cleanup behavior is unchanged.
 
 ## 2026-09-07 incident
