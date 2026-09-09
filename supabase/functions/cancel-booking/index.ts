@@ -1,3 +1,4 @@
+import { isEnabledSite99SandboxContext } from "../_shared/site-99-sandbox-context.js";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { cancelClassBooking } from "../_shared/class-cancellation.js";
 import { authorizeClassCustomerRequest } from "../_shared/class-customer-authorization.js";
@@ -81,12 +82,7 @@ Deno.serve((request) => {
     cancelBooking: cancelClassBooking,
     requiresEntitlementRestoration: async (claim: { booking: { id: string } }) => {
       const providerContext = await catalogue.resolveBookingProviderContext(claim.booking.id);
-      return providerContext.integration.environment === "sandbox"
-        && providerContext.integration.providerSiteId === "-99"
-        && providerContext.location.providerLocationId === "1"
-        && providerContext.mapping.paidPaymentRoute === "mindbody_sandbox_cash"
-        && providerContext.mapping.sandboxDemoWriteEnabled === true
-        && providerContext.mapping.sandboxDemoCustomerId === providerContext.customerId;
+      return isEnabledSite99SandboxContext(providerContext);
     },
     createProvider: async (claim: { booking: { id: string; integrationId: string; businessId: string }; attempt: { id: string } }) => {
       const providerContext = await catalogue.resolveBookingProviderContext(claim.booking.id);
