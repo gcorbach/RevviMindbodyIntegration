@@ -1,0 +1,157 @@
+<link rel="stylesheet" href="https://gcorbach.github.io/RevviMindbodyIntegration/revvi-booking.css">
+
+<section data-booking-confirmation hidden>
+  <div class="revvi-booking-check" aria-hidden="true">✓</div>
+  <h1>You’re booked</h1>
+  <p data-booking-confirmation-message></p>
+  <section data-booking-provider-evidence hidden>
+    <h2>Mindbody provider evidence</h2>
+    <p data-booking-evidence-status></p>
+    <dl>
+      <div><dt>Site</dt><dd>-99</dd></div>
+      <div><dt>Class ID</dt><dd data-booking-evidence-class-id></dd></div>
+      <div><dt>Client</dt><dd><span data-booking-evidence-client-name></span> · <span data-booking-evidence-client-id></span></dd></div>
+      <div><dt>Cash Sale ID</dt><dd data-booking-evidence-sale-id></dd></div>
+      <div><dt>Payment ID</dt><dd data-booking-evidence-payment-id></dd></div>
+      <div><dt>Visit ID</dt><dd data-booking-evidence-visit-id></dd></div>
+    </dl>
+    <a href="https://business.mindbodyonline.com/" target="_blank" rel="noopener noreferrer">Open Mindbody Business</a>
+  </section>
+  <p data-booking-demo-cleanup-message hidden></p>
+  <button type="button" data-booking-demo-cleanup hidden>Clean up demo Booking</button>
+</section>
+
+<div
+  data-revvi-booking
+  data-business-slug="lastspot-sandbox"
+  data-location-id="df893f87-6ca7-4417-88e9-25067b42ee37"
+  data-offer-id="0b3e181e-a718-4098-aa58-9275763f4419"
+  data-location-name="Clubville"
+  data-location-timezone="Africa/Johannesburg"
+  data-offer-name="Revvi Yoga Clubville"
+  data-availability-endpoint="https://hqjgsqlniuhphvhyeejm.supabase.co/functions/v1/offer-class-availability"
+  data-quote-endpoint="https://hqjgsqlniuhphvhyeejm.supabase.co/functions/v1/booking-quote"
+  data-booking-endpoint="https://hqjgsqlniuhphvhyeejm.supabase.co/functions/v1/create-booking"
+  data-payment-completion-endpoint="https://hqjgsqlniuhphvhyeejm.supabase.co/functions/v1/complete-paid-booking"
+  data-demo-cleanup-endpoint="https://hqjgsqlniuhphvhyeejm.supabase.co/functions/v1/cancel-booking"
+>
+  <span data-booking-selection hidden></span>
+
+  <aside data-booking-brand-panel aria-label="Selected Revvi partner">
+    <img data-booking-brand-image src="https://gcorbach.github.io/RevviMindbodyIntegration/revvi-booking-rail.png" alt="">
+    <div data-booking-brand-shade aria-hidden="true"></div>
+    <div data-booking-brand-content>
+      <span data-booking-brand>revvi</span>
+      <div data-booking-brand-context>
+        <span data-booking-brand-kicker>Revvi partner</span>
+        <span data-booking-business></span>
+        <span data-booking-location></span>
+      </div>
+    </div>
+  </aside>
+
+  <main data-booking-main>
+    <header data-booking-context>
+      <span data-booking-freshness hidden></span>
+    </header>
+
+    <nav data-booking-steps aria-label="Booking steps">
+      <button type="button" data-booking-step-link="1" aria-current="step"><span></span>Class</button>
+      <button type="button" data-booking-step-link="2" disabled><span></span>Time</button>
+      <button type="button" data-booking-step-link="3" disabled><span></span>Confirm</button>
+    </nav>
+
+    <section data-booking-step-panel="1" data-booking-class-step>
+      <h1>Choose your class</h1>
+      <p data-booking-class-context class="revvi-booking-sub">
+        This week at <span data-booking-business-copy></span>.
+        <button type="button" data-booking-change-location>Change studio</button>
+      </p>
+      <div data-booking-class-choices data-booking-occurrences></div>
+      <div class="revvi-booking-actions">
+        <button type="button" data-booking-class-continue class="revvi-booking-cta" disabled>Continue</button>
+        <span data-booking-class-hint>Select a class to continue</span>
+      </div>
+    </section>
+
+    <section data-booking-step-panel="2" data-booking-time-step hidden>
+      <h1>Pick a time that works</h1>
+      <p data-booking-time-context class="revvi-booking-sub"></p>
+      <input type="date" data-booking-date hidden aria-hidden="true" tabindex="-1">
+      <div data-booking-date-options class="revvi-booking-date-options"></div>
+      <section data-booking-calendar hidden aria-label="Available Class dates">
+        <div data-booking-calendar-header>
+          <button type="button" data-booking-calendar-previous aria-label="Previous month">‹</button>
+          <span data-booking-calendar-month></span>
+          <button type="button" data-booking-calendar-next aria-label="Next month">›</button>
+        </div>
+        <div data-booking-calendar-grid></div>
+      </section>
+      <div class="revvi-booking-times-heading">
+        <span>Available times</span>
+        <span data-booking-times-count></span>
+      </div>
+      <div data-booking-time-options class="revvi-booking-time-options"></div>
+      <div class="revvi-booking-actions">
+        <button type="button" data-booking-continue class="revvi-booking-cta" disabled>Continue</button>
+        <span data-booking-time-hint>Pick a time to continue</span>
+        <button type="button" data-booking-back-to-classes class="revvi-booking-text-button">Back to classes</button>
+      </div>
+    </section>
+
+    <section data-booking-quote data-booking-step-panel="3" hidden>
+      <h1>Review and reserve</h1>
+      <div data-booking-review>
+        <div class="revvi-booking-review-row"><span>Class</span><strong data-quote-class></strong></div>
+        <div class="revvi-booking-review-row"><span>When</span><strong data-quote-time></strong></div>
+        <div class="revvi-booking-review-row"><span>Where</span><strong data-quote-location></strong></div>
+        <div class="revvi-booking-review-row"><span>Price</span><strong data-booking-review-price data-quote-price></strong></div>
+      </div>
+      <p class="revvi-booking-note" data-quote-policy></p>
+      <p data-quote-expiry class="revvi-booking-muted"></p>
+      <div class="revvi-booking-actions">
+        <button type="button" data-quote-confirm class="revvi-booking-cta">Reserve my spot</button>
+        <button type="button" data-quote-back class="revvi-booking-text-button">Change time</button>
+      </div>
+    </section>
+
+    <p data-booking-loading hidden></p>
+    <p data-booking-ineligible hidden></p>
+    <p data-booking-error hidden></p>
+    <p data-booking-empty hidden>No upcoming Class times are available.</p>
+    <section data-booking-stale hidden>
+      <p data-booking-stale-message></p>
+      <button type="button" data-booking-refresh>Refresh Class times</button>
+    </section>
+    <section data-booking-submitting hidden>
+      <span class="revvi-booking-pulse" aria-hidden="true"></span>
+      <h1>Confirming your Booking</h1>
+      <p>Please keep this page open while Revvi checks Mindbody.</p>
+    </section>
+    <section data-booking-payment-action hidden>
+      <h1>One secure payment step</h1>
+      <p>Mindbody requires payment before it can confirm this Booking.</p>
+      <a data-booking-payment-link class="revvi-booking-cta" rel="noopener noreferrer">Continue secure payment</a>
+    </section>
+    <p data-booking-reconciliation hidden></p>
+  </main>
+
+  <template data-booking-class-template>
+    <button type="button" data-booking-class-choice data-class-select>
+      <span data-class-copy>
+        <span data-class-name></span>
+        <span data-class-meta></span>
+      </span>
+      <span data-class-summary>
+        <span data-class-price></span>
+        <span data-class-selected hidden>Selected</span>
+      </span>
+    </button>
+  </template>
+
+  <template data-booking-time-template>
+    <button type="button" data-time-select></button>
+  </template>
+</div>
+
+<script src="https://gcorbach.github.io/RevviMindbodyIntegration/revvi-booking.js" defer></script>

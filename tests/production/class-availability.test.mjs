@@ -9,6 +9,7 @@ const context = Object.freeze({
   business: { id: "business-a", slug: "pilot-yoga", displayName: "Pilot Yoga" },
   location: {
     id: "location-a",
+    displayName: "Rosebank",
     providerLocationId: "7",
     timezone: "Africa/Johannesburg",
   },
@@ -113,6 +114,7 @@ test("an approved Offer discovers future client-aware Class occurrences and its 
 
   assert.deepEqual(result, {
     business: { id: "business-a", name: "Pilot Yoga", slug: "pilot-yoga" },
+    location: { id: "location-a", name: "Rosebank", timezone: "Africa/Johannesburg" },
     offer: { id: "offer-a", title: "Revvi Yoga Offer" },
     sessions: [{
       sessionId: "19",
@@ -323,12 +325,12 @@ test("a selected Class family admits only its complete provider taxonomy mapping
     startAt: "2026-08-11T22:00:00.000Z",
     endAt: "2026-08-25T21:59:59.999Z",
   }, { provider, now: () => new Date("2026-08-10T12:00:00.000Z") });
-  assert.deepEqual(catalogueResult.classFamilies, [
+  assert.deepEqual(catalogueResult.classFamilies.map(({ id, name, available }) => ({ id, name, available })), [
     { id: "family-hot", name: "Hot Yoga", available: true },
     { id: "family-restorative", name: "Restorative Yoga", available: true },
   ]);
   assert.deepEqual(
-    catalogueResult.sessions.map((session) => [session.classId, session.classFamilyId]),
+    catalogueResult.classFamilies.map(({ nextOccurrence: session }) => [session.classId, session.classFamilyId]),
     [["19", "family-hot"], ["20", "family-restorative"]],
   );
 });
@@ -586,4 +588,49 @@ test("an overly broad provider result fails closed before per-Class pricing fan-
     (error) => error.code === "CLASS_RESULT_LIMIT_EXCEEDED" && error.status === 409,
   );
   assert.equal(pricingReached, false);
+});
+
+test("family catalogue prices one preview and defers full times until family selection", async () => {
+  const familyContext = { ...context, classFamilies: [{
+    id: "family-yoga", displayName: "Yoga", providerMappings: [{
+      providerLocationId: "7", providerProgramId: "11",
+      providerClassDescriptionId: "13", providerSessionTypeId: "23",
+    }],
+  }] };
+  const [first] = await happyProvider().getClasses();
+  const calls = [];
+  const provider = happyProvider({
+    getClasses: async () => [first, { ...first, Id: 20, StartDateTime: "2026-08-13T18:00:00+02:00", EndDateTime: "2026-08-13T19:00:00+02:00" }],
+    getServices: async (query) => { calls.push(query.classId); return happyProvider().getServices(); },
+  });
+  const input = { context: familyContext, startAt: "2026-08-11T22:00:00.000Z", endAt: "2026-08-25T21:59:59.999Z" };
+  const dependencies = { provider, now: () => new Date("2026-08-10T12:00:00.000Z") };
+  const catalogue = await discoverOfferClassAvailability(input, dependencies);
+  assert.deepEqual(calls, ["19"]);
+  assert.deepEqual(catalogue.sessions, []);
+  assert.equal(catalogue.classFamilies[0].availabilityState, "available");
+  assert.equal(catalogue.classFamilies[0].nextOccurrence.classId, "19");
+  assert.equal(catalogue.classFamilies[0].provisionalPrice.amount, 32);
+  calls.length = 0;
+  const times = await discoverOfferClassAvailability({ ...input, classFamilyId: "family-yoga" }, dependencies);
+  assert.deepEqual(calls.sort(), ["19", "20"]);
+  assert.deepEqual(times.sessions.map(item => item.classId), ["19", "20"]);
+});
+
+test("catalogue keeps cancelled and waitlist-only families disabled without pricing them", async () => {
+  const [first] = await happyProvider().getClasses();
+  for (const [changes, expected] of [[{ IsCanceled: true }, "cancelled"], [{ IsAvailable: false, IsWaitlistAvailable: true }, "unavailable"]]) {
+    const familyContext = { ...context, classFamilies: [{ id: "family-yoga", providerMappings: [{
+      providerLocationId: "7", providerProgramId: "11", providerClassDescriptionId: "13", providerSessionTypeId: "23",
+    }] }] };
+    const result = await discoverOfferClassAvailability({ context: familyContext,
+      startAt: "2026-08-11T22:00:00.000Z", endAt: "2026-08-25T21:59:59.999Z",
+    }, { now: () => new Date("2026-08-10T12:00:00Z"), provider: happyProvider({
+      getClasses: async () => [{ ...first, ...changes }],
+      getServices: async () => assert.fail("Disabled families must not be priced"),
+    }) });
+    assert.equal(result.classFamilies[0].availabilityState, expected);
+    assert.equal(result.classFamilies[0].available, false);
+    assert.deepEqual(result.sessions, []);
+  }
 });

@@ -55,6 +55,8 @@ test("the local Webflow demo shows the live Site -99 catalogue through the widge
     ok: true,
     data: {
       business: { slug: "mindbody-sandbox", name: "LastSpot" },
+      location: { id: SITE_99_DEMO_CONTEXT.locationId, name: SITE_99_DEMO_CONTEXT.locationName,
+        timezone: SITE_99_DEMO_CONTEXT.locationTimezone },
       offer: { id: SITE_99_DEMO_CONTEXT.offerId, name: "Revvi Sandbox Class Access" },
       classFamilies: [{
         id: "00000000-0000-4000-8000-000000000101",
@@ -155,6 +157,8 @@ test("the local Webflow demo exposes and filters live Class families", async () 
   const allResponse = await handler(request("/offer-class-availability", body));
   const all = await allResponse.json();
   assert.equal(allResponse.status, 200);
+  assert.deepEqual(all.data.location, { id: SITE_99_DEMO_CONTEXT.locationId,
+    name: SITE_99_DEMO_CONTEXT.locationName, timezone: SITE_99_DEMO_CONTEXT.locationTimezone });
   assert.deepEqual(all.data.classFamilies, [
     {
       id: familyYoga,

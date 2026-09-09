@@ -324,6 +324,10 @@ export async function createClassBookingQuote(input, dependencies) {
   const quoteFingerprint = await sha256(JSON.stringify(fingerprintInput));
   const stored = await dependencies.catalogue.persistQuote({
     ...fingerprintInput,
+    sandboxPricingOptionDiscovered: input.context.integration.environment === "sandbox"
+      && input.context.integration.providerSiteId === "-99"
+      && input.context.mapping.paidPaymentRoute === "mindbody_sandbox_cash"
+      && Boolean(mappedProductName(input.context, input.classFamilyId)),
     integrationId: input.context.integration.id,
     customerProviderProfileId: profile.id,
     providerLocationId: input.context.location.providerLocationId,

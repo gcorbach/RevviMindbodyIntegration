@@ -90,6 +90,23 @@ test("POST availability authorizes Memberstack context before returning normaliz
   });
 });
 
+test("a booking link without browser dates uses today at the authorized Location", async () => {
+  const { startDate, endDate, ...link } = requestBody;
+  let checked = false;
+  const response = await handleOfferClassAvailability(request(link), dependencies({
+    now: () => new Date("2026-08-10T23:30:00Z"),
+    discoverAvailability: async ({ context, startAt, endAt }) => {
+      assert.equal(context.location.id, link.locationId);
+      assert.equal(startAt, "2026-08-10T22:00:00.000Z");
+      assert.equal(endAt, "2026-08-24T21:59:59.999Z");
+      checked = true;
+      return { sessions: [] };
+    },
+  }));
+  assert.equal(response.status, 200);
+  assert.equal(checked, true);
+});
+
 test("failed eligibility prevents configuration and Mindbody reads", async () => {
   let configurationReached = false;
   let providerReached = false;

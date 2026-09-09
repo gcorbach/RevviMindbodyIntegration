@@ -7,20 +7,12 @@ import {
   MemberstackBrowserAuthenticationError,
 } from "./customer.js";
 import { createBookingWidgetUi } from "./ui.js";
+import { resolveBookingContext, applyAvailabilityLocation } from "./booking-context.js";
+import { signInForBooking } from "./customer.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const STALE_CODES = new Set(["QUOTE_EXPIRED", "QUOTE_CHANGED", "CLASS_UNAVAILABLE", "SLOT_UNAVAILABLE"]);
-
-function configuredContext(root) {
-  const businessSlug = root.dataset.businessSlug?.trim();
-  const locationId = root.dataset.locationId?.trim();
-  const offerId = root.dataset.offerId?.trim();
-  if (!businessSlug || !UUID.test(locationId ?? "") || !UUID.test(offerId ?? "")) {
-    throw new Error("The Revvi Booking context is incomplete.");
-  }
-  return Object.freeze({ businessSlug, locationId, offerId });
-}
 
 function exactAvailability(data, context) {
   if (data?.business?.slug !== context.businessSlug
@@ -63,15 +55,43 @@ function currentDateAtLocation(timezone, now = new Date()) {
 
 export function mountBookingWidget(root, dependencies = {}) {
   const browser = dependencies.browser ?? window;
-  const context = configuredContext(root);
+  const { context, dynamic, clearPending } = resolveBookingContext(root.dataset, browser);
+  if (dynamic) {
+    root.dataset.locationName = "";
+    root.dataset.locationTimezone = "";
+    root.dataset.offerName = "";
+  }
   const dateInput = root.querySelector("[data-booking-date]");
-  if (!dateInput || !root.dataset.locationTimezone) {
+  if (!dateInput || (!dynamic && !root.dataset.locationTimezone)) {
     throw new Error("The Revvi Booking date context is missing.");
   }
-  if (!dateInput.value) {
+  if (dynamic) dateInput.value = "";
+  else if (!dateInput.value) {
     dateInput.value = currentDateAtLocation(root.dataset.locationTimezone);
   }
   const ui = createBookingWidgetUi(root);
+  const signInButton = root.ownerDocument.createElement("button");
+  signInButton.type = "button";
+  signInButton.textContent = "Sign in to book";
+  signInButton.className = "revvi-booking-cta";
+  signInButton.dataset.bookingSignIn = "";
+  signInButton.hidden = true;
+  root.querySelector("[data-booking-ineligible]").after(signInButton);
+  signInButton.addEventListener("click", async () => {
+    signInButton.disabled = true;
+    try {
+      await signInForBooking(browser);
+      if (!await completeReturnedPayment()) await loadAvailability();
+    } catch {
+      ui.ineligible("Sign in was not completed. Please try again.");
+      signInButton.hidden = false;
+    } finally { signInButton.disabled = false; }
+  });
+
+  function requireSignIn(message) {
+    ui.ineligible(message);
+    signInButton.hidden = false;
+  }
   const api = dependencies.api ?? createBookingWidgetApi({
     fetcher: dependencies.fetcher ?? browser.fetch.bind(browser),
     availabilityEndpoint: root.dataset.availabilityEndpoint,
@@ -107,6 +127,7 @@ export function mountBookingWidget(root, dependencies = {}) {
 
   function availabilityContext() {
     const startDate = dateInput.value?.trim();
+    if (dynamic && !startDate) return context;
     if (!ISO_DATE.test(startDate ?? "")) throw new Error("Choose a valid Class date.");
     return { ...context, startDate };
   }
@@ -128,17 +149,21 @@ export function mountBookingWidget(root, dependencies = {}) {
 
   async function loadAvailability() {
     const sequence = ++loadSequence;
+    signInButton.hidden = true;
     ui.loadingEligibility();
     try {
       authorization = await authenticate();
       if (!authorization) {
-        ui.ineligible("Sign in to Revvi to view live Class times for this Offer.");
+        requireSignIn("Sign in to Revvi to view live Class times for this Offer.");
         return;
       }
       ui.loadingAvailability();
       const data = await api.availability(authorization, availabilityContext());
       if (sequence !== loadSequence) return;
       occurrences = exactAvailability(data, context);
+      applyAvailabilityLocation(root, data, context, dynamic);
+      clearPending();
+      if (!dateInput.value) dateInput.value = currentDateAtLocation(root.dataset.locationTimezone);
       families = Array.isArray(data?.classFamilies) ? data.classFamilies : [];
       announce("revvi:availability-loaded", {
         business: data.business,
@@ -158,9 +183,10 @@ export function mountBookingWidget(root, dependencies = {}) {
     } catch (error) {
       if (sequence !== loadSequence) return;
       if (error instanceof BookingWidgetRequestError && [401, 403].includes(error.status)) {
-        ui.ineligible(error.message);
+        if (error.status === 401) requireSignIn(error.message);
+        else ui.ineligible(error.message);
       } else if (error instanceof MemberstackBrowserAuthenticationError) {
-        ui.ineligible("Sign in to Revvi to view live Class times for this Offer.");
+        requireSignIn("Sign in to Revvi to view live Class times for this Offer.");
       } else {
         ui.error("Live Class times could not be loaded safely.", error?.retryable === true);
       }
@@ -403,11 +429,12 @@ export function mountBookingWidget(root, dependencies = {}) {
     }
     if (!UUID.test(returnedBookingId ?? "")) return false;
     requestActive = true;
+    signInButton.hidden = true;
     ui.submitting();
     try {
       authorization = await authenticate();
       if (!authorization) {
-        ui.ineligible("Sign in to Revvi to finish checking this paid Booking.");
+        requireSignIn("Sign in to Revvi to finish checking this paid Booking.");
         return true;
       }
       const data = await api.completePaidBooking(authorization, returnedBookingId);

@@ -6,6 +6,8 @@ The `/book` route follows the approved prototype flow: choose a Class option, ch
 
 ## Webflow installation
 
+For the shared `/book` page reached from partner links, follow [the booking-link publishing checklist](../docs/operations/webflow-booking-links.md). That route requires the complete `businessSlug`, `locationId`, and `offerId` query string and gets Location display details from Supabase. The fixed-context installation below remains supported on other routes.
+
 1. Add the markup from `embed.html` to the existing Offer page.
 2. Bind `data-business-slug`, `data-location-id`, and `data-offer-id` to the corresponding stable CMS fields. Bind the display names and Location timezone to their presentation fields.
 3. The supplied `embed.html` already includes the hosted `revvi-booking.css` and `revvi-booking.js` URLs after Memberstack's supported DOM package has loaded. The repository's GitHub Pages workflow publishes them at:
