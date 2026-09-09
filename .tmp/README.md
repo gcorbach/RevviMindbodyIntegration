@@ -22,7 +22,15 @@ For the sandbox, use `data-plan-id="pln_test-plan-0tv40j5v"` or `data-tier-id="m
 
 Memberstack's DOM member object documents plan connection `status`; it does not always include the Admin API's `active` flag. The working script requires ACTIVE/TRIALING status and rejects explicit `active:false`, while accepting an omitted active flag. Reference: https://docs.memberstack.com/hc/en-us/articles/11234311357211-How-to-Get-a-Member-ID
 
-## Location dropdown
+## Return to the partner after login
+
+On the partner page's login anchor, bind `data-login-redirect` to the partner CMS slug (for example `mindbody-sandbox`) and keep its destination `/login`. The partner script adds `redirect=/partners/mindbody-sandbox` to that link, preserving existing query parameters and its fragment. The serialized URL percent-encodes the slashes; this is equivalent to `/login?redirect=/partners/mindbody-sandbox`.
+
+Add `login-redirect.html` to the **login page's** Before `</body>` custom code. It reads a single valid partner return path and sets the Memberstack login form's `redirect` attribute. The published Memberstack DOM package reads that attribute on successful login. Other login visits retain their existing destination. This snippet does not change signup/onboarding redirects.
+
+Replace the partner template's script with the updated `partner-page.html`, publish both pages, and test from the partner while signed out. Browser checks cover the generated link and login form configuration; a real authenticated round trip still needs verifying after publication.
+
+## Location dropdown bindings
 
 Keep `data-location-city` and `data-location-name` on each `.location-dropdown-name` item.
 

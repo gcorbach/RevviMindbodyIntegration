@@ -194,6 +194,21 @@ $(document).ready(function () {
     }, 500);
   }
 
+  function initLoginRedirectLinks() {
+    $page.find('a[data-login-redirect]').each(function () {
+      const slug = ($(this).attr('data-login-redirect') || '').trim();
+      const href = $(this).attr('href');
+      if (!href || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return;
+      try {
+        const url = new URL(href, window.location.origin);
+        if (url.origin !== window.location.origin || url.username || url.password) return;
+        url.searchParams.set('redirect', `/partners/${slug}`);
+        $(this).attr('href', `${url.pathname}${url.search}${url.hash}`);
+      } catch { /* Leave an invalid CMS link unchanged. */ }
+    });
+  }
+
+  initLoginRedirectLinks();
   initLocationDropdownCityGroups();
   initBookingLinks();
   initMemberstackTierAccess();
