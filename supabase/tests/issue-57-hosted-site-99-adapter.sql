@@ -1,6 +1,6 @@
 begin;
 
-select plan(28);
+select plan(37);
 
 select ok(
   'mindbody_sandbox_cash' = any(enum_range(null::public.class_paid_payment_route)::text[]),
@@ -9,7 +9,7 @@ select ok(
 select has_column('public', 'class_offer_provider_mappings', 'sandbox_demo_write_enabled',
   'the hosted sandbox write lane has an explicit operator flag');
 select has_column('public', 'class_offer_provider_mappings', 'sandbox_demo_customer_id',
-  'the hosted sandbox lane is bound to one designated test Customer');
+  'legacy demo Customer metadata remains compatible during deployment');
 select has_column('public', 'class_offer_provider_mappings', 'sandbox_demo_evidence_digest',
   'the hosted sandbox lane retains only a controlled evidence digest');
 select has_function('public', 'persist_class_sandbox_demo_restoration_baseline',
@@ -169,10 +169,46 @@ select throws_ok($$select public.register_site_99_quote_pricing_option(
  '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000061',
  gen_random_uuid(),'reset-price-1300',repeat('e',64))$$,'P0001',
  'only the enabled Site -99 quote lane may register discovered pricing options',
- 'a different Customer cannot register sandbox Products');
+ 'an unknown Customer cannot register sandbox Products');
 select ok(not has_function_privilege('authenticated',
  'public.register_site_99_quote_pricing_option(uuid,uuid,uuid,text,text)','execute'),
  'browser callers cannot approve pricing options');
+-- A second member is independently resolved under the same eligible Offer.
+insert into public.class_revvi_customers (id, memberstack_customer_id)
+values ('57000000-0000-4000-8000-000000000012', 'issue-57-second-member');
+select lives_ok($$select * from public.persist_class_customer_provider_profile(
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000012',
+ '57000000-0000-4000-8000-000000000031','-99','second-member-client','second-member-unique')$$,
+ 'a second member gets a separate Client at the same partner');
+select lives_ok($$select public.register_site_99_quote_pricing_option(
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000061',
+ '57000000-0000-4000-8000-000000000012','reset-price-1300',repeat('e',64))$$,
+ 'the second member can register a verified quote Product');
+
+insert into public.class_businesses (id, slug, display_name, status)
+values ('57000000-0000-4000-8000-000000000022', 'issue-57-second-partner', 'Second partner', 'active');
+insert into public.class_business_integrations (
+ id, business_id, environment, provider_site_id, status, activated_at
+) values ('57000000-0000-4000-8000-000000000032',
+ '57000000-0000-4000-8000-000000000022', 'sandbox', '-57002', 'active', now());
+select lives_ok($$select * from public.persist_class_customer_provider_profile(
+ '57000000-0000-4000-8000-000000000022','57000000-0000-4000-8000-000000000012',
+ '57000000-0000-4000-8000-000000000032','-57002','second-member-client','other-site-unique')$$,
+ 'the same member may have the same provider Client ID at a different partner Site');
+select is((select count(*) from public.class_customer_provider_profiles
+ where customer_id='57000000-0000-4000-8000-000000000012' and retired_at is null),
+ 2::bigint, 'member profiles remain independent by integration');
+select throws_ok($$select public.register_site_99_quote_pricing_option(
+ '57000000-0000-4000-8000-000000000022','57000000-0000-4000-8000-000000000061',
+ '57000000-0000-4000-8000-000000000012','wrong-tenant-product',repeat('e',64))$$,
+ 'P0001','only the enabled Site -99 quote lane may register discovered pricing options',
+ 'a mapping cannot be mixed with another partner');
+select throws_ok($$select * from public.persist_class_customer_provider_profile(
+ '57000000-0000-4000-8000-000000000022','57000000-0000-4000-8000-000000000012',
+ '57000000-0000-4000-8000-000000000031','-99','second-member-client','second-member-unique')$$,
+ 'P0001','existing Site-scoped Client identity cannot be overwritten',
+ 'a member profile cannot be moved to another partner');
+
 select lives_ok($$insert into public.class_booking_quotes (
  business_id,offer_id,mapping_id,mapping_version,integration_id,location_id,customer_id,
  customer_provider_profile_id,provider_site_id,provider_location_id,provider_class_id,
@@ -186,5 +222,36 @@ select lives_ok($$insert into public.class_booking_quotes (
  where m.id='57000000-0000-4000-8000-000000000061'$$,
  'a quote binds an approved Product different from the legacy mapping Product');
 
+select is((select count(*) from public.class_booking_quotes
+ where business_id='57000000-0000-4000-8000-000000000021'), 2::bigint,
+ 'both members persist separate quotes against the same sandbox Offer');
+-- Also run this file with a non-postgres login (supabase_admin locally)
+-- to exercise the pilot guard, which exempts session_user=postgres.
+set role service_role;
+do $$
+declare q record; result jsonb;
+begin
+  for q in select id, customer_id from public.class_booking_quotes
+    where business_id='57000000-0000-4000-8000-000000000021'
+  loop
+    result := public.claim_class_booking_attempt(q.id, q.customer_id,
+      gen_random_uuid()::text, repeat('e',64), 'purchase_booking', encode(extensions.digest(gen_random_uuid()::text,'sha256'),'hex'),
+      '991','13','11','23','Sandbox Yoga','Instructor',
+      now()+interval '1 day',now()+interval '25 hours');
+    if result->>'shouldWrite' is distinct from 'true' then
+      raise exception 'each eligible member must own an independent provider attempt';
+    end if;
+  end loop;
+end;
+$$;
+reset role;
+select is((select count(*) from public.class_bookings
+ where business_id='57000000-0000-4000-8000-000000000021'), 2::bigint,
+ 'the actual service role admits both members through the sandbox provider-write guard');
+select lives_ok($$select public.retire_missing_site_99_client_profile(
+ (select id from public.class_customer_provider_profiles where provider_client_id='second-member-client'
+   and integration_id='57000000-0000-4000-8000-000000000031'),
+ 'second-member-client','second-member-unique',repeat('d',64))$$,
+ 'verified sandbox reset recovery is also available to the second member');
 select * from finish();
 rollback;

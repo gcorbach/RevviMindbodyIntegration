@@ -2,7 +2,7 @@
 
 Mindbody public-sandbox resets can remove Clients while Supabase retains their immutable IDs. `CLIENT_PROFILE_STALE` during quote is the expected fail-closed result. Do not overwrite a provider ID, delete Booking history, or infer cancellation from an empty Client lookup.
 
-For the one explicitly enabled sandbox demo Customer:
+For any Customer with a profile at an explicitly enabled Site -99 sandbox Offer:
 
 1. Confirm the request's Customer, integration, and stored Client ID/Unique ID in Supabase.
 2. Acquire the shared Site -99 staff-operation lease and read the exact Client ID using temporary staff authentication. Require a successful, complete response showing absence; an error or a mismatched identity is not absence. Revoke the staff token and release the lease. Retain a SHA-256 digest of the scoped evidence.
@@ -16,7 +16,7 @@ Historical bookings continue to reference the original profile. Unknown outcomes
 
 A sandbox reset can also leave the old numeric Client ID assigned to a different test identity. An ID-only lookup is therefore insufficient evidence that the original Client survived. For this case, an operator must confirm the Customer's unchanged original email and full name, verify that the exact stored Client/Unique ID now has different identity fields, and obtain complete successful email-search and duplicate-check responses showing no Client matching the original identity. Any remaining ambiguity, incomplete response, or changed Customer identity blocks this procedure.
 
-Once those facts are verified under the shared staff-operation lease, the same retirement RPC may retire the **obsolete Revvi profile binding** with the combined evidence digest. Its sandbox, designated-Customer, exact-ID, and history-preservation guards still apply. It does not modify, delete, or claim the current provider Client occupying that ID. Normal authenticated quote processing must resolve/create a fresh Client; browser requests never perform automatic retirement. This extends the original-Client absence evidence above to a verified reused ID, not to ordinary production identity conflicts.
+Once those facts are verified under the shared staff-operation lease, the same retirement RPC may retire the **obsolete Revvi profile binding** with the combined evidence digest. Its sandbox integration scope, exact-ID, and history-preservation guards still apply. It does not modify, delete, or claim the current provider Client occupying that ID. Normal authenticated quote processing must resolve/create a fresh Client; browser requests never perform automatic retirement. This extends the original-Client absence evidence above to a verified reused ID, not to ordinary production identity conflicts.
 
 The local demo creates a fresh synthetic Client per committed run and does not persist a Customer-to-Client mapping, so it has no corresponding retirement operation. Its provider lookup, booking, and cleanup behavior is unchanged.
 

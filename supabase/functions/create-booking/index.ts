@@ -1,3 +1,4 @@
+import { isEnabledSite99SandboxContext } from "../_shared/site-99-sandbox-context.js";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { BookingOrchestrationError, createClassBooking } from "../_shared/class-booking.js";
 import { createClassBookingCatalogue } from "../_shared/class-booking-catalogue.js";
@@ -100,19 +101,13 @@ function decorateHostedSandboxBooking({
       mapping?: {
         paidPaymentRoute?: string | null;
         sandboxDemoWriteEnabled?: boolean;
-        sandboxDemoCustomerId?: string | null;
       };
     };
   };
 }) {
   const context = resolved.context;
   const sandboxDemo = booking.status === "confirmed"
-    && context.integration?.environment === "sandbox"
-    && context.integration.providerSiteId === "-99"
-    && context.location?.providerLocationId === "1"
-    && context.mapping?.paidPaymentRoute === "mindbody_sandbox_cash"
-    && context.mapping.sandboxDemoWriteEnabled === true
-    && context.mapping.sandboxDemoCustomerId === authorization.customer.id;
+    && isEnabledSite99SandboxContext(context);
   if (!sandboxDemo) return booking;
   const references = booking.providerReferences ?? {};
   const clientName = [
@@ -174,7 +169,6 @@ Deno.serve(async (request) => {
         paidPaymentMethodId?: number | null;
         paidCheckoutLocationId?: number | null;
         sandboxDemoWriteEnabled?: boolean;
-        sandboxDemoCustomerId?: string | null;
       };
     },
     operation?: { bookingId?: string },
@@ -276,7 +270,6 @@ Deno.serve(async (request) => {
           paidPaymentMethodId?: number | null;
           paidCheckoutLocationId?: number | null;
           sandboxDemoWriteEnabled?: boolean;
-          sandboxDemoCustomerId?: string | null;
         };
       },
       operation: { requestId: string; customerId: string; bookingId: string; attemptId: string },

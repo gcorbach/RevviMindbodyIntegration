@@ -153,7 +153,7 @@ test("hosted Site -99 supplies only its proven fictitious Client defaults", asyn
   }]);
 });
 
-test("hosted Site -99 provider rejects production, another Site, or another Customer before authentication", () => {
+test("hosted Site -99 provider rejects production, another Site, or a disabled mapping before authentication", () => {
   const base = {
     withStaffOperationLease,
     context: exactContext,
@@ -167,7 +167,7 @@ test("hosted Site -99 provider rejects production, another Site, or another Cust
   for (const candidate of [
     { ...base, context: { ...exactContext, integration: { environment: "production", providerSiteId: "-99" } } },
     { ...base, context: { ...exactContext, integration: { environment: "sandbox", providerSiteId: "123" } } },
-    { ...base, customerId: "customer-attacker" },
+    { ...base, context: { ...exactContext, mapping: { ...exactContext.mapping, sandboxDemoWriteEnabled: false } } },
   ]) {
     assert.throws(
       () => createSite99SandboxProvider(candidate),
@@ -205,4 +205,42 @@ test("runtime configuration predicates return booleans rather than credential va
   assert.equal(typeof mindbodyStaffRuntimeConfigured({
     staffTokens: {}, sandboxUsername: "staff", sandboxPassword: "secret-value",
   }), "boolean");
+});
+
+test("two eligible Customers can use the same enabled partner sandbox mapping", async () => {
+  const calls = [];
+  for (const customerId of ["customer-demo", "customer-second"]) {
+    const provider = createSite99SandboxProvider({
+      withStaffOperationLease, context: exactContext, customerId,
+      apiKey: "api-key", username: "staff", password: "password",
+      fetchImpl: async (url) => String(url).endsWith("/usertoken/issue")
+        ? json({ AccessToken: "temporary-token" }) : json({}),
+      createProvider: () => ({ findClient: async (input) => { calls.push(input); return input; } }),
+    });
+    assert.deepEqual(await provider.findClient({ customerId }), { customerId });
+  }
+  assert.deepEqual(calls, [{ customerId: "customer-demo" }, { customerId: "customer-second" }]);
+});
+
+test("runtime selects each partner's Site and credentials without fallback to another integration", async () => {
+  const { createMindbodyRuntimeProvider } = await import("../../supabase/functions/_shared/mindbody-runtime-provider.js");
+  const staffTokens = { "integration-a": "partner-a-private-token", "integration-b": "partner-b-private-token" };
+  const calls = [];
+  const options = {
+    customerId: "same-member", apiKey: "api-key", staffTokens,
+    createProvider: (input) => { calls.push(input); return {}; },
+  };
+  for (const suffix of ["a", "b"]) {
+    createMindbodyRuntimeProvider({ ...options, context: {
+      integration: { id: `integration-${suffix}`, providerSiteId: `site-${suffix}` },
+    } });
+  }
+  assert.deepEqual(calls.map(({ siteId, userToken }) => ({ siteId, userToken })), [
+    { siteId: "site-a", userToken: staffTokens["integration-a"] },
+    { siteId: "site-b", userToken: staffTokens["integration-b"] },
+  ]);
+  assert.throws(() => createMindbodyRuntimeProvider({ ...options,
+    context: { integration: { id: "integration-c", providerSiteId: "site-c" } },
+  }), /No staff token/);
+  assert.equal(calls.length, 2);
 });

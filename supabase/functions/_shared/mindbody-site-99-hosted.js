@@ -1,3 +1,4 @@
+import { isEnabledSite99SandboxContext } from "./site-99-sandbox-context.js";
 import { requiredMindbodyText } from "./mindbody-http.js";
 
 const SITE_ID = "-99";
@@ -22,16 +23,6 @@ export class Site99SandboxConfigurationError extends Error {
   }
 }
 
-function exactSandboxContext(context, customerId) {
-  return context?.integration?.environment === "sandbox"
-    && context.integration.providerSiteId === SITE_ID
-    && context?.location?.providerLocationId === "1"
-    && context?.mapping?.paidPaymentRoute === "mindbody_sandbox_cash"
-    && context.mapping.sandboxDemoWriteEnabled === true
-    && typeof context.mapping.sandboxDemoCustomerId === "string"
-    && context.mapping.sandboxDemoCustomerId === customerId;
-}
-
 async function json(response, code) {
   if (!response.ok) {
     throw new Site99SandboxConfigurationError(code, "Mindbody sandbox staff authentication failed.");
@@ -45,11 +36,11 @@ async function json(response, code) {
 
 export function createSite99SandboxProvider(options) {
   const context = options?.context;
-  const customerId = requiredMindbodyText(options?.customerId, "customerId");
-  if (!exactSandboxContext(context, customerId)) {
+  requiredMindbodyText(options?.customerId, "customerId");
+  if (!isEnabledSite99SandboxContext(context)) {
     throw new Site99SandboxConfigurationError(
       "SITE_99_SANDBOX_CONTEXT_DENIED",
-      "The hosted sandbox adapter is not enabled for this exact Customer and Offer.",
+      "The hosted sandbox adapter is not enabled for this Offer.",
     );
   }
   const apiKey = requiredMindbodyText(options?.apiKey, "apiKey");

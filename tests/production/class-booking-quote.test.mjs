@@ -340,3 +340,38 @@ test("a missing stored Client stays blocked until an operator retires its sandbo
   assert.equal(creates, 0);
   assert.equal(deps.saved.length, 0);
 });
+
+test("two members receive separate quotes through one hosted sandbox partner", async () => {
+  const { createMindbodyRuntimeProvider } = await import("../../supabase/functions/_shared/mindbody-runtime-provider.js");
+  const saved = [];
+  for (const suffix of ["a", "b"]) {
+    const deps = dependencies();
+    const selected = context();
+    selected.location.providerLocationId = "1";
+    selected.inventoryAllowlist.location = ["1"];
+    Object.assign(selected.mapping, {
+      paidPaymentRoute: "mindbody_sandbox_cash", paidCheckoutLocationId: 1,
+      sandboxDemoWriteEnabled: true, sandboxDemoCustomerId: "customer-a",
+    });
+    const customer = { id: `customer-${suffix}` };
+    const memberIdentity = { ...identity, email: `member-${suffix}@example.test` };
+    deps.provider.searchClients = async () => [{ id: `client-${suffix}`, uniqueId: suffix, ...memberIdentity }];
+    deps.provider.getClientDuplicates = async () => [{ id: `client-${suffix}`, uniqueId: suffix }];
+    const getClass = deps.provider.getClassForClient;
+    deps.provider.getClassForClient = async () => ({ ...await getClass(), locationId: "1" });
+    const provider = deps.provider;
+    deps.provider = createMindbodyRuntimeProvider({
+      context: selected, customerId: customer.id, apiKey: "api-key",
+      sandboxUsername: "staff", sandboxPassword: "password", staffTokens: {},
+      withSite99StaffOperationLease: (operation) => operation(),
+      fetchImpl: async (url) => new Response(JSON.stringify(String(url).endsWith("/usertoken/issue")
+        ? { AccessToken: "temporary-token" } : {})),
+      createProvider: () => provider,
+    });
+    await createClassBookingQuote({ customer, identity: memberIdentity, classId: "771", context: selected }, deps);
+    saved.push(deps.saved[0]);
+  }
+  assert.deepEqual(saved.map((quote) => quote.customerId), ["customer-a", "customer-b"]);
+  assert.deepEqual(saved.map((quote) => quote.providerClientId), ["client-a", "client-b"]);
+  assert.notEqual(saved[0].quoteFingerprint, saved[1].quoteFingerprint);
+});

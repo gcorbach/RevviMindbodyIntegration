@@ -66,7 +66,7 @@ export function createClassBookingQuoteCatalogue(supabase) {
       if (row.fulfilment_mode === "purchase_pricing_option") {
         const { data: paidMapping, error: paidMappingError } = await supabase
           .from("class_offer_provider_mappings")
-          .select("paid_pricing_option_enabled,paid_payment_route,paid_payment_method_id,paid_checkout_location_id,sandbox_demo_write_enabled,sandbox_demo_customer_id")
+          .select("paid_pricing_option_enabled,paid_payment_route,paid_payment_method_id,paid_checkout_location_id,sandbox_demo_write_enabled")
           .eq("id", row.mapping_id)
           .eq("mapping_version", row.mapping_version)
           .maybeSingle();
@@ -112,7 +112,6 @@ export function createClassBookingQuoteCatalogue(supabase) {
             ? null
             : Number(paidRoute.paid_checkout_location_id),
           sandboxDemoWriteEnabled: paidRoute?.sandbox_demo_write_enabled === true,
-          sandboxDemoCustomerId: paidRoute?.sandbox_demo_customer_id ?? null,
         },
         customerProviderProfile: row.provider_client_id ? {
           id: row.customer_provider_profile_id,

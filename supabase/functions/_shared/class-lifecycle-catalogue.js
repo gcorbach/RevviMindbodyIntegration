@@ -205,7 +205,7 @@ export function createClassLifecycleCatalogue(supabase, customerCatalogue) {
         .eq("id", quoteRow.location_id)
         .maybeSingle();
       const { data: mapping, error: mappingError } = await supabase.from("class_offer_provider_mappings")
-        .select("paid_payment_route,sandbox_demo_write_enabled,sandbox_demo_customer_id")
+        .select("paid_payment_route,sandbox_demo_write_enabled")
         .eq("id", quoteRow.mapping_id)
         .maybeSingle();
       if (integrationError || locationError || mappingError || !integration || !location || !mapping) {
@@ -222,7 +222,6 @@ export function createClassLifecycleCatalogue(supabase, customerCatalogue) {
         mapping: {
           paidPaymentRoute: mapping.paid_payment_route,
           sandboxDemoWriteEnabled: mapping.sandbox_demo_write_enabled === true,
-          sandboxDemoCustomerId: mapping.sandbox_demo_customer_id,
         },
       };
     },
