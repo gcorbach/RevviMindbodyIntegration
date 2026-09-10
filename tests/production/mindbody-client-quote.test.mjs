@@ -224,3 +224,37 @@ test("every client and quote operation records only bounded provider diagnostics
     statusCode: 200, durationMs: 5, success: true, errorCode: null,
   }]);
 });
+
+test("exact Client absence requires complete successful ID-filtered pagination", async () => {
+  for (const [envelope, allowed] of [
+    [{ Clients: [], PaginationResponse: { TotalResults: 0, RequestedOffset: 0 } }, true],
+    [{ Clients: [] }, false],
+    [{ Clients: [], PaginationResponse: { TotalResults: 1, RequestedOffset: 0 } }, false],
+    [{ Clients: [], PaginationResponse: { TotalResults: 0, RequestedOffset: 100 } }, false],
+    [{ Clients: [{ Id: "other" }], PaginationResponse: { TotalResults: 1, RequestedOffset: 0 } }, false],
+  ]) {
+    const provider = createMindbodyClientQuoteClient({
+      apiKey: "api-key", siteId: "-99", userToken: "staff-token",
+      fetchImpl: async (url) => {
+        assert.equal(new URL(url).searchParams.get("ClientIds"), "stored");
+        assert.equal(new URL(url).searchParams.has("SearchText"), false);
+        return response(envelope);
+      },
+    });
+    if (allowed) assert.equal(await provider.getClientById({ clientId: "stored" }), null);
+    else await assert.rejects(provider.getClientById({ clientId: "stored" }), /complete identity evidence/);
+  }
+});
+
+test("exact Client lookup preserves identity evidence for a reused ID and rejects transport failure", async () => {
+  const facts = { Id: "stored", UniqueId: 42, Email: "other@example.test", FirstName: "Other", LastName: "Person" };
+  const provider = createMindbodyClientQuoteClient({
+    apiKey: "api-key", siteId: "-99", userToken: "staff-token",
+    fetchImpl: async () => response({ Clients: [facts], PaginationResponse: { TotalResults: 1, RequestedOffset: 0 } }),
+  });
+  assert.equal((await provider.getClientById({ clientId: "stored" })).email, "other@example.test");
+  const failed = createMindbodyClientQuoteClient({ apiKey: "api-key", siteId: "-99", userToken: "staff-token",
+    fetchImpl: async () => response({}, { status: 503 }),
+  });
+  await assert.rejects(failed.getClientById({ clientId: "stored" }));
+});

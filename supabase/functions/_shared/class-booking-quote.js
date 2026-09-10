@@ -1,3 +1,4 @@
+import { isEnabledSite99SandboxContext } from "./site-99-sandbox-context.js";
 import { selectMappedService } from "./class-availability.js";
 
 export class BookingQuoteError extends Error {
@@ -70,7 +71,43 @@ async function resolveProviderProfile(input, dependencies) {
     throw new BookingQuoteError("CLIENT_AMBIGUOUS", "More than one Mindbody Client may match this Revvi Customer. Support must resolve it before booking.");
   }
   let client = [...candidates.values()][0] ?? null;
-  const storedProfile = input.context.customerProviderProfile;
+  if (client && !exactSearch.some((match) => match.id === client.id)) {
+    await dependencies.catalogue.recordAmbiguity({
+      businessId: input.context.business.id, integrationId: input.context.integration.id,
+      customerId: input.customer.id, candidateCount: 1, reasonCode: "CLIENT_IDENTITY_UNVERIFIED",
+    });
+    throw new BookingQuoteError("CLIENT_AMBIGUOUS", "Mindbody returned a possible Client without an exact identity match. Support must verify it.");
+  }
+  let storedProfile = input.context.customerProviderProfile;
+  const identityDigest = await sha256(JSON.stringify({
+    email: identity.email, firstName: identity.firstName.toLowerCase(), lastName: identity.lastName.toLowerCase(),
+  }));
+  if (storedProfile && !client && isEnabledSite99SandboxContext(input.context)
+    && input.context.integration.allowClientCreation === true
+    && typeof dependencies.provider.getClientById === "function"
+    && typeof dependencies.catalogue.retireSandboxProfile === "function") {
+    const observed = await dependencies.provider.getClientById({ clientId: storedProfile.providerClientId });
+    const matchesCurrentIdentity = observed && exactClientMatches([observed], identity).length === 1;
+    if (observed === null || (observed && !matchesCurrentIdentity)) {
+      const reason = observed === null ? "missing" : "reused";
+      const evidenceDigest = await sha256(JSON.stringify({
+        profileId: storedProfile.id, clientId: storedProfile.providerClientId,
+        uniqueId: storedProfile.providerClientUniqueId, reason, identityDigest,
+        observed: observed ? normalizedClient(observed) : null,
+        observedAt: (dependencies.now?.() ?? new Date()).toISOString(),
+      }));
+      // The database additionally requires the original identity digest for reused IDs.
+      // Retirement must finish before creating any replacement; concurrent losers stop here.
+      await dependencies.catalogue.retireSandboxProfile({
+        profileId: storedProfile.id, businessId: input.context.business.id,
+        customerId: input.customer.id, integrationId: input.context.integration.id,
+        providerClientId: storedProfile.providerClientId,
+        providerClientUniqueId: storedProfile.providerClientUniqueId,
+        reason, identityDigest, evidenceDigest,
+      });
+      storedProfile = null;
+    }
+  }
   if (storedProfile && (!client || client.id !== storedProfile.providerClientId)) {
     await dependencies.catalogue.recordAmbiguity({
       businessId: input.context.business.id,
@@ -104,6 +141,7 @@ async function resolveProviderProfile(input, dependencies) {
     providerSiteId: input.context.integration.providerSiteId,
     providerClientId: client.id,
     providerClientUniqueId: client.uniqueId,
+    identityDigest,
   });
 }
 

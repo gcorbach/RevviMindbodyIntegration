@@ -19,6 +19,7 @@ export class MindbodyClientQuoteError extends Error {
 const CLIENT_QUOTE_ENDPOINTS = Object.freeze({
   getSiteCurrency: "site/sites",
   searchClients: "client/clients",
+  getClientById: "client/clients",
   getClientDuplicates: "client/clientduplicates",
   getRequiredClientFields: "client/requiredclientfields",
   addClient: "client/addclient",
@@ -165,6 +166,26 @@ export function createMindbodyClientQuoteClient(options) {
         });
       }
       return currency;
+    },
+    // An empty search is not proof of deletion. Require complete exact-ID evidence.
+    getClientById: async ({ clientId }) => {
+      const selected = requiredMindbodyText(clientId, "clientId");
+      const envelope = await request("client/clients", {
+        query: { ClientIds: [selected], Limit: 100, Offset: 0 },
+      });
+      const clients = envelope?.Clients;
+      const pagination = envelope?.PaginationResponse;
+      if (!Array.isArray(clients) || !pagination
+        || pagination.RequestedOffset !== 0
+        || pagination.TotalResults !== clients.length
+        || clients.length > 1
+        || clients.some((client) => String(client?.Id) !== selected
+          || !client?.UniqueId || !client?.Email || !client?.FirstName || !client?.LastName)) {
+        throw new MindbodyClientQuoteError("Exact Client lookup could not establish complete identity evidence.", {
+          endpointName: "client/clients", statusCode: 200, errorCode: "CLIENT_IDENTITY_EVIDENCE_INCOMPLETE",
+        });
+      }
+      return clients.length === 0 ? null : clientFact(clients[0]);
     },
     searchClients: async ({ email }) => (await getAll(
       "client/clients",

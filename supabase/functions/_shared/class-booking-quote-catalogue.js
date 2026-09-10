@@ -124,13 +124,14 @@ export function createClassBookingQuoteCatalogue(supabase) {
     },
 
     async persistProviderProfile(profile) {
-      const { data, error } = await supabase.rpc("persist_class_customer_provider_profile", {
+      const { data, error } = await supabase.rpc("persist_class_customer_provider_profile_with_identity", {
         candidate_business_id: profile.businessId,
         candidate_customer_id: profile.customerId,
         candidate_integration_id: profile.integrationId,
         candidate_provider_site_id: profile.providerSiteId,
         candidate_provider_client_id: profile.providerClientId,
         candidate_provider_client_unique_id: profile.providerClientUniqueId,
+        candidate_identity_digest: profile.identityDigest,
       });
       if (error || !Array.isArray(data) || data.length !== 1) throw unavailable("The Mindbody Client identity could not be persisted safely.");
       return {
@@ -138,6 +139,22 @@ export function createClassBookingQuoteCatalogue(supabase) {
         providerClientId: data[0].provider_client_id,
         providerClientUniqueId: data[0].provider_client_unique_id,
       };
+    },
+
+    async retireSandboxProfile(facts) {
+      const { error } = await supabase.rpc("recover_site_99_client_profile", {
+        candidate_profile_id: facts.profileId,
+        candidate_business_id: facts.businessId,
+        candidate_customer_id: facts.customerId,
+        candidate_integration_id: facts.integrationId,
+        candidate_provider_client_id: facts.providerClientId,
+        candidate_provider_client_unique_id: facts.providerClientUniqueId,
+        candidate_reason: facts.reason,
+        candidate_identity_digest: facts.identityDigest,
+        candidate_evidence_digest: facts.evidenceDigest,
+      });
+      if (error) throw new BookingQuoteError("CLIENT_PROFILE_STALE",
+        "Sandbox Client recovery could not be verified. Please contact Revvi support.", 409);
     },
 
     async recordAmbiguity(facts) {

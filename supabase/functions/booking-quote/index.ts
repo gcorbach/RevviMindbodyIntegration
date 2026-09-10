@@ -1,3 +1,4 @@
+import { isEnabledSite99SandboxContext } from "../_shared/site-99-sandbox-context.js";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { createClassBookingQuote } from "../_shared/class-booking-quote.js";
 import { createClassBookingQuoteCatalogue } from "../_shared/class-booking-quote-catalogue.js";
@@ -92,7 +93,7 @@ Deno.serve(async (request) => {
     }),
   };
   const configuredStaffTokens = staffTokens()!;
-  const withSite99StaffOperationLease = createSite99StaffOperationLease(supabase);
+  const withSite99StaffOperationLease = createSite99StaffOperationLease(supabase, { waitMs: 60_000 });
   return handleClassBookingQuote(request, {
     allowedOrigins: new Set(
       (Deno.env.get("ALLOWED_ORIGINS") ?? "")
@@ -127,6 +128,13 @@ Deno.serve(async (request) => {
         manifest: Deno.env.get("MINDBODY_SANDBOX_CLASS_FAMILIES_JSON"),
       });
     },
+    withQuoteLease: async (scope: { offerId: string; customerId: string }, operation: (options?: { staffLeaseHeld: boolean }) => Promise<unknown>) => {
+      const context = await quoteCatalogue.resolveQuoteContext(scope);
+      if (!isEnabledSite99SandboxContext(context)) return operation();
+      // The same cross-request lease used by every sandbox staff operation covers
+      // search, reset recovery, Client creation, and persistence as one sequence.
+      return withSite99StaffOperationLease(() => operation({ staffLeaseHeld: true }));
+    },
     createProvider: (
       context: {
         business: { id: string };
@@ -135,7 +143,7 @@ Deno.serve(async (request) => {
         mapping: { id: string };
         integration: { id: string; providerSiteId: string };
       },
-      operation: { requestId: string; customerId: string },
+      operation: { requestId: string; customerId: string; staffLeaseHeld?: boolean },
     ) => {
       const provider = createMindbodyRuntimeProvider({
         context,
@@ -144,7 +152,9 @@ Deno.serve(async (request) => {
         staffTokens: configuredStaffTokens,
         sandboxUsername: Deno.env.get("MINDBODY_SANDBOX_USERNAME"),
         sandboxPassword: Deno.env.get("MINDBODY_SANDBOX_PASSWORD"),
-        withSite99StaffOperationLease,
+        withSite99StaffOperationLease: operation.staffLeaseHeld
+          ? (work: () => Promise<unknown>) => work()
+          : withSite99StaffOperationLease,
         baseUrl: Deno.env.get("MINDBODY_BASE_URL") ?? "https://api.mindbodyonline.com",
         requestTimeoutMs: Number(Deno.env.get("MINDBODY_REQUEST_TIMEOUT_MS") ?? 10_000),
         createProvider: createMindbodyClientQuoteClient,
