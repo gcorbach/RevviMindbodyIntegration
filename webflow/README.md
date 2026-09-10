@@ -35,3 +35,14 @@ The browser sends exactly one Memberstack bearer JWT. It never sends Memberstack
 The repository also has a loopback-only preview that renders this exact widget bundle against live Mindbody public-sandbox data. Its approved manifest currently produces ten step-one Class cards and the demo shell visibly lists the exact Class IDs, times, instructor, and availability returned by Mindbody; no manual-demo schedule fixture is embedded. It uses a clearly labelled local identity, creates one unique synthetic Mindbody Client, performs a fictitious Cash purchase plus Class Booking, and verifies the provider evidence. The confirmation renders outside the booking widget and shows searchable Client, Class, Sale, Payment, and Visit IDs. The Visit remains active for up to ten minutes so it can be inspected in Mindbody Business. The external confirmation offers exact manual cleanup; the server also cleans on timeout and before shutdown.
 
 Run `pnpm demo:webflow:site99` after loading the sandbox credentials and exact write confirmation described in `docs/operations/webflow-site-99-demo.md`. Run `pnpm sandbox:webflow:e2e` for the unattended production-control journey through Chrome; it books, verifies, and cancels the exact sandbox Visit before exiting. These paths prove the browser-to-provider demonstration seam; they deliberately do not claim Memberstack authentication, hosted Webflow deployment, or production payment.
+
+
+### Compatibility with the current legacy Pages source
+
+The repository currently also publishes `main:/` through GitHub's generated
+Pages workflow. The build command writes the same five assets to `webflow/dist`
+and the repository root, with `.nojekyll` marking the root as a static site.
+Commit both generated locations when widget sources change. Do not edit root
+assets directly. This keeps embedded URLs working regardless of which Pages
+publisher finishes last, including merges that only change backend code or docs.
+No workflow cancellation or repository-admin change is needed for this setup.
