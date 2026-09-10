@@ -31,3 +31,17 @@ await Promise.all([
     new URL("../webflow/dist/index.html", import.meta.url),
   ),
 ]);
+
+// This repository's legacy Pages source is main:/, while the Actions deployment
+// publishes webflow/dist. Keep both roots identical so either publisher serves
+// the stable URLs embedded in Webflow. These root files are generated artifacts.
+await Promise.all([
+  "index.html",
+  "revvi-booking.js",
+  "revvi-booking.css",
+  "revvi-booking-rail.png",
+  "CormorantGaramond-Regular.ttf",
+].map((name) => cp(
+  new URL(`../webflow/dist/${name}`, import.meta.url),
+  new URL(`../${name}`, import.meta.url),
+)));
