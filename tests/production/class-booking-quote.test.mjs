@@ -326,7 +326,7 @@ test("the pre-write seam revalidates the quote's exact entitlement", async () =>
   );
 });
 
-test("a missing stored Client stays blocked until an operator retires its sandbox profile", async () => {
+test("a missing stored Client outside enabled sandbox recovery stays blocked", async () => {
   const deps = dependencies();
   const stored = context();
   stored.integration.allowClientCreation = true;
@@ -374,4 +374,63 @@ test("two members receive separate quotes through one hosted sandbox partner", a
   assert.deepEqual(saved.map((quote) => quote.customerId), ["customer-a", "customer-b"]);
   assert.deepEqual(saved.map((quote) => quote.providerClientId), ["client-a", "client-b"]);
   assert.notEqual(saved[0].quoteFingerprint, saved[1].quoteFingerprint);
+});
+
+test("an enabled sandbox quote recovers a verified deleted Client without operator intervention", async () => {
+ for (const reason of ["missing", "reused"]) {
+  const deps = dependencies();
+  const selected = context();
+  selected.location.providerLocationId = "1";
+  selected.inventoryAllowlist.location = ["1"];
+  selected.integration.allowClientCreation = true;
+  Object.assign(selected.mapping, { paidPaymentRoute: "mindbody_sandbox_cash", sandboxDemoWriteEnabled: true });
+  selected.customerProviderProfile = { id: "old-profile", providerClientId: "deleted", providerClientUniqueId: "old-unique" };
+  deps.provider.searchClients = async () => [];
+  deps.provider.getClientDuplicates = async () => [];
+  deps.provider.getClientById = async () => reason === "missing" ? null : { id: "deleted", uniqueId: "other-unique", email: "other@example.test", firstName: "Other", lastName: "Person" };
+  deps.provider.getRequiredClientFields = async () => [];
+  const events = [];
+  deps.catalogue.retireSandboxProfile = async (facts) => { events.push("retire"); assert.equal(facts.profileId, "old-profile"); assert.equal(facts.reason, reason); assert.match(facts.identityDigest, /^[a-f0-9]{64}$/); assert.match(facts.evidenceDigest, /^[a-f0-9]{64}$/); };
+  deps.provider.addClient = async () => { events.push("create"); return { id: "fresh", uniqueId: "fresh-unique", ...identity }; };
+  const getClass = deps.provider.getClassForClient;
+  deps.provider.getClassForClient = async () => ({ ...await getClass(), locationId: "1" });
+  await createClassBookingQuote({ customer: { id: "customer-a" }, identity, classId: "771", context: selected }, deps);
+  assert.deepEqual(events, ["retire", "create"]);
+  assert.equal(deps.saved[0].providerClientId, "fresh");
+ }
+});
+
+test("sandbox recovery refuses live identities, ambiguous searches, and failed retirement before creation", async () => {
+  for (const scenario of ["live", "ambiguous", "retirement-denied", "lookup-failed", "production", "disabled"]) {
+    const deps = dependencies();
+    const selected = context();
+    selected.location.providerLocationId = "1";
+    selected.integration.allowClientCreation = true;
+    Object.assign(selected.mapping, { paidPaymentRoute: "mindbody_sandbox_cash", sandboxDemoWriteEnabled: scenario !== "disabled" });
+    if (scenario === "production") selected.integration.environment = "production";
+    selected.customerProviderProfile = { id: "old-profile", providerClientId: "stored", providerClientUniqueId: "42" };
+    deps.provider.searchClients = async () => [];
+    deps.provider.getClientDuplicates = async () => scenario === "ambiguous" ? [{ id: "one" }, { id: "two" }] : [];
+    let lookups = 0, retires = 0, creates = 0;
+    deps.provider.getClientById = async () => {
+      lookups++;
+      if (scenario === "lookup-failed") throw new Error("provider unavailable");
+      return scenario === "live" ? { id: "stored", uniqueId: "42", ...identity } : null;
+    };
+    deps.catalogue.retireSandboxProfile = async () => { retires++; throw new Error("retirement denied"); };
+    deps.provider.addClient = async () => { creates++; throw new Error("unexpected create"); };
+    await assert.rejects(createClassBookingQuote({ customer: { id: "customer-a" }, identity, classId: "771", context: selected }, deps));
+    assert.equal(creates, 0, scenario);
+    assert.equal(retires, scenario === "retirement-denied" ? 1 : 0, scenario);
+    if (["production", "disabled", "ambiguous"].includes(scenario)) assert.equal(lookups, 0, scenario);
+  }
+});
+
+test("a duplicate-only candidate cannot seed an unverified recovery identity", async () => {
+  const deps = dependencies();
+  deps.provider.searchClients = async () => [];
+  let persisted = false;
+  deps.catalogue.persistProviderProfile = async () => { persisted = true; };
+  await assert.rejects(createClassBookingQuote({ customer: { id: "customer-a" }, identity, classId: "771", context: context() }, deps), error => error.code === "CLIENT_AMBIGUOUS");
+  assert.equal(persisted, false);
 });

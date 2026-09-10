@@ -91,3 +91,38 @@ test("an unapproved origin or missing bearer token cannot resolve the Offer loca
   assert.equal((await handleClassBookingQuote(loggedOut, deps)).status, 401);
   assert.equal(locatorReached, false);
 });
+
+test("concurrent sandbox quotes refresh the Client binding after acquiring the shared staff lease", async () => {
+  const { createSite99StaffOperationLease } = await import("../../supabase/functions/_shared/site-99-staff-operation-lease.js");
+  let holder = null;
+  const lease = createSite99StaffOperationLease({ rpc: async (name, args) => {
+    if (name === "claim_site_99_staff_operation_lease") {
+      if (holder) return { data: false };
+      holder = args.candidate_holder_token;
+      return { data: true };
+    }
+    assert.equal(args.candidate_holder_token, holder);
+    holder = null;
+    return { data: true };
+  } }, { pollMs: 1 });
+  let profile = "old", replacements = 0;
+  const observed = [];
+  const deps = dependencies();
+  deps.withQuoteLease = (_scope, operation) => lease(() => operation({ staffLeaseHeld: true }));
+  deps.catalogue.resolveQuoteContext = async () => ({ customerProviderProfile: profile });
+  deps.createProvider = (_context, operation) => { assert.equal(operation.staffLeaseHeld, true); return {}; };
+  deps.createQuote = async (input) => {
+    observed.push(input.context.customerProviderProfile);
+    if (input.context.customerProviderProfile === "old") {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      replacements++;
+      profile = "fresh";
+    }
+    return { quoteId: "quote", occurrence: { classId: "771" } };
+  };
+  const responses = await Promise.all([handleClassBookingQuote(request(), deps), handleClassBookingQuote(request(), deps)]);
+  assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+  assert.deepEqual(observed, ["old", "fresh"]);
+  assert.equal(replacements, 1);
+  assert.equal(holder, null);
+});

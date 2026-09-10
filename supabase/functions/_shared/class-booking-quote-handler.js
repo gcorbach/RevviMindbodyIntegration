@@ -105,27 +105,32 @@ export async function handleClassBookingQuote(request, dependencies) {
     if (!authorization.customer.identity || authorization.customer.identity.emailVerified !== true) {
       throw new BookingQuoteError("CLIENT_IDENTITY_INCOMPLETE", "Your verified Revvi profile needs an email and full name before booking.", 422);
     }
-    const storedContext = await dependencies.catalogue.resolveQuoteContext({
-      offerId: input.offerId,
-      customerId: authorization.customer.id,
-    });
-    const context = typeof dependencies.refreshContext === "function"
-      ? await dependencies.refreshContext(storedContext, {
-        requestId: id,
+    const runQuote = async ({ staffLeaseHeld = false } = {}) => {
+      const storedContext = await dependencies.catalogue.resolveQuoteContext({
+        offerId: input.offerId,
         customerId: authorization.customer.id,
-      })
-      : storedContext;
-    const quote = await dependencies.createQuote({
-      customer: authorization.customer,
-      identity: authorization.customer.identity,
-      classId: input.classId,
-      ...(input.classFamilyId ? { classFamilyId: input.classFamilyId } : {}),
-      context,
-    }, {
-      ...dependencies.quoteDependencies,
-      provider: dependencies.createProvider(context, { requestId: id, customerId: authorization.customer.id }),
-      catalogue: dependencies.catalogue,
-    });
+      });
+      const context = typeof dependencies.refreshContext === "function"
+        ? await dependencies.refreshContext(storedContext, {
+          requestId: id,
+          customerId: authorization.customer.id,
+        })
+        : storedContext;
+      return dependencies.createQuote({
+        customer: authorization.customer,
+        identity: authorization.customer.identity,
+        classId: input.classId,
+        ...(input.classFamilyId ? { classFamilyId: input.classFamilyId } : {}),
+        context,
+      }, {
+        ...dependencies.quoteDependencies,
+        provider: dependencies.createProvider(context, { requestId: id, customerId: authorization.customer.id, staffLeaseHeld }),
+        catalogue: dependencies.catalogue,
+      });
+    };
+    const quote = typeof dependencies.withQuoteLease === "function"
+      ? await dependencies.withQuoteLease({ offerId: input.offerId, customerId: authorization.customer.id }, runQuote)
+      : await runQuote();
     const { occurrence, ...quoteFacts } = quote;
     return json({ ok: true, data: { ...quoteFacts, session: occurrence }, requestId: id }, 200, origin, id);
   } catch (error) {

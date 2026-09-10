@@ -1,6 +1,6 @@
 begin;
 
-select plan(37);
+select plan(46);
 
 select ok(
   'mindbody_sandbox_cash' = any(enum_range(null::public.class_paid_payment_route)::text[]),
@@ -248,10 +248,61 @@ reset role;
 select is((select count(*) from public.class_bookings
  where business_id='57000000-0000-4000-8000-000000000021'), 2::bigint,
  'the actual service role admits both members through the sandbox provider-write guard');
-select lives_ok($$select public.retire_missing_site_99_client_profile(
+select lives_ok($$select public.recover_site_99_client_profile(
  (select id from public.class_customer_provider_profiles where provider_client_id='second-member-client'
    and integration_id='57000000-0000-4000-8000-000000000031'),
- 'second-member-client','second-member-unique',repeat('d',64))$$,
- 'verified sandbox reset recovery is also available to the second member');
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000012',
+ '57000000-0000-4000-8000-000000000031',
+ 'second-member-client','second-member-unique','missing',repeat('a',64),repeat('d',64))$$,
+ 'automatic missing-ID recovery is available to the second member without a legacy identity digest');
+
+-- Automatic recovery retains ownership and original identity evidence.
+select ok(not has_function_privilege('authenticated',
+ 'public.recover_site_99_client_profile(uuid,uuid,uuid,uuid,text,text,text,text,text)','execute'),
+ 'browser callers cannot invoke automatic profile retirement');
+select throws_ok($$select public.recover_site_99_client_profile(
+ (select id from public.class_customer_provider_profiles where provider_client_id='new-reset-client'),
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000011',
+ '57000000-0000-4000-8000-000000000031','new-reset-client','new-reset-unique',
+ 'reused',repeat('a',64),repeat('b',64))$$,'P0001',
+ 'sandbox reset must match the exact owner and original verified identity',
+ 'reused IDs without an original identity digest remain blocked');
+select lives_ok($$select * from public.persist_class_customer_provider_profile_with_identity(
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000011',
+ '57000000-0000-4000-8000-000000000031','-99','new-reset-client','new-reset-unique',repeat('a',64))$$,
+ 'normal verified resolution stores an original identity digest');
+select * from public.persist_class_customer_provider_profile_with_identity(
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000011',
+ '57000000-0000-4000-8000-000000000031','-99','new-reset-client','new-reset-unique',repeat('c',64));
+select is((select identity_evidence_digest from public.class_customer_provider_profiles
+ where provider_client_id='new-reset-client'),repeat('a',64),'later identity changes cannot overwrite original reset evidence');
+select throws_ok($$select public.recover_site_99_client_profile(
+ (select id from public.class_customer_provider_profiles where provider_client_id='new-reset-client'),
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000012',
+ '57000000-0000-4000-8000-000000000031','new-reset-client','new-reset-unique',
+ 'missing',repeat('a',64),repeat('b',64))$$,'P0001',
+ 'sandbox reset must match the exact owner and original verified identity','another Customer cannot retire this binding');
+select throws_ok($$select public.recover_site_99_client_profile(
+ (select id from public.class_customer_provider_profiles where provider_client_id='new-reset-client'),
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000011',
+ '57000000-0000-4000-8000-000000000031','new-reset-client','new-reset-unique',
+ 'reused',repeat('c',64),repeat('b',64))$$,'P0001',
+ 'sandbox reset must match the exact owner and original verified identity','changed identity cannot authorize reused-ID recovery');
+select lives_ok($$select public.recover_site_99_client_profile(
+ (select id from public.class_customer_provider_profiles where provider_client_id='new-reset-client'),
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000011',
+ '57000000-0000-4000-8000-000000000031','new-reset-client','new-reset-unique',
+ 'reused',repeat('a',64),repeat('b',64))$$,
+ 'verified reused-ID recovery retires only the old sandbox binding');
+select is((select count(*) from public.class_bookings
+ where business_id='57000000-0000-4000-8000-000000000021'),2::bigint,
+ 'automatic recovery retains both historical Bookings');
+select throws_ok($$select public.recover_site_99_client_profile(
+ (select id from public.class_customer_provider_profiles where provider_client_id='new-reset-client'),
+ '57000000-0000-4000-8000-000000000021','57000000-0000-4000-8000-000000000011',
+ '57000000-0000-4000-8000-000000000031','new-reset-client','new-reset-unique',
+ 'missing',repeat('a',64),repeat('b',64))$$,'P0001',
+ 'only the exact enabled Site -99 demo profile may be retired',
+ 'a replay cannot retire the same binding twice or alter its replacement');
 select * from finish();
 rollback;

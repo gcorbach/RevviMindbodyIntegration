@@ -1,5 +1,36 @@
 # Recover a missing hosted Site -99 Client
 
+## Automatic recovery during sandbox quotes
+
+Enabled Site -99/Location-1 sandbox Cash Offers recover during the next authenticated
+quote, after normal Offer eligibility checks. No timer, known reset hour, or manual
+preparation is needed for a verified missing Client.
+
+The server holds the shared staff-operation lease across lookup, recovery, Client
+creation, and quote persistence. Waiting requests reload the current context after
+acquiring that lease, so simultaneous tabs reuse the replacement binding.
+
+Recovery requires no identity candidates in the existing search/duplicate checks
+and a complete successful exact-ID lookup. A missing ID retires only the obsolete
+Supabase profile and expires its open quotes, then normal approved Client creation
+continues. An ID now belonging to a different identity additionally requires the
+current identity fingerprint to equal the original fingerprint stored by verified
+profile resolution. Fingerprints contain no plaintext names or email addresses;
+once recorded, the persistence RPC does not overwrite them.
+
+A live matching Client, ambiguous candidates, incomplete lookup, provider failure,
+changed identity, or reused ID without original evidence remains blocked. Older
+profiles acquire original identity evidence on their next successful verification;
+a legacy reused ID without that evidence still needs the operator procedure below.
+Production integrations never use this automatic retirement path. Historical
+Bookings, their provider references, and unknown outcomes remain unchanged.
+
+The browser cannot call the recovery RPC directly. Only the authenticated server
+quote path can invoke it, with exact Customer/Business/integration ownership and
+reset evidence; it does not retry a sale or Booking write.
+
+## Operator fallback
+
 Mindbody public-sandbox resets can remove Clients while Supabase retains their immutable IDs. `CLIENT_PROFILE_STALE` during quote is the expected fail-closed result. Do not overwrite a provider ID, delete Booking history, or infer cancellation from an empty Client lookup.
 
 For any Customer with a profile at an explicitly enabled Site -99 sandbox Offer:
@@ -16,7 +47,7 @@ Historical bookings continue to reference the original profile. Unknown outcomes
 
 A sandbox reset can also leave the old numeric Client ID assigned to a different test identity. An ID-only lookup is therefore insufficient evidence that the original Client survived. For this case, an operator must confirm the Customer's unchanged original email and full name, verify that the exact stored Client/Unique ID now has different identity fields, and obtain complete successful email-search and duplicate-check responses showing no Client matching the original identity. Any remaining ambiguity, incomplete response, or changed Customer identity blocks this procedure.
 
-Once those facts are verified under the shared staff-operation lease, the same retirement RPC may retire the **obsolete Revvi profile binding** with the combined evidence digest. Its sandbox integration scope, exact-ID, and history-preservation guards still apply. It does not modify, delete, or claim the current provider Client occupying that ID. Normal authenticated quote processing must resolve/create a fresh Client; browser requests never perform automatic retirement. This extends the original-Client absence evidence above to a verified reused ID, not to ordinary production identity conflicts.
+Once those facts are verified under the shared staff-operation lease, the same retirement RPC may retire the **obsolete Revvi profile binding** with the combined evidence digest. Its sandbox integration scope, exact-ID, and history-preservation guards still apply. It does not modify, delete, or claim the current provider Client occupying that ID. Normal authenticated quote processing must resolve/create a fresh Client; browser callers cannot invoke retirement directly. This extends the original-Client absence evidence above to a verified reused ID, not to ordinary production identity conflicts.
 
 The local demo creates a fresh synthetic Client per committed run and does not persist a Customer-to-Client mapping, so it has no corresponding retirement operation. Its provider lookup, booking, and cleanup behavior is unchanged.
 
