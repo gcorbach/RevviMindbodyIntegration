@@ -27,3 +27,33 @@ Request `a3a50493-2df0-43c4-abd2-9c3b770afe7f` failed during quote, after succes
 The retirement migration and replacement-profile flow passed a transaction rolled back against the real hosted database, including unchanged historical Bookings and both current-context resolvers. Seven pgTAP recovery assertions passed against the same scoped records in another rolled-back transaction. The full Node suite passed 261 tests (10 browser-dependent tests skipped). The missing-profile quote regression confirms that normal quote processing does not silently create a replacement.
 
 Applied migration `20260908000000` to the hosted sandbox and retired the exact missing profile with the recorded evidence digest. Post-application checks show `retired=true`, `verification_status=stale`, no current Client returned by quote context, zero open quotes referencing the retired profile, and all five historical bookings retained. A fresh authenticated Webflow quote and booking have not yet been completed after this repair.
+
+## 2026-09-10 incident: both current test Clients disappeared
+
+Quote request `b9f27ed6-5511-4934-8277-7161c886b0e6` reached Mindbody successfully,
+then recorded `STORED_CLIENT_NOT_FOUND`. The same Customer had created a Client
+and completed provider-calculated quotes at 01:06 UTC after the eligible-member
+fix. This failure was not the former Customer allowlist.
+
+Staff-authenticated exact-ID lookups at 11:51–11:53 UTC returned HTTP 200,
+`Clients: []`, and complete zero-result pagination for both current bindings:
+
+| Profile | Missing Client / Unique ID | Lookup evidence SHA-256 |
+| --- | --- | --- |
+| `9e311c83-85cd-4c43-a1f4-9f350abb2e57` | `100015663` | `9a5165e79678cccd94ae8f7d72b7e036bde4cc7f87bd80758aeacfceb2f738d7` |
+| `5edfbdf0-443f-4c6f-ab16-a42a23222230` | `100015661` | `75ef88997870e02508d0f41f77dda44652ac6e91d7281b6d466f6192247f4fbc` |
+
+Each lookup held the shared Site -99 staff lease and revoked its temporary token.
+The empty exact-ID results establish absence without depending on name/email
+search or assuming an overnight reset schedule. Both local bindings were retired
+through the existing RPC, first in rollback verification and then committed.
+Complete historical Booking rows compared equal before and after each operation;
+open quotes tied to the obsolete profiles expired. Post-commit quote contexts
+return no current Client for both Customers. No provider Client or Booking was
+created, changed, or cancelled during recovery.
+
+The existing missing-stored-Client quote regression passed. A fresh authenticated
+browser quote must still verify normal Client resolution/creation. The local demo
+has no persistent profile to retire and requires no change. This is an operator
+recovery, not automatic reset handling: a later sandbox deletion can require the
+same procedure again. Production identity conflicts remain blocked.
